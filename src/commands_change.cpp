@@ -99,6 +99,66 @@ bool same_signature(const git_signature* left, const git_signature* right) {
   return left->when.offset == right->when.offset;
 }
 
+std::string graph_prefix(std::vector<git_oid>& lanes,
+                         const git_oid& revision,
+                         const std::vector<git_oid>& successors,
+                         std::string_view marker) {
+  auto current = std::find_if(lanes.begin(), lanes.end(),
+                              [&](const git_oid& oid) { return oid == revision; });
+  if (current == lanes.end()) {
+    lanes.push_back(revision);
+    current = std::prev(lanes.end());
+  }
+  const std::size_t lane = std::distance(lanes.begin(), current);
+  std::optional<std::size_t> convergence;
+  if (successors.size() == 1) {
+    const auto existing = std::find_if(
+        lanes.begin(), lanes.end(),
+        [&](const git_oid& oid) { return oid == successors.front(); });
+    if (existing != lanes.end()) {
+      convergence = std::distance(lanes.begin(), existing);
+    }
+  }
+
+  std::ostringstream prefix;
+  if (convergence.has_value()) {
+    const std::size_t first = std::min(lane, *convergence);
+    const std::size_t last = std::max(lane, *convergence);
+    for (std::size_t index = 0; index < first; ++index) {
+      prefix << "│ ";
+    }
+    prefix << "╰";
+    for (std::size_t index = first; index < last; ++index) prefix << "─";
+    prefix << marker;
+  } else {
+    for (std::size_t index = 0; index < lane; ++index) {
+      prefix << "│ ";
+    }
+    prefix << marker;
+    if (successors.size() > 1) {
+      for (std::size_t index = 1; index < successors.size(); ++index) {
+        prefix << "─" << (index + 1 == successors.size() ? "╮" : "┬");
+      }
+    }
+  }
+  prefix << "  ";
+  for (std::size_t index = lane + 1; index < lanes.size(); ++index) {
+    prefix << "│ ";
+  }
+
+  lanes.erase(current);
+  std::size_t insertion = std::min(lane, lanes.size());
+  for (const git_oid& successor : successors) {
+    const bool present = std::ranges::any_of(
+        lanes, [&](const git_oid& oid) { return oid == successor; });
+    if (!present) {
+      lanes.insert(lanes.begin() + insertion, successor);
+      ++insertion;
+    }
+  }
+  return prefix.str();
+}
+
 }  // namespace
 
 void command_new(Repository& repo,
@@ -360,6 +420,21 @@ void command_log(Repository& repo,
   if (options.reversed) {
     std::reverse(revisions.begin(), revisions.end());
   }
+  std::map<git_oid, std::vector<git_oid>, OidLess> graph_successors;
+  if (options.reversed) {
+    const std::set<git_oid, OidLess> visible(revisions.begin(), revisions.end());
+    for (const git_oid& child : revisions) {
+      for (const git_oid& parent : repo.parents(child)) {
+        if (visible.contains(parent)) {
+          graph_successors[parent].push_back(child);
+        }
+      }
+    }
+  } else {
+    for (const git_oid& revision : revisions) {
+      graph_successors.emplace(revision, repo.parents(revision));
+    }
+  }
   bool show_diff = options.patch;
   show_diff |= options.format.summary;
   show_diff |= options.format.stat;
@@ -371,16 +446,18 @@ void command_log(Repository& repo,
   show_diff |= options.format.context != 3;
   show_diff |= options.format.ignore_all_space;
   show_diff |= options.format.ignore_space_change;
+  std::vector<git_oid> graph_lanes;
   for (const git_oid& revision : revisions) {
     const git_oid oid = revision;
     CommitPtr value = repo.commit(oid);
     const auto id = repo.change_id(oid);
     const auto bookmarks = repo.bookmarks(oid);
     if (!options.no_graph) {
-      output << (workspace.has_value() && *workspace == oid ? '@'
-                 : id.has_value()                         ? 'o'
-                                                          : '*')
-             << "  ";
+      const std::string_view marker =
+          workspace.has_value() && *workspace == oid ? "@"
+          : id.has_value()                         ? "○"
+                                                   : "*";
+      output << graph_prefix(graph_lanes, oid, graph_successors[oid], marker);
     }
     output
            << (id.has_value() ? repo.short_change_id(*id) : oid_string(oid, 8))

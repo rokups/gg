@@ -161,7 +161,7 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 2);
   EXPECT_EQ(limited.output.find("third") > limited.output.find("second"), true);
   EXPECT_FALSE(limited.output.starts_with("@  ") ||
-               limited.output.starts_with("o  ") ||
+               limited.output.starts_with("○  ") ||
                limited.output.starts_with("*  "));
   EXPECT_EQ(invoke({"log", "-r", "@", "--limit", "2", "--count"}).output,
             "2\n");
@@ -571,31 +571,45 @@ TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
             std::string::npos);
   EXPECT_EQ(invoke({"log", "-r", "@-"}).code, 2);
   ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
-  const std::string child = current_id();
+  ASSERT_EQ(invoke({"new", "-m", "grandchild"}).code, 0);
+  const std::string grandchild = current_id();
 
   ASSERT_EQ(invoke({"edit", root.output.substr(root.output.find(": ") + 2, 8)}).code,
             0);
+  ASSERT_EQ(invoke({"new", "-m", "left parent"}).code, 0);
   write("left.txt", "left\n");
   const Result left_status = invoke({"status"});
   ASSERT_EQ(left_status.code, 0);
   EXPECT_NE(left_status.output.find("A left.txt"), std::string::npos);
   const std::string left = current_id();
-  ASSERT_EQ(invoke({"new", "-m", "merge", left, child}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "merge", left, grandchild}).code, 0);
   git_commit* merge = nullptr;
   const git_oid workspace = ref("refs/gg/workspaces/default");
   ASSERT_EQ(git_commit_lookup(&merge, repository_.get(), &workspace), 0);
   EXPECT_EQ(git_commit_parentcount(merge), 2U);
   git_commit_free(merge);
+  const Result graph = invoke({"log", "-r", "@"});
+  EXPECT_NE(graph.output.find("@─╮"), std::string::npos) << graph.output;
+  EXPECT_NE(graph.output.find("○  │"), std::string::npos) << graph.output;
+  EXPECT_NE(graph.output.find("│ ○"), std::string::npos) << graph.output;
+  EXPECT_NE(graph.output.find("╰─○"), std::string::npos) << graph.output;
+  const Result reversed = invoke({"log", "-r", "@", "--reversed"});
+  EXPECT_NE(reversed.output.find("│"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, MergesUnrelatedParents) {
-  const git_oid first = raw_commit("first root");
-  const git_oid second = raw_commit("second root");
+  const git_oid first_base = raw_commit("first base");
+  const git_oid first = raw_commit("first", {first_base});
+  const git_oid third = raw_commit("third");
+  const git_oid second = raw_commit("second", {third});
   set_ref("refs/heads/first", first);
   set_ref("refs/heads/second", second);
-  const Result merge = invoke({"new", "first", "second"});
+  set_ref("refs/heads/third", third);
+  const Result merge = invoke({"new", "first", "second", "third"});
   ASSERT_EQ(merge.code, 0) << merge.error;
-  EXPECT_EQ(invoke({"log", "-r", "@"}).code, 0);
+  const Result graph = invoke({"log", "-r", "@"});
+  EXPECT_EQ(graph.code, 0);
+  EXPECT_NE(graph.output.find("┬"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, ImportsRawGitHeadChangesAndResolvesObjectIds) {
