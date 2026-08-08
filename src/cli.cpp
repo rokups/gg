@@ -101,18 +101,16 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   BookmarkCommand bookmark_list;
   auto* list = bookmark->add_subcommand("list", "List bookmarks");
 
-  auto* git = app.add_subcommand("git", "Work with ordinary Git remotes");
-  git->require_subcommand(1);
   GitCloneCommand clone_value;
-  auto* clone = git->add_subcommand("clone", "Clone a Git repository");
+  auto* clone = app.add_subcommand("clone", "Clone a Git repository");
   clone->add_option("url", clone_value.url, "Repository URL")->required();
   clone->add_option("destination", clone_value.destination, "Destination")
       ->expected(0, 1);
   GitFetchCommand fetch_value;
-  auto* fetch = git->add_subcommand("fetch", "Fetch a Git remote");
+  auto* fetch = app.add_subcommand("fetch", "Fetch a Git remote");
   fetch->add_option("--remote", fetch_value.remote, "Remote name");
   GitPushCommand push_value;
-  auto* push = git->add_subcommand("push", "Push a bookmark");
+  auto* push = app.add_subcommand("push", "Push a bookmark");
   push->add_option("-b,--bookmark", push_value.bookmark, "Bookmark name")
       ->required();
   push->add_option("--remote", push_value.remote, "Remote name");

@@ -36,7 +36,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   write("published.txt", "published\n");
   ASSERT_EQ(invoke({"status"}).code, 0);
   ASSERT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
-  ASSERT_EQ(invoke({"git", "push", "--bookmark", "topic"}).code, 0);
+  ASSERT_EQ(invoke({"push", "--bookmark", "topic"}).code, 0);
 
   git_repository* bare_check = nullptr;
   ASSERT_EQ(git_repository_open(&bare_check, remote_path.string().c_str()), 0);
@@ -54,14 +54,14 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   git_reference_iterator_free(iterator);
   EXPECT_EQ(remote_refs, std::vector<std::string>{"refs/heads/topic"});
   git_repository_free(bare_check);
-  EXPECT_EQ(invoke({"git", "fetch"}).code, 0);
-  EXPECT_EQ(invoke({"git", "fetch", "--remote", "origin"}).code, 0);
-  EXPECT_EQ(invoke({"git", "push", "--bookmark", "topic", "--remote", "origin"})
+  EXPECT_EQ(invoke({"fetch"}).code, 0);
+  EXPECT_EQ(invoke({"fetch", "--remote", "origin"}).code, 0);
+  EXPECT_EQ(invoke({"push", "--bookmark", "topic", "--remote", "origin"})
                 .code,
             0);
 
   const Result cloned =
-      run({"git", "clone", remote_path.string(), clone_path.string()});
+      run({"clone", remote_path.string(), clone_path.string()});
   EXPECT_EQ(cloned.code, 0) << cloned.error;
   EXPECT_TRUE(std::filesystem::exists(clone_path / ".git"));
   std::filesystem::remove_all(clone_path);
@@ -81,7 +81,7 @@ TEST_F(RepositoryTest, InfersCloneDestinationFromDotGitUrl) {
 
   const auto original_directory = std::filesystem::current_path();
   std::filesystem::current_path(path_.parent_path());
-  const Result cloned = run({"git", "clone", remote_path.string()});
+  const Result cloned = run({"clone", remote_path.string()});
   std::filesystem::current_path(original_directory);
 
   EXPECT_EQ(cloned.code, 0) << cloned.error;
@@ -101,7 +101,7 @@ TEST_F(RepositoryTest, InfersCloneDestinationWithoutDotGitSuffix) {
 
   const auto original_directory = std::filesystem::current_path();
   std::filesystem::current_path(path_.parent_path());
-  const Result cloned = run({"git", "clone", remote_path.string()});
+  const Result cloned = run({"clone", remote_path.string()});
   std::filesystem::current_path(original_directory);
 
   EXPECT_EQ(cloned.code, 0) << cloned.error;

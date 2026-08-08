@@ -90,7 +90,7 @@ void command_fetch(Repository& repo,
   fetch_options.callbacks = remote_callbacks();
   check(git_remote_fetch(remote.get(), nullptr, &fetch_options, "gg fetch"),
         "fetch remote");
-  repo.record({}, {}, repo.head_state(), "gg git fetch");
+  repo.record({}, {}, repo.head_state(), "gg fetch");
   output << "Fetched " << name << '\n';
 }
 

@@ -25,9 +25,9 @@ gg bookmark create NAME [-r REV]
 gg bookmark set NAME [-r REV]
 gg bookmark delete NAME...
 gg bookmark list
-gg git clone URL [DESTINATION]
-gg git fetch [--remote REMOTE]
-gg git push --bookmark NAME [--remote REMOTE]
+gg clone URL [DESTINATION]
+gg fetch [--remote REMOTE]
+gg push --bookmark NAME [--remote REMOTE]
 gg continue
 gg abort
 gg undo

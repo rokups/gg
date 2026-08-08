@@ -98,12 +98,12 @@ std::vector<std::string> repository_replay_arguments(
             return result;
           },
           [](const GitFetchCommand& value) {
-            std::vector<std::string> result{"git", "fetch"};
+            std::vector<std::string> result{"fetch"};
             add_option(result, "--remote", value.remote);
             return result;
           },
           [](const GitPushCommand& value) {
-            std::vector<std::string> result{"git", "push", "--bookmark",
+            std::vector<std::string> result{"push", "--bookmark",
                                             value.bookmark};
             add_option(result, "--remote", value.remote);
             return result;
@@ -119,7 +119,7 @@ std::vector<std::string> replay_arguments(const Command& command) {
             return repository_replay_arguments(value);
           },
           [](const GitCloneCommand& value) {
-            std::vector<std::string> result{"git", "clone", value.url};
+            std::vector<std::string> result{"clone", value.url};
             if (!value.destination.empty()) {
               result.push_back(value.destination);
             }
