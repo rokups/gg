@@ -96,6 +96,18 @@ std::vector<std::string> repository_replay_arguments(
             }
             return result;
           },
+          [](const CommitCommand& value) {
+            std::vector<std::string> result{"commit"};
+            result.insert(result.end(), value.paths.begin(), value.paths.end());
+            if (value.message_provided) {
+              result.emplace_back("--message");
+              result.push_back(value.message);
+            }
+            add_option(result, "--tool", value.tool);
+            if (value.interactive) result.emplace_back("--interactive");
+            if (value.editor) result.emplace_back("--editor");
+            return result;
+          },
           [](const FileCommand& value) {
             std::vector<std::string> result{"file"};
             switch (value.action) {

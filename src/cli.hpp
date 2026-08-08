@@ -48,6 +48,14 @@ struct SquashCommand {
 struct AbandonCommand {
   std::string revision;
 };
+struct CommitCommand {
+  std::vector<std::string> paths;
+  std::string message;
+  std::string tool;
+  bool interactive{false};
+  bool editor{false};
+  bool message_provided{false};
+};
 
 enum class FileAction { list, show, search, chmod };
 struct FileCommand {
@@ -138,9 +146,9 @@ struct MovementCommand {
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
-                 AbandonCommand, FileCommand, DiffCommand, ShowCommand,
-                 BookmarkCommand, GitFetchCommand, GitPushCommand, UndoCommand,
-                 RedoCommand,
+                 AbandonCommand, CommitCommand, FileCommand, DiffCommand,
+                 ShowCommand, BookmarkCommand, GitFetchCommand, GitPushCommand,
+                 UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilSnapshotCommand, MovementCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,

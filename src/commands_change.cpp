@@ -6,6 +6,7 @@
 
 #include <git2.h>
 
+#include <filesystem>
 #include <set>
 #include <utility>
 
@@ -37,6 +38,66 @@ void command_new(Repository& repo,
          << oid_string(change, 8) << ' '
          << (options.message.empty() ? "(no description set)" : options.message)
          << '\n';
+}
+
+void command_commit(Repository& repo,
+                    const CommitCommand& options,
+                    std::ostream& output) {
+  repo.sync_workspace();
+  if (options.interactive || !options.tool.empty()) {
+    throw UserError("interactive commit selection is not supported yet");
+  }
+  if (options.editor) {
+    throw UserError("commit message editing is not supported yet");
+  }
+  const auto workspace = repo.ref_target(kWorkspaceRef);
+  if (!workspace.has_value()) {
+    throw UserError("this command requires a working-copy change");
+  }
+  std::vector<std::string> paths;
+  bool select_all = false;
+  for (const std::string& path : options.paths) {
+    const std::filesystem::path parsed_path(path);
+    if (path.empty() || path.front() == '/') {
+      throw UserError("commit paths must be repository-relative");
+    }
+    for (const auto& component : parsed_path) {
+      if (component == "..") {
+        throw UserError("commit paths must not contain '..'");
+      }
+    }
+    const std::string normalized = parsed_path.lexically_normal().generic_string();
+    if (normalized == ".") {
+      select_all = true;
+    } else {
+      paths.push_back(normalized);
+    }
+  }
+
+  CommitPtr current = repo.commit(*workspace);
+  const std::vector<git_oid> parents = repo.parents(*workspace);
+  const git_oid base_tree = combined_tree(repo, parents);
+  const git_oid full_tree = *git_commit_tree_id(current.get());
+  const git_oid selected_tree =
+      options.paths.empty() || select_all
+          ? full_tree
+          : repo.selected_tree(base_tree, full_tree, paths);
+  const char* old_message = git_commit_message(current.get());
+  const std::string_view message =
+      options.message_provided
+          ? std::string_view(options.message)
+          : std::string_view(old_message == nullptr ? "" : old_message);  // GG_COV_EXCL_BRANCH
+  const git_oid committed =
+      repo.rewrite_commit(*workspace, parents, selected_tree, message);
+  const git_oid new_workspace = repo.create_commit(full_tree, {committed}, "");
+  const std::string id = repo.new_change_id();
+  RewritePlan plan = repo.descendants({{*workspace, committed}});
+  plan.updates[std::string(kChangePrefix) + id] = new_workspace;
+  finish_workspace(repo, new_workspace, std::move(plan.updates), {},
+                   "gg commit");
+  output << "Committed as " << oid_string(committed, 8) << '\n'
+         << "Working copy now at: " << repo.short_change_id(id) << ' '
+         << oid_string(new_workspace, 8) << '\n';
 }
 
 void command_status(Repository& repo, std::ostream& output) {

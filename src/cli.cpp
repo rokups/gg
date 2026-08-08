@@ -83,6 +83,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   abandon->add_option("revision", abandon_value.revision, "Revision")
       ->expected(0, 1);
 
+  CommitCommand commit_value;
+  auto* commit = app.add_subcommand(
+      "commit", "Describe the working change and create a new one");
+  commit->alias("ci");
+  commit->add_option("filesets", commit_value.paths,
+                     "Repository-relative paths");
+  commit->add_flag("-i,--interactive", commit_value.interactive,
+                   "Interactively select changes");
+  commit->add_option("--tool", commit_value.tool, "Diff editor");
+  CLI::Option* commit_message =
+      commit->add_option("-m,--message", commit_value.message, "Description");
+  commit->add_flag("--editor", commit_value.editor,
+                   "Edit the description in an editor");
+
   auto* file = app.add_subcommand("file", "Inspect and modify files");
   file->require_subcommand(1);
   FileCommand file_list_value;
@@ -383,6 +397,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(squash_value)};
   } else if (abandon->parsed()) {
     command = RepositoryCommand{std::move(abandon_value)};
+  } else if (commit->parsed()) {
+    commit_value.message_provided = commit_message->count() != 0;
+    command = RepositoryCommand{std::move(commit_value)};
   } else if (file_list->parsed()) {
     command = RepositoryCommand{std::move(file_list_value)};
   } else if (file_show->parsed()) {
