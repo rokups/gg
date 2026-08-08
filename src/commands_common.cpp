@@ -4,6 +4,7 @@
 
 #include "commands.hpp"
 
+#include <CLI/CLI.hpp>
 #include <git2/sys/errors.h>
 
 #include <spawn.h>
@@ -76,12 +77,22 @@ void edit_file_with_editor(const std::filesystem::path& path) {
   if (raw_editor == nullptr || *raw_editor == '\0') {
     throw UserError("VISUAL or EDITOR must name an editor executable");
   }
-  std::string editor(raw_editor);
-  std::string file = path.string();
-  char* arguments[] = {editor.data(), file.data(), nullptr};
+  std::vector<std::string> argument_storage =
+      CLI::detail::split_up(raw_editor);
+  CLI::detail::remove_quotes(argument_storage);
+  if (argument_storage.empty()) {
+    throw UserError("VISUAL or EDITOR must name an editor executable");
+  }
+  argument_storage.push_back(path.string());
+  std::vector<char*> arguments;
+  arguments.reserve(argument_storage.size() + 1);
+  for (std::string& argument : argument_storage) {
+    arguments.push_back(argument.data());
+  }
+  arguments.push_back(nullptr);
   pid_t process = 0;
-  const int spawned =
-      posix_spawnp(&process, editor.c_str(), nullptr, nullptr, arguments, environ);
+  const int spawned = posix_spawnp(&process, argument_storage.front().c_str(),
+                                   nullptr, nullptr, arguments.data(), environ);
   if (spawned != 0) throw UserError("cannot launch editor");
   int status = 0;
   if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for editor");  // GG_COV_EXCL_BRANCH

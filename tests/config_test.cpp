@@ -113,6 +113,8 @@ TEST_F(RepositoryTest, UsesUserConfigAndLaunchesAnEditor) {
                 .output.find("user.name = 'Test'"),
             std::string::npos);
   EXPECT_EQ(invoke({"config", "edit", "--user"}).code, 0);
+  ASSERT_EQ(setenv("VISUAL", "/bin/test -f", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 0);
 
   ASSERT_EQ(setenv("VISUAL", "/missing/gg-editor", 1), 0);
   EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
@@ -123,6 +125,8 @@ TEST_F(RepositoryTest, UsesUserConfigAndLaunchesAnEditor) {
   EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
   ASSERT_EQ(setenv("VISUAL", "", 1), 0);
   ASSERT_EQ(setenv("EDITOR", "", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
+  ASSERT_EQ(setenv("VISUAL", " ", 1), 0);
   EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
 
   const char* old_home = std::getenv("HOME");
