@@ -106,6 +106,16 @@ TEST_F(RepositoryTest, ValidatesMetadataValues) {
   EXPECT_EQ(invoke({"metaedit", "--author", "Name <>"}).code, 2);
   EXPECT_EQ(invoke({"metaedit", "--author-timestamp", "short"}).code, 2);
   EXPECT_EQ(invoke({"metaedit", "--author-timestamp", ""}).code, 2);
+  EXPECT_EQ(invoke({"metaedit", "--author-timestamp", "0000-00-00T"}).code,
+            2);
+  EXPECT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "2000-01-23Tbroken-long"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "Sun, 23 Jan 2000 01:23:45 "})
+                .code,
+            2);
   EXPECT_EQ(invoke({"metaedit", "--author-timestamp",
                     "2000-01-23 01:23:45Z"})
                 .code,
@@ -146,6 +156,30 @@ TEST_F(RepositoryTest, ValidatesMetadataValues) {
                     "2000-01-23T03:53:45+02:30"})
                 .code,
             0);
+  ASSERT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "Sun, 23 Jan 2000 01:23:45 PST"})
+                .code,
+            0);
+  ASSERT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "Sun, 23 Jan 2000 11:53:45 +0230"})
+                .code,
+            0);
+  ASSERT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "Sun, 23 Jan 2000 01:23:45 -0800"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "Sun, 23 Jan 2000 01:23:45 XYZ"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "Sun, 23 Jan 2000 01:23:45 +2400"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"metaedit", "--author-timestamp",
+                    "Sun, 23 Jan 2000 01:23:45 +0060"})
+                .code,
+            2);
   EXPECT_NE(invoke({"metaedit", "--author", "GG Test <gg@example.test>"})
                 .output.find("Nothing changed."),
             std::string::npos);

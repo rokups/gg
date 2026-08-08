@@ -320,7 +320,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   author->excludes(update_author);
   CLI::Option* author_timestamp = metaedit->add_option(
       "--author-timestamp", metaedit_value.author_timestamp,
-      "Author timestamp in RFC 3339 form");
+      "Author timestamp in RFC 3339 or RFC 2822 form");
   author_timestamp->excludes(update_author_timestamp);
   metaedit->add_flag("--force-rewrite", metaedit_value.force_rewrite,
                      "Rewrite even if metadata is unchanged");

@@ -6,11 +6,13 @@
 
 #include <git2.h>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <ctime>
 #include <filesystem>
 #include <iostream>
 #include <iterator>
+#include <regex>
 #include <set>
 #include <utility>
 
@@ -36,32 +38,32 @@ std::pair<std::string, std::string> parse_author(std::string_view value) {
   return {std::move(name), std::move(email)};
 }
 
-std::pair<git_time_t, int> parse_author_timestamp(std::string_view value) {
+std::pair<git_time_t, int> parse_rfc3339_timestamp(std::string_view value) {
   if (value.size() < 20) {
-    throw UserError("author timestamp must use RFC 3339 form");
+    throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
   }
   std::tm fields{};
   std::string owned(value);
   char* suffix = strptime(owned.c_str(), "%Y-%m-%dT%H:%M:%S", &fields);
   if (suffix != owned.c_str() + 19) {
-    throw UserError("author timestamp must use RFC 3339 form");
+    throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
   }
   int offset = 0;
   if (*suffix == 'Z') {
     if (suffix[1] != '\0') {
-      throw UserError("author timestamp must use RFC 3339 form");
+      throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
     }
     offset = 0;
   } else {
     if (*suffix != '+' && *suffix != '-') {
-      throw UserError("author timestamp must use RFC 3339 form");
+      throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
     }
     if (std::string_view(suffix).size() != 6 || suffix[3] != ':') {
-      throw UserError("author timestamp must use RFC 3339 form");
+      throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
     }
     for (const int index : {1, 2, 4, 5}) {
       if (std::isdigit(static_cast<unsigned char>(suffix[index])) == 0) {
-        throw UserError("author timestamp must use RFC 3339 form");
+        throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
       }
     }
     const int hours = (suffix[1] - '0') * 10 + suffix[2] - '0';
@@ -77,6 +79,60 @@ std::pair<git_time_t, int> parse_author_timestamp(std::string_view value) {
   }
   const std::time_t local = timegm(&fields);
   return {static_cast<git_time_t>(local) - offset * 60, offset};
+}
+
+std::pair<git_time_t, int> parse_rfc2822_timestamp(std::string_view value) {
+  std::tm fields{};
+  std::string owned(value);
+  char* zone = strptime(owned.c_str(), "%a, %d %b %Y %H:%M:%S ", &fields);
+  if (zone == nullptr || *zone == '\0') {
+    throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
+  }
+
+  int offset = 0;
+  std::cmatch numeric;
+  static const std::regex numeric_zone(  // GG_COV_EXCL_BRANCH
+      R"(([+-])([0-9]{2})([0-9]{2}))");  // GG_COV_EXCL_BRANCH
+  if (std::regex_match(zone, numeric, numeric_zone)) {
+    const int hours = std::stoi(numeric[2].str());
+    const int minutes = std::stoi(numeric[3].str());
+    if (hours > 23) {
+      throw UserError("author timestamp has an invalid UTC offset");
+    }
+    if (minutes > 59) {
+      throw UserError("author timestamp has an invalid UTC offset");
+    }
+    offset = hours * 60 + minutes;
+    if (numeric[1].str() == "-") offset = -offset;
+  } else {
+    static constexpr std::array named_zones{
+        std::pair<std::string_view, int>{"UT", 0},
+        std::pair<std::string_view, int>{"GMT", 0},
+        std::pair<std::string_view, int>{"EST", -300},
+        std::pair<std::string_view, int>{"EDT", -240},
+        std::pair<std::string_view, int>{"CST", -360},
+        std::pair<std::string_view, int>{"CDT", -300},
+        std::pair<std::string_view, int>{"MST", -420},
+        std::pair<std::string_view, int>{"MDT", -360},
+        std::pair<std::string_view, int>{"PST", -480},
+        std::pair<std::string_view, int>{"PDT", -420},
+    };
+    const auto named = std::ranges::find_if(
+        named_zones, [&](const auto& item) { return item.first == zone; });
+    if (named == named_zones.end()) {
+      throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
+    }
+    offset = named->second;
+  }
+  const std::time_t local = timegm(&fields);
+  return {static_cast<git_time_t>(local) - offset * 60, offset};
+}
+
+std::pair<git_time_t, int> parse_author_timestamp(std::string_view value) {
+  if (value.size() > 10 && value[10] == 'T') {
+    return parse_rfc3339_timestamp(value);
+  }
+  return parse_rfc2822_timestamp(value);
 }
 
 SignaturePtr make_signature(std::string_view name,
