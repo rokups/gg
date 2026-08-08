@@ -565,7 +565,31 @@ git_remote_callbacks remote_callbacks() {
   return callbacks;
 }
 
-std::map<std::string, git_oid> advertised_remote_tags(git_remote* remote) {
+std::vector<std::string> matching_names(
+    const std::vector<std::string>& patterns,
+    const std::vector<std::string>& available,
+    std::string_view kind) {
+  std::set<std::string> selected;
+  for (const std::string& pattern : patterns) {
+    bool matched = false;
+    for (const std::string& name : available) {
+      if (!string_pattern_matches(pattern, name)) continue;
+      matched = true;
+      selected.insert(name);
+    }
+    if (!matched) {
+      throw UserError(std::string(kind) + " not found: " + pattern);
+    }
+  }
+  return {selected.begin(), selected.end()};
+}
+
+struct AdvertisedRemoteRefs {
+  std::vector<std::string> branches;
+  std::map<std::string, git_oid> tags;
+};
+
+AdvertisedRemoteRefs advertised_remote_refs(git_remote* remote) {
   git_remote_callbacks callbacks = remote_callbacks();
   check(git_remote_connect(remote, GIT_DIRECTION_FETCH, &callbacks, nullptr,
                            nullptr),
@@ -575,15 +599,19 @@ std::map<std::string, git_oid> advertised_remote_tags(git_remote* remote) {
   const int result = git_remote_ls(&heads, &count, remote);
   git_remote_disconnect(remote);
   check(result, "list remote refs");
-  std::map<std::string, git_oid> tags;
-  constexpr std::string_view prefix = "refs/tags/";
+  AdvertisedRemoteRefs refs;
+  constexpr std::string_view branch_prefix = "refs/heads/";
+  constexpr std::string_view tag_prefix = "refs/tags/";
   for (std::size_t index = 0; index < count; ++index) {
     const std::string_view reference(heads[index]->name);
-    if (!starts_with(reference, prefix)) continue;
-    if (reference.ends_with("^{}")) continue;
-    tags.emplace(reference.substr(prefix.size()), heads[index]->oid);
+    if (starts_with(reference, branch_prefix)) {
+      refs.branches.emplace_back(reference.substr(branch_prefix.size()));
+    } else if (starts_with(reference, tag_prefix) &&  // GG_COV_EXCL_BRANCH
+               !reference.ends_with("^{}")) {
+      refs.tags.emplace(reference.substr(tag_prefix.size()), heads[index]->oid);
+    }
   }
-  return tags;
+  return refs;
 }
 
 int create_clone_remote(git_remote** output,
@@ -600,33 +628,22 @@ void command_fetch(Repository& repo,
                    const GitFetchCommand& options,
                    std::ostream& output) {
   repo.sync_workspace();
-  const auto validate_names = [](const std::vector<std::string>& names,
-                                 std::string_view prefix,
-                                 std::string_view kind) {
-    for (const std::string& name : names) {
-      int valid = 0;
-      const std::string reference = std::string(prefix) + name;
-      check(git_reference_name_is_valid(&valid, reference.c_str()),
-            "validate fetch selector");
-      if (valid == 0) {
-        throw UserError("invalid " + std::string(kind) + " name: " + name);
-      }
-    }
-  };
-  validate_names(options.branches, "refs/heads/", "branch");
-  validate_names(options.tags, "refs/tags/", "tag");
+  git_strarray listed{};
+  check(git_remote_list(&listed, repo.raw()), "list remotes");
+  std::vector<std::string> available_remotes;
+  for (std::size_t index = 0; index < listed.count; ++index) {
+    available_remotes.emplace_back(listed.strings[index]);
+  }
+  git_strarray_dispose(&listed);
 
-  std::vector<std::string> names = options.remotes;
+  std::vector<std::string> names;
   if (options.all_remotes) {
-    git_strarray listed{};
-    check(git_remote_list(&listed, repo.raw()), "list remotes");
-    for (std::size_t index = 0; index < listed.count; ++index) {
-      names.emplace_back(listed.strings[index]);
-    }
-    git_strarray_dispose(&listed);
+    names = available_remotes;
     if (names.empty()) throw UserError("no remotes found");
-  } else if (names.empty()) {
+  } else if (options.remotes.empty()) {
     names.emplace_back("origin");
+  } else {
+    names = matching_names(options.remotes, available_remotes, "remote");
   }
 
   std::map<std::string, git_oid> tracking_updates;
@@ -636,7 +653,9 @@ void command_fetch(Repository& repo,
     check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()),
           "find remote");
     RemotePtr remote(raw_remote);
-    std::vector<std::string> branches = options.branches;
+    const AdvertisedRemoteRefs advertised = advertised_remote_refs(remote.get());
+    std::vector<std::string> branches = matching_names(
+        options.branches, advertised.branches, "branch");
     const std::string remote_tag_prefix =
         std::string(kRemoteTagPrefix) + name + "/tags/";
     std::set<std::string> tracked_tags;
@@ -661,11 +680,14 @@ void command_fetch(Repository& repo,
     }
     const bool default_selection = options.branches.empty() &&
                                    options.tags.empty() && !options.tracked;
-    std::map<std::string, git_oid> remote_tags;
-    if (default_selection || !options.tags.empty() || !tracked_tags.empty()) {
-      remote_tags = advertised_remote_tags(remote.get());
+    const std::map<std::string, git_oid>& remote_tags = advertised.tags;
+    std::vector<std::string> available_tags;
+    for (const auto& [tag, oid] : remote_tags) {
+      (void)oid;
+      available_tags.push_back(tag);
     }
-    std::vector<std::string> tags = options.tags;
+    std::vector<std::string> tags =
+        matching_names(options.tags, available_tags, "tag");
     if (options.tracked) {
       for (const std::string& tag : tracked_tags) {
         if (remote_tags.contains(tag)) {
@@ -749,18 +771,25 @@ void command_push(Repository& repo,
     ObjectPtr commit(raw_commit);
     return *git_object_id(commit.get());
   };
-  const auto add = [&](std::string_view kind, const std::string& ref_name) {
-    const std::string reference = "refs/" + std::string(kind) + "/" + ref_name;
-    if (!repo.ref_target(reference).has_value()) {
-      throw UserError(std::string(kind == "heads" ? "bookmark" : "tag") +
-                      " not found: " + ref_name);
+  const auto add = [&](std::string_view kind,
+                       const std::vector<std::string>& patterns) {
+    const std::string prefix = "refs/" + std::string(kind) + "/";
+    std::vector<std::string> available;
+    for (const auto& [reference, oid] : refs) {
+      (void)oid;
+      if (starts_with(reference, prefix)) {
+        available.push_back(reference.substr(prefix.size()));
+      }
     }
-    updates.emplace(reference, reference);
+    const std::vector<std::string> selected = matching_names(
+        patterns, available, kind == "heads" ? "bookmark" : "tag");
+    for (const std::string& name : selected) {
+      const std::string reference = prefix + name;
+      updates.emplace(reference, reference);
+    }
   };
-  for (const std::string& bookmark : options.bookmarks) {
-    add("heads", bookmark);
-  }
-  for (const std::string& tag : options.tags) add("tags", tag);
+  add("heads", options.bookmarks);
+  add("tags", options.tags);
   std::set<git_oid, OidLess> revisions;
   for (const std::string& revision : options.revisions) {
     revisions.insert(repo.resolve(revision));
@@ -1003,21 +1032,6 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
   if (options.object_hash == "sha256") {
     throw UserError("gg does not support SHA-256 repositories");
   }
-  const auto validate_names = [](const std::vector<std::string>& names,
-                                 std::string_view prefix,
-                                 std::string_view kind) {
-    for (const std::string& name : names) {
-      int valid = 0;
-      const std::string reference = std::string(prefix) + name;
-      check(git_reference_name_is_valid(&valid, reference.c_str()),
-            "validate clone selector");
-      if (valid == 0) {
-        throw UserError("invalid " + std::string(kind) + " name: " + name);
-      }
-    }
-  };
-  validate_names(options.branches, "refs/heads/", "branch");
-  validate_names(options.tags, "refs/tags/", "tag");
   std::string destination = options.destination;
   if (destination.empty()) {
     destination = std::filesystem::path(options.url).filename().string();
@@ -1031,9 +1045,6 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
   clone_options.fetch_opts.callbacks = remote_callbacks();
   clone_options.fetch_opts.depth = options.depth;
   if (options.depth != 0) clone_options.local = GIT_CLONE_NO_LOCAL;
-  if (!options.branches.empty()) {
-    clone_options.checkout_branch = options.branches.front().c_str();
-  }
   std::string remote = options.remote;
   clone_options.remote_cb = create_clone_remote;
   clone_options.remote_cb_payload = &remote;
@@ -1046,47 +1057,59 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
   try {
     Repository repo(destination);
     const std::string remote_prefix = "refs/remotes/" + options.remote + "/";
-    for (const std::string& branch : options.branches) {
-      if (!repo.ref_target(remote_prefix + branch).has_value()) {
-        throw UserError("branch not found in clone source: " + branch);
+    std::vector<std::string> available_branches;
+    std::vector<std::string> available_tags;
+    for (const auto& [reference, oid] : repo.data_refs()) {
+      (void)oid;
+      if (starts_with(reference, remote_prefix)) {
+        const std::string name = reference.substr(remote_prefix.size());
+        if (name != "HEAD") available_branches.push_back(name);
+      } else if (starts_with(reference, "refs/tags/")) {
+        available_tags.push_back(
+            reference.substr(std::string_view("refs/tags/").size()));
       }
     }
-    for (const std::string& tag : options.tags) {
-      if (!repo.ref_target("refs/tags/" + tag).has_value()) {
-        throw UserError("tag not found in clone source: " + tag);
-      }
-    }
+    const std::vector<std::string> selected_branches = matching_names(
+        options.branches, available_branches, "branch in clone source");
+    const std::vector<std::string> selected_tags =
+        matching_names(options.tags, available_tags, "tag in clone source");
     if (!options.branches.empty() || !options.tags.empty()) {
+      std::map<std::string, git_oid> updates;
+      for (const std::string& branch : selected_branches) {
+        updates.emplace("refs/heads/" + branch,
+                        *repo.ref_target(remote_prefix + branch));
+      }
       std::set<std::string> deletes;
       for (const auto& [reference, oid] : repo.data_refs()) {
         (void)oid;
         if (starts_with(reference, remote_prefix)) {
           const std::string name = reference.substr(remote_prefix.size());
           if (name == "HEAD" ||
-              std::find(options.branches.begin(), options.branches.end(), name) ==
-                  options.branches.end()) {
+              std::ranges::find(selected_branches, name) ==
+                  selected_branches.end()) {
             deletes.insert(reference);
           }
         } else if (starts_with(reference, "refs/heads/")) {
           const std::string name =
               reference.substr(std::string_view("refs/heads/").size());
-          if (std::find(options.branches.begin(), options.branches.end(), name) ==
-              options.branches.end()) {
+          if (std::ranges::find(selected_branches, name) ==
+              selected_branches.end()) {
             deletes.insert(reference);
           }
         } else {
           // Before gg initialization, the only remaining clone refs are tags.
           const std::string name =
               reference.substr(std::string_view("refs/tags/").size());
-          if (std::find(options.tags.begin(), options.tags.end(), name) ==
-              options.tags.end()) {
+          if (std::ranges::find(selected_tags, name) == selected_tags.end()) {
             deletes.insert(reference);
           }
         }
       }
-      repo.apply_refs({}, deletes, "filter clone refs");
-      if (options.branches.empty()) {
+      repo.apply_refs(updates, deletes, "filter clone refs");
+      if (selected_branches.empty()) {
         repo.set_head({true, "refs/heads/main"});
+      } else {
+        repo.set_head({true, "refs/heads/" + selected_branches.front()});
       }
     }
     std::map<std::string, git_oid> tracked_tags;

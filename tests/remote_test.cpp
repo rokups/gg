@@ -336,8 +336,8 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   ASSERT_EQ(invoke({"bookmark", "create", "second", "dry"}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "release"}).code, 0);
   const Result multi_push =
-      invoke({"push", "-b", "topic", "-b", "second", "-t", "release",
-              "--allow-private", "--allow-conflicts"});
+      invoke({"push", "-b", "glob:to*", "-b", "regex:^second$", "-t",
+              "glob:rel*", "--allow-private", "--allow-conflicts"});
   ASSERT_EQ(multi_push.code, 0) << multi_push.error;
   EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/release"));
   const Result tracked_tag = invoke({"push", "--tracked", "--dry-run"});
@@ -361,6 +361,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   ASSERT_EQ(dry_run.code, 0) << dry_run.error;
   EXPECT_NE(dry_run.output.find("Would push refs/heads/dry"),
             std::string::npos);
+  EXPECT_EQ(invoke({"push", "-b", "glob:missing*", "--dry-run"}).code, 2);
   ASSERT_EQ(git_repository_open(&bare_check, remote_path.string().c_str()), 0);
   git_oid pushed{};
   EXPECT_EQ(git_reference_name_to_id(&pushed, bare_check,
@@ -401,8 +402,8 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   EXPECT_NE(shallow.error.find("shallow fetch is not supported"),
             std::string::npos);
   const Result cloned =
-      run({"clone", "--remote", "upstream", "--branch", "topic", "-t",
-           "release", "--object-hash", "sha1", remote_path.string(),
+      run({"clone", "--remote", "upstream", "--branch", "glob:top*", "-t",
+           "regex:^rel", "--object-hash", "sha1", remote_path.string(),
            clone_path.string()});
   EXPECT_EQ(cloned.code, 0) << cloned.error;
   EXPECT_TRUE(std::filesystem::exists(clone_path / ".git"));
@@ -461,14 +462,14 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
 
   const auto missing_branch_path = clone_path.string() + "-missing-branch";
   std::filesystem::remove_all(missing_branch_path);
-  EXPECT_EQ(run({"clone", "-b", "topic", "-b", "missing",
+  EXPECT_EQ(run({"clone", "-b", "topic", "-b", "glob:missing*",
                  remote_path.string(), missing_branch_path})
                 .code,
             2);
   const auto missing_tag_path = clone_path.string() + "-missing-tag";
   std::filesystem::remove_all(missing_tag_path);
   std::filesystem::create_directories(missing_tag_path);
-  EXPECT_EQ(run({"clone", "-b", "topic", "-t", "missing",
+  EXPECT_EQ(run({"clone", "-b", "topic", "-t", "glob:missing*",
                  remote_path.string(), missing_tag_path})
                 .code,
             2);
@@ -596,6 +597,12 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   EXPECT_FALSE(has_ref("refs/tags/release"));
   remove_ref("refs/remotes/origin/one");
 
+  ASSERT_EQ(invoke({"fetch", "--remote", "glob:orig*", "-b", "glob:t*"})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref("refs/remotes/origin/two"));
+  remove_ref("refs/remotes/origin/two");
+
   ASSERT_EQ(invoke({"fetch", "--remote", "origin", "--remote", "backup",
                     "--bookmark", "one"})
                 .code,
@@ -616,8 +623,8 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   const git_oid refreshed = ref("refs/remotes/origin/one");
   EXPECT_NE(git_oid_equal(&refreshed, &target), 0);
 
-  ASSERT_EQ(invoke({"fetch", "--remote", "origin", "--tag", "release",
-                    "--tag", "stable"})
+  ASSERT_EQ(invoke({"fetch", "--remote", "origin", "--tag", "glob:re*",
+                    "--tag", "regex:^stable$"})
                 .code,
             0);
   EXPECT_TRUE(has_ref("refs/tags/release"));
@@ -662,6 +669,10 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   set_ref("refs/gg/remotes/backup/tags/phantom", target);
   ASSERT_EQ(invoke({"fetch", "--remote", "backup"}).code, 0);
   EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/phantom"));
+  EXPECT_EQ(invoke({"fetch", "--remote", "glob:missing*"}).code, 2);
+  EXPECT_EQ(invoke({"fetch", "--remote", "origin", "-b", "glob:missing*"})
+                .code,
+            2);
 
   std::filesystem::remove_all(origin_path);
   std::filesystem::remove_all(backup_path);
