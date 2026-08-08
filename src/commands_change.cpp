@@ -405,8 +405,9 @@ void command_log(Repository& repo,
   RevwalkPtr walk(raw_walk);
   git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME);
   if (!options.revision.empty()) {
-    const git_oid selected = repo.resolve(options.revision);
-    check(git_revwalk_push(walk.get(), &selected), "walk revisions");
+    for (const git_oid& selected : repo.resolve_set(options.revision)) {
+      check(git_revwalk_push(walk.get(), &selected), "walk revisions");
+    }
   } else {
     const auto workspace = repo.ref_target(kWorkspaceRef);
     if (workspace.has_value()) {
@@ -508,9 +509,9 @@ void command_metaedit(Repository& repo,
                    options.revision_options.end());
   if (revisions.empty()) revisions.emplace_back("@");
   std::set<git_oid, OidLess> selected;
-  for (const std::string& revision : revisions) {
-    selected.insert(repo.resolve(revision));
-  }
+  const std::vector<git_oid> resolved =
+      resolve_revision_arguments(repo, revisions);
+  selected.insert(resolved.begin(), resolved.end());
 
   std::optional<std::pair<std::string, std::string>> explicit_author;
   if (options.author_provided) explicit_author = parse_author(options.author);

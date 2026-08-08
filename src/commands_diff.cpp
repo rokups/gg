@@ -280,11 +280,12 @@ void command_show(Repository& repo,
   if (revisions.empty()) {
     revisions.emplace_back("@");
   }
+  std::vector<git_oid> resolved = resolve_revision_arguments(repo, revisions);
   if (options.reversed) {
-    std::reverse(revisions.begin(), revisions.end());
+    std::reverse(resolved.begin(), resolved.end());
   }
-  for (std::size_t index = 0; index < revisions.size(); ++index) {
-    const git_oid revision = repo.resolve(revisions[index]);
+  for (std::size_t index = 0; index < resolved.size(); ++index) {
+    const git_oid revision = resolved[index];
     if (index != 0) output << '\n';
     render_revision_header(repo, revision, output);
     if (!options.no_patch) {

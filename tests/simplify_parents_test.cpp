@@ -26,7 +26,8 @@ TEST_F(RepositoryTest, SimplifiesSelectedParentsAndPreservesContents) {
   const git_oid a = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "-m", "b"}).code, 0);
   const git_oid b = ref("refs/gg/workspaces/default");
-  ASSERT_EQ(invoke({"new", "-m", "c", oid_text(a), oid_text(b)})
+  ASSERT_EQ(invoke({"new", "-m", "c", oid_text(a) + " | " + oid_text(b),
+                    oid_text(a)})
                 .code,
             0);
   const git_oid c = ref("refs/gg/workspaces/default");
@@ -77,8 +78,7 @@ TEST_F(RepositoryTest, DefaultsToReachableParentsAndHandlesNoChanges) {
   ASSERT_EQ(invoke({"new", "-m", "c", oid_text(a), oid_text(b)}).code, 0);
   EXPECT_EQ(invoke({"simplify-parents"}).output,
             "Removed 1 edges from 1 out of 4 commits.\n");
-  EXPECT_EQ(invoke({"simplify-parents", "--revisions", "@",
-                    "--revision", "@-"})
+  EXPECT_EQ(invoke({"simplify-parents", "--revisions", "@ | @-"})
                 .output,
             "Nothing changed.\n");
   EXPECT_EQ(invoke({"simplify-parents"}).output, "Nothing changed.\n");

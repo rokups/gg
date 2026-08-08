@@ -84,9 +84,10 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
       invoke({"bookmark", "list", "beta", "-r", "alpha"});
   EXPECT_NE(unioned.output.find("alpha:"), std::string::npos);
   EXPECT_NE(unioned.output.find("beta:"), std::string::npos);
-  EXPECT_EQ(invoke({"bookmark", "list", "-r", "alpha", "-r", "beta"})
-                .code,
-            0);
+  const Result revision_set =
+      invoke({"bookmark", "list", "-r", "alpha | beta"});
+  EXPECT_NE(revision_set.output.find("alpha:"), std::string::npos);
+  EXPECT_NE(revision_set.output.find("beta:"), std::string::npos);
 
   const Result all = invoke({"bookmark", "list", "--all-remotes"});
   EXPECT_NE(all.output.find("alpha@origin:"), std::string::npos);
@@ -243,7 +244,7 @@ TEST_F(RepositoryTest, MovesBookmarksByNameAndSourceRevision) {
             0);
   EXPECT_TRUE(points_to("refs/heads/one", first));
 
-  ASSERT_EQ(invoke({"bookmark", "move", "--from", "one", "--from", "two",
+  ASSERT_EQ(invoke({"bookmark", "move", "--from", "one | two",
                     "--to", "main", "-B"})
                 .code,
             0);
@@ -344,8 +345,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   ASSERT_EQ(invoke({"push", "--named", "named=@"}).code, 0);
   EXPECT_TRUE(has_ref("refs/heads/named"));
   EXPECT_TRUE(has_ref("refs/remotes/origin/named"));
-  ASSERT_EQ(invoke({"push", "--change", "main"}).code, 0);
-  ASSERT_EQ(invoke({"push", "--change", "@"}).code, 0);
+  ASSERT_EQ(invoke({"push", "--change", "main | @"}).code, 0);
   const git_oid raw_push = raw_commit("raw push", {ref("refs/heads/main")});
   ASSERT_EQ(invoke({"push", "--change", git_oid_tostr_s(&raw_push)}).code, 0);
   git_reference_iterator* generated_iterator = nullptr;

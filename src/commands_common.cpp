@@ -114,12 +114,19 @@ bool any_string_pattern_matches(const std::vector<std::string>& patterns,
 
 std::vector<git_oid> commit_parents(Repository& repo,
                                     const std::vector<std::string>& revisions) {
-  std::vector<git_oid> parents;
-  parents.reserve(revisions.size());
+  return resolve_revision_arguments(repo, revisions);
+}
+
+std::vector<git_oid> resolve_revision_arguments(
+    Repository& repo, const std::vector<std::string>& revisions) {
+  std::vector<git_oid> result;
+  std::set<git_oid, OidLess> seen;
   for (const std::string& revision : revisions) {
-    parents.push_back(repo.resolve(revision));
+    for (const git_oid& oid : repo.resolve_set(revision)) {
+      if (seen.insert(oid).second) result.push_back(oid);
+    }
   }
-  return parents;
+  return result;
 }
 
 git_oid combined_tree(Repository& repo, const std::vector<git_oid>& parents) {

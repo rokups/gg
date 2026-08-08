@@ -115,9 +115,9 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   EXPECT_NE(colored.output.find("<<change_id::"), std::string::npos);
   EXPECT_NE(colored.output.find("<<bookmark::main>>"), std::string::npos);
 
-  const Result ordered = invoke({"show", "main", "@", "--no-patch"});
+  const Result ordered = invoke({"show", "main | @", "--no-patch"});
   const Result reversed =
-      invoke({"show", "main", "@", "--reversed", "--no-patch"});
+      invoke({"show", "main | @", "--reversed", "--no-patch"});
   EXPECT_NE(ordered.output, reversed.output);
   EXPECT_EQ(invoke({"show", "-r", "main", "-r", "@", "--no-patch"}).code,
             0);

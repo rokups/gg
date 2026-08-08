@@ -35,6 +35,8 @@ enum class OutputStyle {
 void set_output_color_mode(std::ostream&, OutputColorMode);
 std::string styled(std::ostream&, std::string_view, OutputStyle);
 
+std::vector<git_oid> resolve_revision_arguments(
+    Repository& repo, const std::vector<std::string>& revisions);
 std::vector<git_oid> commit_parents(
     Repository& repo, const std::vector<std::string>& revisions);
 git_oid combined_tree(Repository& repo, const std::vector<git_oid>& parents);

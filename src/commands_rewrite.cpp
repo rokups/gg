@@ -270,12 +270,12 @@ void command_simplify_parents(Repository& repo,
 
   std::set<git_oid, OidLess> sources;
   std::set<git_oid, OidLess> revisions;
-  for (const std::string& source : options.sources) {
-    sources.insert(repo.resolve(source));
-  }
-  for (const std::string& revision : options.revisions) {
-    revisions.insert(repo.resolve(revision));
-  }
+  const std::vector<git_oid> resolved_sources =
+      resolve_revision_arguments(repo, options.sources);
+  sources.insert(resolved_sources.begin(), resolved_sources.end());
+  const std::vector<git_oid> resolved_revisions =
+      resolve_revision_arguments(repo, options.revisions);
+  revisions.insert(resolved_revisions.begin(), resolved_revisions.end());
   if (sources.empty() && revisions.empty()) {
     std::vector<git_oid> pending{*workspace};
     while (!pending.empty()) {

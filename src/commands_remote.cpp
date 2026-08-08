@@ -320,9 +320,9 @@ void command_bookmark(Repository& repo,
     }
 
     std::set<git_oid, OidLess> revisions;
-    for (const std::string& revision : options.revisions) {
-      revisions.insert(repo.resolve(revision));
-    }
+    const std::vector<git_oid> resolved =
+        resolve_revision_arguments(repo, options.revisions);
+    revisions.insert(resolved.begin(), resolved.end());
     std::vector<RefListItem> items;
     for (const auto& [reference, oid] : repo.data_refs()) {
       constexpr std::string_view local_prefix = "refs/heads/";
@@ -466,9 +466,9 @@ void command_bookmark(Repository& repo,
     const git_oid target =
         repo.resolve(options.revision.empty() ? "@" : options.revision);
     std::set<git_oid, OidLess> sources;
-    for (const std::string& revision : options.from) {
-      sources.insert(repo.resolve(revision));
-    }
+    const std::vector<git_oid> resolved_sources =
+        resolve_revision_arguments(repo, options.from);
+    sources.insert(resolved_sources.begin(), resolved_sources.end());
     std::vector<std::pair<std::string, git_oid>> matches;
     for (const auto& [reference, oid] : repo.data_refs()) {
       constexpr std::string_view prefix = "refs/heads/";
@@ -598,9 +598,9 @@ void command_tag(Repository& repo,
       throw UserError("tag templates are not supported yet");
     }
     std::set<git_oid, OidLess> revisions;
-    for (const std::string& revision : options.revisions) {
-      revisions.insert(repo.resolve(revision));
-    }
+    const std::vector<git_oid> resolved =
+        resolve_revision_arguments(repo, options.revisions);
+    revisions.insert(resolved.begin(), resolved.end());
     std::vector<RefListItem> items;
     for (const auto& [reference, ref_oid] : repo.data_refs()) {
       (void)ref_oid;
@@ -989,9 +989,9 @@ void command_push(Repository& repo,
   add("heads", options.bookmarks);
   add("tags", options.tags);
   std::set<git_oid, OidLess> revisions;
-  for (const std::string& revision : options.revisions) {
-    revisions.insert(repo.resolve(revision));
-  }
+  const std::vector<git_oid> resolved_revisions =
+      resolve_revision_arguments(repo, options.revisions);
+  revisions.insert(resolved_revisions.begin(), resolved_revisions.end());
   for (const auto& [reference, oid] : refs) {
     (void)oid;
     if ((starts_with(reference, "refs/heads/") ||
@@ -1013,8 +1013,8 @@ void command_push(Repository& repo,
     updates.emplace(reference, oid_string(target));
     local_updates.emplace(reference, target);
   };
-  for (const std::string& revision : options.changes) {
-    const git_oid target = repo.resolve(revision);
+  for (const git_oid& target :
+       resolve_revision_arguments(repo, options.changes)) {
     std::optional<std::string> id = repo.change_id(target);
     if (!id.has_value()) {
       id = repo.new_change_id();

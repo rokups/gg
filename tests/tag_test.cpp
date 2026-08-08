@@ -31,7 +31,9 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
   EXPECT_NE(unioned.output.find("base: "), std::string::npos);
   EXPECT_NE(unioned.output.find("stable: "), std::string::npos);
   EXPECT_NE(unioned.output.find("v1: "), std::string::npos);
-  EXPECT_EQ(invoke({"tag", "list", "-r", "main", "-r", "@"}).code, 0);
+  const Result revision_set = invoke({"tag", "list", "-r", "main | @"});
+  EXPECT_NE(revision_set.output.find("base: "), std::string::npos);
+  EXPECT_NE(revision_set.output.find("v1: "), std::string::npos);
 
   const Result descending = invoke({"tag", "list", "--sort", "name-"});
   EXPECT_LT(descending.output.find("v1: "),

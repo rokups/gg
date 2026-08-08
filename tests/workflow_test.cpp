@@ -165,6 +165,10 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
                limited.output.starts_with("*  "));
   EXPECT_EQ(invoke({"log", "-r", "@", "--limit", "2", "--count"}).output,
             "2\n");
+  const Result revset_log =
+      invoke({"log", "-r", "@ | @-", "--no-graph"});
+  EXPECT_NE(revset_log.output.find("third"), std::string::npos);
+  EXPECT_NE(revset_log.output.find("second"), std::string::npos);
   EXPECT_EQ(invoke({"log", "--limit", "0"}).output, "");
 
   const Result colored =

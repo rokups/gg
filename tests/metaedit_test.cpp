@@ -66,7 +66,7 @@ TEST_F(RepositoryTest, EditsMetadataAndRestacksDescendants) {
   EXPECT_NE(invoke({"metaedit", "topic"}).output.find("Nothing changed."),
             std::string::npos);
 
-  ASSERT_EQ(invoke({"metaedit", "topic", "@", "-m", "bulk"}).code, 0);
+  ASSERT_EQ(invoke({"metaedit", "topic | @", "-m", "bulk"}).code, 0);
   EXPECT_EQ(std::string(git_commit_message(lookup(repo, "topic").get())),
             "bulk");
   EXPECT_EQ(std::string(git_commit_message(lookup(repo, "@").get())),
