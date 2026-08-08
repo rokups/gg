@@ -143,6 +143,37 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   util->require_subcommand(1);
   auto* util_snapshot =
       util->add_subcommand("snapshot", "Snapshot the working copy");
+  MovementCommand next_value;
+  auto* next = app.add_subcommand("next", "Move to a child revision");
+  CLI::Option* next_offset =
+      next->add_option("offset", next_value.offset, "Number of revisions")
+          ->default_val(1)
+          ->check(CLI::PositiveNumber);
+  CLI::Option* next_edit =
+      next->add_flag("-e,--edit", next_value.edit, "Edit the target revision");
+  CLI::Option* next_no_edit = next->add_flag(
+      "-n,--no-edit", next_value.no_edit, "Create a new working-copy revision");
+  next_edit->excludes(next_no_edit);
+  next->add_flag("--conflict", next_value.conflict,
+                 "Jump to the next conflicted descendant")
+      ->excludes(next_offset);
+  MovementCommand previous_value;
+  previous_value.direction = MovementDirection::previous;
+  auto* previous = app.add_subcommand("prev", "Move to an ancestor revision");
+  CLI::Option* previous_offset =
+      previous
+          ->add_option("offset", previous_value.offset, "Number of revisions")
+          ->default_val(1)
+          ->check(CLI::PositiveNumber);
+  CLI::Option* previous_edit = previous->add_flag(
+      "-e,--edit", previous_value.edit, "Edit the target revision");
+  CLI::Option* previous_no_edit = previous->add_flag(
+      "-n,--no-edit", previous_value.no_edit,
+      "Create a new working-copy revision");
+  previous_edit->excludes(previous_no_edit);
+  previous->add_flag("--conflict", previous_value.conflict,
+                     "Jump to the previous conflicted ancestor")
+      ->excludes(previous_offset);
   std::vector<std::string> help_commands;
   auto* help = app.add_subcommand("help", "Print help");
   help->add_option("commands", help_commands, "Command path");
@@ -249,6 +280,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(operation_restore_value)};
   } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UtilSnapshotCommand{}};
+  } else if (next->parsed()) {
+    command = RepositoryCommand{next_value};
+  } else if (previous->parsed()) {  // GG_COV_EXCL_BRANCH
+    command = RepositoryCommand{previous_value};
   }
 
   Invocation invocation{repository, std::move(command), {}};

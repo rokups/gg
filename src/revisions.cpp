@@ -128,4 +128,24 @@ std::vector<std::string> Repository::bookmarks(const git_oid& oid) const {
   return result;
 }
 
+std::vector<git_oid> Repository::children(const git_oid& oid) const {
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo_.get()), "walk revisions");
+  RevwalkPtr walk(raw_walk);
+  for (const auto& [name, target] : rewrite_refs()) {
+    (void)name;
+    check(git_revwalk_push(walk.get(), &target), "walk revisions");
+  }
+  std::set<git_oid, OidLess> result;
+  git_oid candidate{};
+  while (git_revwalk_next(&candidate, walk.get()) == 0) {
+    for (const git_oid& parent : parents(candidate)) {
+      if (parent == oid) {
+        result.insert(candidate);
+      }
+    }
+  }
+  return {result.begin(), result.end()};
+}
+
 }  // namespace gg::detail

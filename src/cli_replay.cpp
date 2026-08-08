@@ -124,6 +124,23 @@ std::vector<std::string> repository_replay_arguments(
           },
           [](const UtilSnapshotCommand&) {
             return std::vector<std::string>{"util", "snapshot"};
+          },
+          [](const MovementCommand& value) {
+            std::vector<std::string> result{
+                value.direction == MovementDirection::next ? "next" : "prev"};
+            if (value.offset != 1) {
+              result.push_back(std::to_string(value.offset));
+            }
+            if (value.edit) {
+              result.emplace_back("--edit");
+            }
+            if (value.no_edit) {
+              result.emplace_back("--no-edit");
+            }
+            if (value.conflict) {
+              result.emplace_back("--conflict");
+            }
+            return result;
           }},
       command);
 }

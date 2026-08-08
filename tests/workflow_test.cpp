@@ -46,6 +46,68 @@ TEST_F(RepositoryTest, ExplicitlySnapshotsTheWorkingCopy) {
   EXPECT_NE(invoke({"status"}).output.find("M tracked.txt"), std::string::npos);
 }
 
+TEST_F(RepositoryTest, NavigatesRevisionStacks) {
+  const Result first_result = invoke({"new", "-m", "first", "main"});
+  ASSERT_EQ(first_result.code, 0) << first_result.error;
+  const git_oid first = ref("refs/gg/workspaces/default");
+  const Result second_result = invoke({"new", "-m", "second"});
+  ASSERT_EQ(second_result.code, 0) << second_result.error;
+  const git_oid second = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
+
+  ASSERT_EQ(invoke({"prev", "--no-edit"}).code, 0);
+  git_oid workspace = ref("refs/gg/workspaces/default");
+  git_oid parent = commit_parent(workspace);
+  EXPECT_NE(git_oid_equal(&parent, &first), 0);
+
+  ASSERT_EQ(invoke({"next", "--no-edit"}).code, 0);
+  workspace = ref("refs/gg/workspaces/default");
+  parent = commit_parent(workspace);
+  EXPECT_NE(git_oid_equal(&parent, &second), 0);
+  EXPECT_EQ(invoke({"next", "--conflict"}).code, 2);
+}
+
+TEST_F(RepositoryTest, EditsAndValidatesNavigationTargets) {
+  const Result first_result = invoke({"new", "-m", "first", "main"});
+  ASSERT_EQ(first_result.code, 0) << first_result.error;
+  const std::string first_id =
+      token_after(first_result.output, "Working copy now at: ");
+  const git_oid first = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  const git_oid second = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
+  const git_oid third = ref("refs/gg/workspaces/default");
+
+  ASSERT_EQ(invoke({"prev", "--edit"}).code, 0);
+  git_oid workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&workspace, &second), 0);
+  ASSERT_EQ(invoke({"next", "--edit"}).code, 0);
+  workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&workspace, &third), 0);
+  ASSERT_EQ(invoke({"prev", "--edit", "2"}).code, 0);
+  workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&workspace, &first), 0);
+  EXPECT_EQ(invoke({"prev", "--no-edit"}).code, 2);
+
+  ASSERT_EQ(invoke({"new", "-m", "side", first_id}).code, 0);
+  ASSERT_EQ(invoke({"edit", first_id}).code, 0);
+  EXPECT_EQ(invoke({"next", "--edit"}).code, 2);
+  EXPECT_EQ(invoke({"prev", "--edit", "99"}).code, 2);
+}
+
+TEST_F(RepositoryTest, NavigationAssignsChangeIdsToRawGitCommits) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  const git_oid child = raw_commit("raw child", {workspace});
+  set_ref("refs/heads/raw-child", child);
+
+  const Result moved = invoke({"next", "--edit"});
+  ASSERT_EQ(moved.code, 0) << moved.error;
+  const git_oid actual = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&actual, &child), 0);
+  EXPECT_FALSE(current_id().empty());
+}
+
 TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
   const Result first = invoke({"new", "-m", "first", "main"});
   ASSERT_EQ(first.code, 0) << first.error;

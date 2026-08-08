@@ -35,6 +35,8 @@ gg redo
 gg operation log
 gg operation restore [--what repo|remote-tracking] OPERATION
 gg util snapshot
+gg next [--edit|--no-edit] [OFFSET]
+gg prev [--edit|--no-edit] [OFFSET]
 ```
 
 Revisions use JJ names: `@`, `@-`, stable change-ID prefixes, bookmarks, or

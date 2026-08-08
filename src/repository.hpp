@@ -155,6 +155,8 @@ class Repository {
 
   std::vector<git_oid> parents(const git_oid& oid) const;
 
+  std::vector<git_oid> children(const git_oid& oid) const;
+
   RewritePlan descendants(
         std::map<git_oid, git_oid, OidLess> roots,
         const std::set<git_oid, OidLess>& skipped = {}) const;

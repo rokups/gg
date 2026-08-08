@@ -161,6 +161,18 @@ class RepositoryTest : public testing::Test {
     return result;
   }
 
+  git_oid commit_parent(const git_oid& oid, unsigned int index = 0) {
+    git_commit* value = nullptr;
+    if (git_commit_lookup(&value, repository_.get(), &oid) != 0 ||
+        git_commit_parentcount(value) <= index) {
+      git_commit_free(value);
+      throw std::runtime_error("commit parent not found");
+    }
+    const git_oid result = *git_commit_parent_id(value, index);
+    git_commit_free(value);
+    return result;
+  }
+
   std::string token_after(std::string_view output, std::string_view prefix) {
     const std::size_t start = output.find(prefix);
     if (start == std::string_view::npos) {

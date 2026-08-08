@@ -41,6 +41,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"log", "extra"}).code, 2);
   EXPECT_EQ(invoke({"edit"}).code, 2);
   EXPECT_EQ(invoke({"edit", "main", "-r", "main"}).code, 2);
+  EXPECT_EQ(invoke({"next"}).code, 2);
   EXPECT_EQ(invoke({"describe"}).code, 2);
   EXPECT_EQ(invoke({"describe", "-m", ""}).code, 2);
   EXPECT_EQ(invoke({"describe", "-m", "x", "main", "other"}).code, 2);
@@ -91,6 +92,10 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"operation", "restore", "@", "extra"}).code, 2);
   EXPECT_EQ(invoke({"util"}).code, 2);
   EXPECT_EQ(invoke({"util", "snapshot", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"next", "0"}).code, 2);
+  EXPECT_EQ(invoke({"prev", "word"}).code, 2);
+  EXPECT_EQ(invoke({"next", "--edit", "--no-edit"}).code, 2);
+  EXPECT_EQ(invoke({"prev", "--conflict", "2"}).code, 2);
   EXPECT_EQ(invoke({"unknown"}).code, 2);
   EXPECT_EQ(invoke({"continue"}).code, 2);
   EXPECT_EQ(invoke({"abort"}).code, 2);

@@ -80,6 +80,9 @@ int execute(Repository& repository,
             },
             [&](const UtilSnapshotCommand&) {
               command_util_snapshot(repository, output);
+            },
+            [&](const MovementCommand& value) {
+              command_move(repository, value, output);
             }},
         command);
     return 0;

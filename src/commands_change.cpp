@@ -6,6 +6,7 @@
 
 #include <git2.h>
 
+#include <set>
 #include <utility>
 
 namespace gg::detail {
@@ -165,6 +166,77 @@ void command_describe(Repository& repo,
       plan.commits.contains(*workspace) ? plan.commits.at(*workspace) : *workspace;
   finish_workspace(repo, new_workspace, std::move(plan.updates), {}, "gg describe");
   output << "Rewrote change as " << oid_string(rewritten, 8) << '\n';
+}
+
+void command_move(Repository& repo,
+                  const MovementCommand& options,
+                  std::ostream& output) {
+  repo.sync_workspace();
+  const auto workspace = repo.ref_target(kWorkspaceRef);
+  if (!workspace.has_value()) {
+    throw UserError("this command requires a working-copy change");
+  }
+  if (options.conflict) {
+    throw UserError("gg has no first-class conflicted revisions");
+  }
+  if (!options.edit && !repo.children(*workspace).empty()) {
+    throw UserError(
+        "the working-copy change has children; create a new change or use --edit");
+  }
+
+  std::set<git_oid, OidLess> frontier;
+  if (options.edit) {
+    frontier.insert(*workspace);
+  } else {
+    const auto parents = repo.parents(*workspace);
+    frontier.insert(parents.begin(), parents.end());
+  }
+  for (std::uint64_t step = 0; step < options.offset; ++step) {
+    std::set<git_oid, OidLess> next;
+    for (const git_oid& oid : frontier) {
+      const auto candidates =
+          options.direction == MovementDirection::next ? repo.children(oid)
+                                                       : repo.parents(oid);
+      for (const git_oid& candidate : candidates) {
+        if (!(options.direction == MovementDirection::next && !options.edit &&  // GG_COV_EXCL_BRANCH
+              step == 0 && candidate == *workspace)) {
+          next.insert(candidate);
+        }
+      }
+    }
+    frontier = std::move(next);
+  }
+  const std::string direction =
+      options.direction == MovementDirection::next ? "next" : "previous";
+  if (frontier.empty()) {
+    throw UserError("no " + direction + " revision found");
+  }
+  if (frontier.size() != 1) {
+    throw UserError("ambiguous " + direction + " revision");
+  }
+  const git_oid target = *frontier.begin();
+
+  std::map<std::string, git_oid> updates;
+  git_oid destination = target;
+  std::string id;
+  if (options.edit) {
+    const auto existing = repo.change_id(target);
+    id = existing.value_or(repo.new_change_id());
+    if (!existing.has_value()) {
+      updates[std::string(kChangePrefix) + id] = target;
+    }
+  } else {
+    id = repo.new_change_id();
+    CommitPtr target_commit = repo.commit(target);
+    destination = repo.create_commit(*git_commit_tree_id(target_commit.get()),
+                                     {target}, "");
+    updates[std::string(kChangePrefix) + id] = destination;
+  }
+  finish_workspace(repo, destination, std::move(updates), {},
+                   options.direction == MovementDirection::next ? "gg next"
+                                                                : "gg prev");
+  output << "Working copy now at: " << repo.short_change_id(id) << ' '
+         << oid_string(destination, 8) << '\n';
 }
 
 }  // namespace gg::detail

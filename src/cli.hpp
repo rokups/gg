@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <iosfwd>
 #include <span>
@@ -77,13 +78,22 @@ struct OperationRestoreCommand {
 };
 struct UtilSnapshotCommand {};
 
+enum class MovementDirection { next, previous };
+struct MovementCommand {
+  MovementDirection direction{MovementDirection::next};
+  std::uint64_t offset{1};
+  bool edit{false};
+  bool no_edit{false};
+  bool conflict{false};
+};
+
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
                  AbandonCommand, BookmarkCommand, GitFetchCommand,
                  GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
-                 UtilSnapshotCommand>;
+                 UtilSnapshotCommand, MovementCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand,
                              ContinueCommand, AbortCommand>;
 
