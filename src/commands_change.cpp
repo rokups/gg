@@ -516,9 +516,6 @@ void command_log(Repository& repo,
                  const LogCommand& options,
                  std::ostream& output) {
   repo.sync_workspace();
-  if (!options.template_value.empty()) {
-    throw UserError("log templates are not supported yet");
-  }
   git_revwalk* raw_walk = nullptr;
   check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
   RevwalkPtr walk(raw_walk);
@@ -603,23 +600,30 @@ void command_log(Repository& repo,
                            : "*";
       output << graph_prefix(graph_lanes, oid, graph_successors[oid], marker);
     }
-    const bool working = workspace.has_value() && *workspace == oid;
-    output << styled(output,
-                     id.has_value() ? repo.short_change_id(*id)
-                                    : oid_string(oid, 8),
-                     working ? OutputStyle::working_change_id
-                             : id.has_value() ? OutputStyle::change_id
-                                              : OutputStyle::commit_id)
-           << ' '
-           << styled(output, oid_string(oid, 8),
-                     working ? OutputStyle::working_commit_id
-                             : OutputStyle::commit_id);
-    for (const std::string& bookmark : bookmarks) {
-      output << " " << styled(output, bookmark, OutputStyle::bookmark);
+    if (!options.template_value.empty()) {
+      output << render_template(options.template_value,
+                                revision_template_values(repo, oid));
+    } else {
+      const bool working = workspace.has_value() && *workspace == oid;
+      output << styled(output,
+                       id.has_value() ? repo.short_change_id(*id)
+                                      : oid_string(oid, 8),
+                       working ? OutputStyle::working_change_id
+                               : id.has_value() ? OutputStyle::change_id
+                                                : OutputStyle::commit_id)
+             << ' '
+             << styled(output, oid_string(oid, 8),
+                       working ? OutputStyle::working_commit_id
+                               : OutputStyle::commit_id);
+      for (const std::string& bookmark : bookmarks) {
+        output << " " << styled(output, bookmark, OutputStyle::bookmark);
+      }
+      const std::string description =
+          first_line(git_commit_message(value.get()));
+      output << " "
+             << (description.empty() ? "(no description set)" : description)
+             << '\n';
     }
-    const std::string description = first_line(git_commit_message(value.get()));
-    output << " " << (description.empty() ? "(no description set)" : description)
-           << '\n';
     if (show_diff) {
       render_revision_diff(repo, oid, options.paths, options.format, output);
     }

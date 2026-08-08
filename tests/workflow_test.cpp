@@ -246,7 +246,22 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   EXPECT_NE(formatted.output.find("second.txt"), std::string::npos);
   EXPECT_NE(formatted.output.find("diff --git"), std::string::npos);
   EXPECT_EQ(invoke({"log", "--patch", "--tool", "meld"}).code, 2);
-  EXPECT_EQ(invoke({"log", "-T", "description"}).code, 2);
+  const Result templated = invoke(
+      {"log", "-r", second_id, "-n", "1", "--no-graph", "-T",
+       "change_id.short() ++ \" \" ++ commit_id.short(12) ++ \" \" ++ "
+       "description.first_line() ++ \" \" ++ author.name ++ \" \" ++ "
+       "author.email ++ \" \" ++ committer.name ++ \" \" ++ "
+       "committer.email ++ \" \" ++ bookmarks ++ \" \" ++ working_copy ++ "
+       "\"\\n\""});
+  ASSERT_EQ(templated.code, 0) << templated.error;
+  EXPECT_TRUE(templated.output.starts_with(second_id.substr(0, 8) + " "));
+  EXPECT_NE(templated.output.find(" second GG Test gg@example.test GG Test "
+                                  "gg@example.test  false\n"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"log", "-r", "@", "-n", "1", "--no-graph", "-T",
+                    "self.subject ++ \" \" ++ working_copy ++ \"\\n\""})
+                .output,
+            "third true\n");
   EXPECT_EQ(invoke({"log", "--limit", "word"}).code, 2);
 }
 

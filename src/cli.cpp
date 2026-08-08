@@ -42,8 +42,9 @@ const std::map<std::string, std::string_view> kHelpKeywords{
      "prefixes, bookmarks, and Git revision expressions. Set-valued revsets are "
      "not yet supported.\n"},
     {"templates",
-     "# Templates\n\nJujutsu-style output templates are not yet implemented. Commands "
-     "that expose `--template` report that limitation explicitly.\n"},
+     "# Templates\n\nTemplates support Jujutsu-shaped `++` concatenation, quoted "
+     "string literals, command-specific keywords, and the string methods "
+     "`.short([length])` and `.first_line()`.\n"},
     {"tutorial",
      "# Tutorial\n\nRun `gg new` to start a working change, edit files, inspect them "
      "with `gg status` and `gg diff`, then use `gg commit` or bookmarks to "

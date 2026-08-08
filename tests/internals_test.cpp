@@ -12,9 +12,56 @@
 
 namespace gg::test {
 
+TEST(TemplateTest, RendersSharedTemplateExpressions) {
+  const std::map<std::string, std::string> values{
+      {"commit_id", "abcdefghijklmnop"},
+      {"description", "first line\nsecond line"},
+      {"empty", ""},
+  };
+  EXPECT_EQ(detail::render_template(
+                "description.first_line() ++ \"\\n\" ++ "
+                "commit_id.short() ++ ':' ++ self.commit_id.short(3)",
+                values),
+            "first line\nabcdefgh:abc");
+  EXPECT_EQ(detail::render_template(
+                "'\\n\\r\\t\\\\\\\'\\\"' ++ empty ++ commit_id.short(0)",
+                values),
+            "\n\r\t\\'\"");
+  EXPECT_EQ(detail::render_template("'a\"b++c'", values), "a\"b++c");
+  EXPECT_EQ(detail::render_template("commit_id.short(100)", values),
+            "abcdefghijklmnop");
+
+  EXPECT_THROW(detail::render_template("", values), detail::UserError);
+  EXPECT_THROW(detail::render_template("commit_id ++", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("unknown", values), detail::UserError);
+  EXPECT_THROW(detail::render_template("'unterminated", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("'bad\\q'", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("'value' suffix", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("commit_id.short(word)", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("commit_id.short(3x)", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("commit_id.short(", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("commit_id +", values),
+               detail::UserError);
+  EXPECT_THROW(detail::render_template("+commit_id", values),
+               detail::UserError);
+  EXPECT_THROW(
+      detail::render_template("commit_id.short(999999999999999999999999999)",
+                              values),
+      detail::UserError);
+}
+
 TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
+  EXPECT_EQ(detail::revision_template_values(repo, base).at("working_copy"),
+            "false");
   EXPECT_EQ(detail::oid_string(base, 100).size(), GIT_OID_SHA1_HEXSIZE);
   EXPECT_TRUE(detail::first_line(nullptr).empty());
   EXPECT_EQ(detail::first_line("one\ntwo"), "one");

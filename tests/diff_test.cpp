@@ -148,6 +148,19 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   const Result reversed =
       invoke({"show", "main | @", "--reversed", "--no-patch"});
   EXPECT_NE(ordered.output, reversed.output);
+  const std::size_t main_id_offset = plain.output.find("Commit ID: ") + 11;
+  const std::string main_oid = plain.output.substr(main_id_offset, 40);
+  git_oid main{};
+  ASSERT_EQ(git_oid_fromstr(&main, main_oid.c_str()), 0);
+  set_ref("refs/heads/also", main);
+  EXPECT_EQ(invoke({"show", "main", "--no-patch", "-T",
+                    "commit_id.short(12) ++ \" \" ++ bookmarks ++ \"\\n\""})
+                .output,
+            main_oid.substr(0, 12) + " also main\n");
+  const Result templated_set =
+      invoke({"show", "main | @", "--no-patch", "-T",
+              "description.first_line() ++ \"\\n\""});
+  EXPECT_EQ(templated_set.output, "base\nwork\n");
   EXPECT_EQ(invoke({"show", "-r", "main", "-r", "@", "--no-patch"}).code,
             0);
   EXPECT_NE(invoke({"show", "--summary"}).output.find("M tracked.txt"),
@@ -166,7 +179,7 @@ TEST_F(RepositoryTest, ValidatesDiffAndShowRequests) {
   EXPECT_EQ(invoke({"diff", "../outside"}).code, 2);
   EXPECT_EQ(invoke({"diff", "-T", "path"}).code, 2);
   EXPECT_EQ(invoke({"diff", "--tool", "meld"}).code, 2);
-  EXPECT_EQ(invoke({"show", "-T", "description"}).code, 2);
+  EXPECT_EQ(invoke({"show", "-T", "unknown", "--no-patch"}).code, 2);
   EXPECT_EQ(invoke({"show", "--no-patch", "--summary"}).code, 2);
 
   const git_oid untracked = raw_commit("untracked");

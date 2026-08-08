@@ -6,6 +6,7 @@
 #include "cli.hpp"
 #include "repository.hpp"
 
+#include <map>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -34,6 +35,11 @@ enum class OutputStyle {
 
 void set_output_color_mode(std::ostream&, OutputColorMode);
 std::string styled(std::ostream&, std::string_view, OutputStyle);
+std::string render_template(
+    std::string_view expression,
+    const std::map<std::string, std::string>& values);
+std::map<std::string, std::string> revision_template_values(
+    Repository&, const git_oid&);
 
 std::vector<git_oid> resolve_revision_arguments(
     Repository& repo, const std::vector<std::string>& revisions);

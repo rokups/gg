@@ -364,9 +364,6 @@ void command_show(Repository& repo,
                   const ShowCommand& options,
                   std::ostream& output) {
   repo.sync_workspace();
-  if (!options.template_value.empty()) {
-    throw UserError("show templates are not supported yet");
-  }
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());
@@ -379,8 +376,13 @@ void command_show(Repository& repo,
   }
   for (std::size_t index = 0; index < resolved.size(); ++index) {
     const git_oid revision = resolved[index];
-    if (index != 0) output << '\n';
-    render_revision_header(repo, revision, output);
+    if (options.template_value.empty()) {
+      if (index != 0) output << '\n';
+      render_revision_header(repo, revision, output);
+    } else {
+      output << render_template(options.template_value,
+                                revision_template_values(repo, revision));
+    }
     if (!options.no_patch) {
       render_revision_diff(repo, revision, {}, options.format, output);
     }

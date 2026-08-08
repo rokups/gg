@@ -12,11 +12,13 @@
 #include <unistd.h>
 
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <fnmatch.h>
 #include <fstream>
 #include <iterator>
 #include <regex>
+#include <sstream>
 #include <utility>
 
 extern char** environ;
@@ -47,12 +49,167 @@ constexpr std::array<StyleSpec, 15> kStyles{{
     {"\x1b[38;5;6m", "hunk"},
 }};
 
+std::string_view trim_template(std::string_view value) {
+  const std::size_t begin = value.find_first_not_of(" \t\r\n");
+  if (begin == std::string_view::npos) return {};
+  return value.substr(begin, value.find_last_not_of(" \t\r\n") - begin + 1);
+}
+
+std::vector<std::string_view> template_atoms(std::string_view expression) {
+  std::vector<std::string_view> atoms;
+  std::size_t begin = 0;
+  char quote = '\0';
+  bool escaped = false;
+  for (std::size_t index = 0; index < expression.size(); ++index) {
+    const char character = expression[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote != '\0' && character == '\\') {
+      escaped = true;
+    } else if (character == '\'' || character == '"') {
+      if (quote == character) {
+        quote = '\0';
+      } else if (quote == '\0') {
+        quote = character;
+      }
+    } else if (quote == '\0' && character == '+' &&
+               index + 1 < expression.size() && expression[index + 1] == '+') {
+      atoms.push_back(trim_template(expression.substr(begin, index - begin)));
+      begin = index + 2;
+      ++index;
+    }
+  }
+  if (quote != '\0') throw UserError("unterminated template string");
+  atoms.push_back(trim_template(expression.substr(begin)));
+  return atoms;
+}
+
+std::string template_literal(std::string_view atom) {
+  if (atom.back() != atom.front()) {
+    throw UserError("invalid template string literal");
+  }
+  std::string result;
+  for (std::size_t index = 1; index + 1 < atom.size(); ++index) {
+    if (atom[index] != '\\') {
+      result += atom[index];
+      continue;
+    }
+    ++index;
+    switch (atom[index]) {
+      case 'n':
+        result += '\n';
+        break;
+      case 'r':
+        result += '\r';
+        break;
+      case 't':
+        result += '\t';
+        break;
+      case '\\':
+        result += '\\';
+        break;
+      case '\'':
+        result += '\'';
+        break;
+      case '"':
+        result += '"';
+        break;
+      default:
+        throw UserError("invalid template escape");
+    }
+  }
+  return result;
+}
+
+std::string template_keyword(
+    std::string_view atom,
+    const std::map<std::string, std::string>& values) {
+  std::string_view name = atom;
+  enum class Method { none, shorten, first_line };
+  Method method = Method::none;
+  std::size_t short_length = 8;
+  if (atom.ends_with(".first_line()")) {
+    name = atom.substr(0, atom.size() - std::string_view(".first_line()").size());
+    method = Method::first_line;
+  } else if (const std::size_t short_method = atom.find(".short(");
+             short_method != std::string_view::npos && atom.back() == ')') {
+    name = atom.substr(0, short_method);
+    const std::string_view argument = atom.substr(
+        short_method + std::string_view(".short(").size(),
+        atom.size() - short_method - std::string_view(".short(").size() - 1);
+    if (!argument.empty()) {
+      const auto parsed =
+          std::from_chars(argument.begin(), argument.end(), short_length);
+      if (parsed.ec != std::errc{} || parsed.ptr != argument.end()) {
+        throw UserError("template short length must be an integer");
+      }
+    }
+    method = Method::shorten;
+  }
+  if (name.starts_with("self.")) name.remove_prefix(5);
+  const auto value = values.find(std::string(name));
+  if (value == values.end()) {
+    throw UserError("unknown template keyword: " + std::string(name));
+  }
+  if (method == Method::shorten) {
+    return value->second.substr(0, short_length);
+  }
+  if (method == Method::first_line) return first_line(value->second.c_str());
+  return value->second;
+}
+
 int color_mode_index() {
   static const int index = std::ios_base::xalloc();  // GG_COV_EXCL_BRANCH
   return index;
 }
 
 }  // namespace
+
+std::string render_template(
+    std::string_view expression,
+    const std::map<std::string, std::string>& values) {
+  std::string result;
+  for (const std::string_view atom : template_atoms(expression)) {
+    if (atom.empty()) throw UserError("template expression is empty");
+    if (atom.front() == '\'' || atom.front() == '"') {
+      result += template_literal(atom);
+    } else {
+      result += template_keyword(atom, values);
+    }
+  }
+  return result;
+}
+
+std::map<std::string, std::string> revision_template_values(
+    Repository& repo,
+    const git_oid& oid) {
+  CommitPtr commit = repo.commit(oid);
+  const git_signature* author = git_commit_author(commit.get());
+  const git_signature* committer = git_commit_committer(commit.get());
+  const char* raw_description = git_commit_message(commit.get());
+  const std::string description =
+      raw_description == nullptr ? "" : raw_description;  // GG_COV_EXCL_BRANCH
+  const std::optional<std::string> change_id = repo.change_id(oid);
+  std::ostringstream bookmarks;
+  for (const std::string& bookmark : repo.bookmarks(oid)) {
+    if (bookmarks.tellp() != 0) bookmarks << ' ';
+    bookmarks << bookmark;
+  }
+  const auto workspace = repo.ref_target(kWorkspaceRef);
+  return {{"commit_id", oid_string(oid)},
+          {"change_id", change_id.value_or("")},
+          {"description", description},
+          {"subject", first_line(description.c_str())},
+          {"author.name", author->name},
+          {"author.email", author->email},
+          {"committer.name", committer->name},
+          {"committer.email", committer->email},
+          {"bookmarks", bookmarks.str()},
+          {"working_copy",
+           workspace.has_value() && *workspace == oid ? "true" : "false"}};
+}
 
 void set_output_color_mode(std::ostream& output, OutputColorMode mode) {
   output.iword(color_mode_index()) = static_cast<long>(mode);
