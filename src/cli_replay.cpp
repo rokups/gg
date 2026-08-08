@@ -108,6 +108,19 @@ std::vector<std::string> repository_replay_arguments(
             if (value.editor) result.emplace_back("--editor");
             return result;
           },
+          [](const RestoreCommand& value) {
+            std::vector<std::string> result{"restore"};
+            result.insert(result.end(), value.paths.begin(), value.paths.end());
+            add_option(result, "--from", value.from);
+            add_option(result, "--into", value.into);
+            add_option(result, "--changes-in", value.changes_in);
+            add_option(result, "--tool", value.tool);
+            if (value.interactive) result.emplace_back("--interactive");
+            if (value.restore_descendants) {
+              result.emplace_back("--restore-descendants");
+            }
+            return result;
+          },
           [](const FileCommand& value) {
             std::vector<std::string> result{"file"};
             switch (value.action) {

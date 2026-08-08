@@ -161,7 +161,8 @@ class Repository {
 
   RewritePlan descendants(
         std::map<git_oid, git_oid, OidLess> roots,
-        const std::set<git_oid, OidLess>& skipped = {}) const;
+        const std::set<git_oid, OidLess>& skipped = {},
+        bool preserve_content = false) const;
 
   void apply_refs(const std::map<std::string, git_oid>& updates,
                     const std::set<std::string>& deletes,

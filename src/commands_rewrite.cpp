@@ -6,6 +6,7 @@
 
 #include <git2.h>
 
+#include <filesystem>
 #include <utility>
 
 namespace gg::detail {
@@ -187,6 +188,72 @@ void command_abandon(Repository& repo,
   finish_workspace(repo, new_workspace, std::move(plan.updates), std::move(deletes),
                    "gg abandon");
   output << "Abandoned " << oid_string(old, 8) << '\n';
+}
+
+void command_restore(Repository& repo,
+                     const RestoreCommand& options,
+                     std::ostream& output) {
+  repo.sync_workspace();
+  if (options.interactive || !options.tool.empty()) {
+    throw UserError("interactive restore selection is not supported yet");
+  }
+  const auto workspace = repo.ref_target(kWorkspaceRef);
+  if (!workspace.has_value()) {
+    throw UserError("this command requires a working-copy change");
+  }
+
+  git_oid destination{};
+  git_oid source_tree{};
+  if (!options.from.empty() || !options.into.empty()) {
+    destination = repo.resolve(options.into.empty() ? "@" : options.into);
+    const git_oid source =
+        repo.resolve(options.from.empty() ? "@" : options.from);
+    source_tree = *git_commit_tree_id(repo.commit(source).get());
+  } else {
+    destination =
+        repo.resolve(options.changes_in.empty() ? "@" : options.changes_in);
+    source_tree = combined_tree(repo, repo.parents(destination));
+  }
+
+  std::vector<std::string> paths;
+  bool select_all = options.paths.empty();
+  for (const std::string& path : options.paths) {
+    const std::filesystem::path parsed_path(path);
+    if (path.empty() || path.front() == '/') {
+      throw UserError("restore paths must be repository-relative");
+    }
+    for (const auto& component : parsed_path) {
+      if (component == "..") {
+        throw UserError("restore paths must not contain '..'");
+      }
+    }
+    const std::string normalized = parsed_path.lexically_normal().generic_string();
+    if (normalized == ".") {
+      select_all = true;
+    } else {
+      paths.push_back(normalized);
+    }
+  }
+
+  CommitPtr old = repo.commit(destination);
+  const git_oid destination_tree = *git_commit_tree_id(old.get());
+  const git_oid restored_tree =
+      select_all ? source_tree
+                 : repo.selected_tree(destination_tree, source_tree, paths);
+  if (restored_tree == destination_tree) {
+    output << "Nothing changed.\n";
+    return;
+  }
+  const git_oid rewritten =
+      repo.rewrite_commit(destination, repo.parents(destination), restored_tree);
+  RewritePlan plan = repo.descendants({{destination, rewritten}}, {},
+                                      options.restore_descendants);
+  const git_oid new_workspace = plan.commits.contains(*workspace)
+                                    ? plan.commits.at(*workspace)
+                                    : *workspace;
+  finish_workspace(repo, new_workspace, std::move(plan.updates), {},
+                   "gg restore");
+  output << "Restored into " << oid_string(rewritten, 8) << ".\n";
 }
 
 }  // namespace gg::detail

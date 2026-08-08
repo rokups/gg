@@ -64,6 +64,9 @@ int execute(Repository& repository,
             [&](const CommitCommand& value) {
               command_commit(repository, value, output);
             },
+            [&](const RestoreCommand& value) {
+              command_restore(repository, value, output);
+            },
             [&](const FileCommand& value) {
               command_file(repository, value, output);
             },

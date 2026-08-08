@@ -97,6 +97,24 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   commit->add_flag("--editor", commit_value.editor,
                    "Edit the description in an editor");
 
+  RestoreCommand restore_value;
+  auto* restore = app.add_subcommand("restore", "Restore paths from a revision");
+  restore->add_option("filesets", restore_value.paths,
+                      "Repository-relative paths");
+  CLI::Option* restore_from =
+      restore->add_option("-f,--from", restore_value.from, "Source revision");
+  CLI::Option* restore_into = restore->add_option(
+      "-t,--into,--to", restore_value.into, "Destination revision");
+  CLI::Option* restore_changes = restore->add_option(
+      "-c,--changes-in", restore_value.changes_in, "Revision whose changes to undo");
+  restore_changes->excludes(restore_from)->excludes(restore_into);
+  restore->add_flag("-i,--interactive", restore_value.interactive,
+                    "Interactively select changes");
+  restore->add_option("--tool", restore_value.tool, "Diff editor");
+  restore->add_flag("--restore-descendants",
+                    restore_value.restore_descendants,
+                    "Preserve descendant contents while restacking");
+
   auto* file = app.add_subcommand("file", "Inspect and modify files");
   file->require_subcommand(1);
   FileCommand file_list_value;
@@ -456,6 +474,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   } else if (commit->parsed()) {
     commit_value.message_provided = commit_message->count() != 0;
     command = RepositoryCommand{std::move(commit_value)};
+  } else if (restore->parsed()) {
+    command = RepositoryCommand{std::move(restore_value)};
   } else if (file_list->parsed()) {
     command = RepositoryCommand{std::move(file_list_value)};
   } else if (file_show->parsed()) {

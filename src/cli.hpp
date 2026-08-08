@@ -57,6 +57,15 @@ struct CommitCommand {
   bool editor{false};
   bool message_provided{false};
 };
+struct RestoreCommand {
+  std::vector<std::string> paths;
+  std::string from;
+  std::string into;
+  std::string changes_in;
+  std::string tool;
+  bool interactive{false};
+  bool restore_descendants{false};
+};
 
 enum class FileAction { list, show, search, chmod };
 struct FileCommand {
@@ -173,9 +182,9 @@ struct MovementCommand {
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
-                 AbandonCommand, CommitCommand, FileCommand, DiffCommand,
-                 ShowCommand, BookmarkCommand, TagCommand, GitFetchCommand,
-                 GitPushCommand, UndoCommand, RedoCommand,
+                 AbandonCommand, CommitCommand, RestoreCommand, FileCommand,
+                 DiffCommand, ShowCommand, BookmarkCommand, TagCommand,
+                 GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilSnapshotCommand, WorkspaceCommand, MovementCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,

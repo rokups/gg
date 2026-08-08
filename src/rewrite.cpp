@@ -102,7 +102,8 @@ std::vector<git_oid> Repository::parents(const git_oid& oid) const {
 
 RewritePlan Repository::descendants(
     std::map<git_oid, git_oid, OidLess> roots,
-    const std::set<git_oid, OidLess>& skipped) const {
+    const std::set<git_oid, OidLess>& skipped,
+    bool preserve_content) const {
   RewritePlan plan;
   plan.commits = std::move(roots);
   const auto refs = rewrite_refs();
@@ -135,7 +136,12 @@ RewritePlan Repository::descendants(
                                 : replacement->second);
     }
     if (changed) {
-      plan.commits.emplace(oid, rewrite_commit(oid, new_parents));
+      std::optional<git_oid> tree_override;
+      if (preserve_content) {
+        tree_override = *git_commit_tree_id(commit(oid).get());
+      }
+      plan.commits.emplace(
+          oid, rewrite_commit(oid, new_parents, tree_override));
     }
   }
 
