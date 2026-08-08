@@ -70,6 +70,53 @@ TEST_F(RepositoryTest, InsertsNewChangesBeforeAndAfterRevisions) {
   EXPECT_NE(git_oid_equal(&current, &after_oid), 0);
 
   EXPECT_EQ(invoke({"new", "main", "--insert-after", "main"}).code, 2);
+  const Result combined =
+      invoke({"new", "-m", "combined", "--after", "main", "--before",
+              "child", "--no-edit"});
+  ASSERT_EQ(combined.code, 0) << combined.error;
+  detail::Repository repo(path_);
+  const git_oid combined_oid = repo.resolve(
+      token_after(combined.output, "Created change: "));
+  const std::vector<git_oid> combined_parents =
+      repo.parents(ref("refs/heads/child"));
+  EXPECT_TRUE(std::ranges::any_of(combined_parents, [&](const git_oid& oid) {
+    return git_oid_equal(&oid, &combined_oid) != 0;
+  }));
+
+  const git_oid base = ref("refs/heads/main");
+  const git_oid direct = raw_commit("direct", {base});
+  set_ref("refs/heads/direct", direct);
+  const Result direct_combined =
+      invoke({"new", "-m", "direct combined", "--after", "main",
+              "--before", "direct", "--no-edit"});
+  ASSERT_EQ(direct_combined.code, 0) << direct_combined.error;
+  const git_oid direct_combined_oid = repo.resolve(
+      token_after(direct_combined.output, "Created change: "));
+  const git_oid direct_parent = commit_parent(ref("refs/heads/direct"));
+  EXPECT_NE(git_oid_equal(&direct_parent, &direct_combined_oid), 0);
+
+  const git_oid left = raw_commit("left", {base});
+  const git_oid right = raw_commit("right", {base});
+  set_ref("refs/heads/left", left);
+  set_ref("refs/heads/right", right);
+  const Result multiple = invoke(
+      {"new", "-m", "multiple", "--after", "left", "--after", "right",
+       "--no-edit"});
+  ASSERT_EQ(multiple.code, 0) << multiple.error;
+  const git_oid multiple_oid =
+      repo.resolve(token_after(multiple.output, "Created change: "));
+  EXPECT_EQ(repo.parents(multiple_oid).size(), 2U);
+  const Result multiple_before =
+      invoke({"new", "-m", "multiple before", "--before", "left | right",
+              "--no-edit"});
+  ASSERT_EQ(multiple_before.code, 0) << multiple_before.error;
+  const git_oid multiple_before_oid = repo.resolve(
+      token_after(multiple_before.output, "Created change: "));
+  const git_oid left_parent = commit_parent(ref("refs/heads/left"));
+  const git_oid right_parent = commit_parent(ref("refs/heads/right"));
+  EXPECT_NE(git_oid_equal(&left_parent, &multiple_before_oid), 0);
+  EXPECT_NE(git_oid_equal(&right_parent, &multiple_before_oid), 0);
+
   EXPECT_EQ(invoke({"new", "--insert-after", "main", "--insert-before",
                     "main"})
                 .code,

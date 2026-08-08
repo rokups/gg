@@ -266,11 +266,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       make_new->add_option("parents", new_value.parents, "Parent revisions");
   CLI::Option* new_after = make_new->add_option(
       "-A,--insert-after,--after", new_value.insert_after,
-      "Insert after a revision");
+      "Insert after revisions");
   CLI::Option* new_before = make_new->add_option(
       "-B,--insert-before,--before", new_value.insert_before,
-      "Insert before a revision");
-  new_after->excludes(new_before)->excludes(new_parents);
+      "Insert before revisions");
+  new_after->excludes(new_parents);
   new_before->excludes(new_parents);
   make_new->add_flag("--no-edit", new_value.no_edit,
                      "Create the change without editing it");

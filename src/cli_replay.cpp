@@ -73,8 +73,12 @@ std::vector<std::string> repository_replay_arguments(
             std::vector<std::string> result{"new"};
             add_option(result, "-m", value.message);
             result.insert(result.end(), value.parents.begin(), value.parents.end());
-            add_option(result, "--insert-after", value.insert_after);
-            add_option(result, "--insert-before", value.insert_before);
+            for (const std::string& revision : value.insert_after) {
+              add_option(result, "--insert-after", revision);
+            }
+            for (const std::string& revision : value.insert_before) {
+              add_option(result, "--insert-before", revision);
+            }
             if (value.no_edit) result.emplace_back("--no-edit");
             return result;
           },

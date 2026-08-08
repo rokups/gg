@@ -167,40 +167,103 @@ void command_new(Repository& repo,
   repo.sync_workspace();
   const auto old_workspace = repo.ref_target(kWorkspaceRef);
   std::vector<git_oid> parents;
-  std::vector<std::string> revisions = options.parents;
-  if (revisions.empty()) {
-    if (repo.ref_target(kWorkspaceRef).has_value()) {
-      revisions.emplace_back("@");
-    } else if (const auto head = repo.head_oid(); head.has_value()) {
-      parents.push_back(*head);
+  const std::vector<git_oid> after =
+      resolve_revision_arguments(repo, options.insert_after);
+  const std::vector<git_oid> before =
+      resolve_revision_arguments(repo, options.insert_before);
+  const std::set<git_oid, OidLess> after_set(after.begin(), after.end());
+  const std::set<git_oid, OidLess> before_set(before.begin(), before.end());
+  for (const git_oid& oid : before_set) {
+    if (after_set.contains(oid)) {
+      throw UserError("cannot insert both before and after the same revision");
     }
   }
-  if (!revisions.empty()) {
-    parents = commit_parents(repo, revisions);
-  }
-  git_oid change{};
-  RewritePlan plan;
-  if (!options.insert_after.empty()) {
-    const git_oid target = repo.resolve(options.insert_after);
-    parents = {target};
-    change =
-        repo.create_commit(combined_tree(repo, parents), parents, options.message);
-    plan = repo.descendants({{target, change}});
-    plan.commits.erase(target);
-    for (const auto& [name, oid] : repo.rewrite_refs()) {
-      if (oid == target) plan.updates.erase(name);
+
+  if (!after.empty()) {
+    parents = after;
+  } else if (!before.empty()) {
+    std::set<git_oid, OidLess> seen;
+    for (const git_oid& oid : before) {
+      for (const git_oid& parent : repo.parents(oid)) {
+        if (seen.insert(parent).second) parents.push_back(parent);
+      }
     }
-  } else if (!options.insert_before.empty()) {
-    const git_oid target = repo.resolve(options.insert_before);
-    parents = repo.parents(target);
-    change =
-        repo.create_commit(combined_tree(repo, parents), parents, options.message);
-    const git_oid rewritten = repo.rewrite_commit(
-        target, {change}, *git_commit_tree_id(repo.commit(target).get()));
-    plan = repo.descendants({{target, rewritten}});
   } else {
-    change =
-        repo.create_commit(combined_tree(repo, parents), parents, options.message);
+    std::vector<std::string> revisions = options.parents;
+    if (revisions.empty()) {
+      if (old_workspace.has_value()) {
+        revisions.emplace_back("@");
+      } else if (const auto head = repo.head_oid(); head.has_value()) {
+        parents.push_back(*head);
+      }
+    }
+    if (!revisions.empty()) parents = commit_parents(repo, revisions);
+  }
+  const git_oid change =
+      repo.create_commit(combined_tree(repo, parents), parents, options.message);
+  RewritePlan plan;
+  if (!after.empty() || !before.empty()) {
+    const auto refs = repo.rewrite_refs();
+    git_revwalk* raw_walk = nullptr;
+    check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
+    RevwalkPtr walk(raw_walk);
+    git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+    for (const auto& [name, oid] : refs) {
+      (void)name;
+      const int pushed = git_revwalk_push(walk.get(), &oid);
+      if (pushed != GIT_EINVALIDSPEC) {  // GG_COV_EXCL_BRANCH
+        check(pushed, "walk revisions");
+      }
+    }
+    for (const git_oid& oid : after_set) {
+      check(git_revwalk_push(walk.get(), &oid), "walk inserted revisions");
+    }
+    for (const git_oid& oid : before_set) {
+      check(git_revwalk_push(walk.get(), &oid), "walk inserted revisions");
+    }
+
+    std::map<git_oid, git_oid, OidLess> replacements;
+    git_oid oid{};
+    while (git_revwalk_next(&oid, walk.get()) == 0) {
+      const std::vector<git_oid> old_parents = repo.parents(oid);
+      std::vector<git_oid> new_parents;
+      bool parents_changed = false;
+      for (const git_oid& parent : old_parents) {
+        const auto replacement = replacements.find(parent);
+        const git_oid next = replacement == replacements.end()
+                                 ? parent
+                                 : replacement->second;
+        parents_changed |= !(next == parent);
+        new_parents.push_back(next);
+      }
+      if (after_set.contains(oid)) {
+        replacements[oid] = change;
+        continue;
+      }
+      if (before_set.contains(oid)) {
+        if (after.empty()) {
+          new_parents = {change};
+        } else if (std::ranges::none_of(new_parents, [&](const git_oid& parent) {
+                     return parent == change;
+                   })) {
+          new_parents.insert(new_parents.begin(), change);
+        }
+        const git_oid rewritten = repo.rewrite_commit(
+            oid, new_parents, *git_commit_tree_id(repo.commit(oid).get()));
+        plan.commits[oid] = rewritten;
+        replacements[oid] = rewritten;
+      } else if (parents_changed) {
+        const git_oid rewritten = repo.rewrite_commit(oid, new_parents);
+        plan.commits[oid] = rewritten;
+        replacements[oid] = rewritten;
+      }
+    }
+    for (const auto& [name, target] : refs) {
+      const auto replacement = plan.commits.find(target);
+      if (replacement != plan.commits.end()) {
+        plan.updates[name] = replacement->second;
+      }
+    }
   }
   auto missing_ids = repo.missing_change_ids();
   std::string id;
