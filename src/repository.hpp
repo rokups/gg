@@ -100,6 +100,7 @@ std::string first_line(const char* message);
 bool starts_with(std::string_view value, std::string_view prefix);
 
 struct HeadState { bool symbolic = true; std::string value; };
+struct ShortId { std::string value; std::size_t prefix_length; };
 struct OperationState { HeadState head; std::map<std::string, git_oid> refs; };
 struct RewritePlan {
   std::map<git_oid, git_oid, OidLess> commits;
@@ -258,6 +259,10 @@ class Repository {
   std::string new_change_id() const;
 
   std::string short_change_id(std::string_view id) const;
+
+  ShortId short_change_id_parts(std::string_view id) const;
+
+  ShortId short_commit_id(const git_oid& oid) const;
 
   std::optional<std::string> change_id(const git_oid& oid) const;
 

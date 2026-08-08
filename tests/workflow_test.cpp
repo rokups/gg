@@ -293,6 +293,14 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   const Result debug =
       invoke({"--color", "debug", "log", "-r", "@", "-n", "1"});
   EXPECT_NE(debug.output.find("<<working_copy::@>>"), std::string::npos);
+  EXPECT_NE(debug.output.find("<<working_copy change_id shortest prefix::"),
+            std::string::npos);
+  EXPECT_NE(debug.output.find("<<working_copy change_id shortest rest::"),
+            std::string::npos);
+  EXPECT_NE(debug.output.find("<<working_copy commit_id shortest prefix::"),
+            std::string::npos);
+  EXPECT_NE(debug.output.find("<<working_copy commit_id shortest rest::"),
+            std::string::npos);
   EXPECT_EQ(invoke({"--color", "invalid", "log"}).code, 2);
 
   const Result filtered =

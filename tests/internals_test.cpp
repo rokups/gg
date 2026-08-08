@@ -110,6 +110,16 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   set_ref(std::string(detail::kChangePrefix) + second, other);
   EXPECT_EQ(repo.short_change_id(first), first.substr(0, 9));
   EXPECT_EQ(repo.short_change_id(second), second.substr(0, 9));
+  const detail::ShortId short_change = repo.short_change_id_parts(first);
+  EXPECT_EQ(short_change.value, first.substr(0, 9));
+  EXPECT_EQ(short_change.prefix_length, 9U);
+  const detail::ShortId short_commit = repo.short_commit_id(base);
+  const std::string base_text = detail::oid_string(base);
+  const std::string other_text = detail::oid_string(other);
+  std::size_t common = 0;
+  while (base_text[common] == other_text[common]) ++common;
+  EXPECT_EQ(short_commit.prefix_length, common + 1);
+  EXPECT_EQ(short_commit.value.size(), 8U);
 
   repo.apply_refs({}, {}, "no changes");
   EXPECT_THROW(repo.abort_rewrite(), detail::UserError);

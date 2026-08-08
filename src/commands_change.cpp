@@ -437,12 +437,11 @@ void command_status(Repository& repo,
   CommitPtr change = repo.commit(*workspace);
   const auto id = repo.change_id(*workspace);
   output << "Working copy (@): "
-         << styled(output,
-                   id.has_value() ? repo.short_change_id(*id) : "--------",
-                   OutputStyle::working_change_id)
+         << (id.has_value()
+                 ? styled_short_change_id(repo, output, *id, true)
+                 : styled(output, "--------", OutputStyle::working_change_id))
          << ' '
-         << styled(output, oid_string(*workspace, 8),
-                   OutputStyle::working_commit_id)
+         << styled_short_commit_id(repo, output, *workspace, true)
          << ' ';
   const std::string description = first_line(git_commit_message(change.get()));
   output << (description.empty() ? "(no description set)" : description) << '\n';
@@ -451,8 +450,7 @@ void command_status(Repository& repo,
   if (!parents.empty()) {
     CommitPtr parent = repo.commit(parents.front());
     output << "Parent commit (@-): "
-           << styled(output, oid_string(parents.front(), 8),
-                     OutputStyle::commit_id)
+           << styled_short_commit_id(repo, output, parents.front())
            << ' '
            << first_line(git_commit_message(parent.get())) << '\n';
     base_tree_oid = *git_commit_tree_id(parent.get());
@@ -609,16 +607,11 @@ void command_log(Repository& repo,
                                 revision_template_values(repo, oid));
     } else {
       const bool working = workspace.has_value() && *workspace == oid;
-      output << styled(output,
-                       id.has_value() ? repo.short_change_id(*id)
-                                      : oid_string(oid, 8),
-                       working ? OutputStyle::working_change_id
-                               : id.has_value() ? OutputStyle::change_id
-                                                : OutputStyle::commit_id)
+      output << (id.has_value()
+                     ? styled_short_change_id(repo, output, *id, working)
+                     : styled_short_commit_id(repo, output, oid, working))
              << ' '
-             << styled(output, oid_string(oid, 8),
-                       working ? OutputStyle::working_commit_id
-                               : OutputStyle::commit_id);
+             << styled_short_commit_id(repo, output, oid, working);
       for (const std::string& bookmark : bookmarks) {
         output << " " << styled(output, bookmark, OutputStyle::bookmark);
       }

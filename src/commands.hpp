@@ -18,9 +18,17 @@ enum class OutputColorMode { plain, ansi, debug };
 enum class OutputStyle {
   working_copy,
   change_id,
+  change_id_prefix,
+  change_id_rest,
   working_change_id,
+  working_change_id_prefix,
+  working_change_id_rest,
   commit_id,
+  commit_id_prefix,
+  commit_id_rest,
   working_commit_id,
+  working_commit_id_prefix,
+  working_commit_id_rest,
   bookmark,
   tag,
   operation_id,
@@ -35,6 +43,10 @@ enum class OutputStyle {
 
 void set_output_color_mode(std::ostream&, OutputColorMode);
 std::string styled(std::ostream&, std::string_view, OutputStyle);
+std::string styled_short_change_id(Repository&, std::ostream&,
+                                   std::string_view, bool working = false);
+std::string styled_short_commit_id(Repository&, std::ostream&, const git_oid&,
+                                   bool working = false);
 std::string render_template(
     std::string_view expression,
     const std::map<std::string, std::string>& values);

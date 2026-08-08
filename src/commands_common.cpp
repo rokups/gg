@@ -31,12 +31,20 @@ struct StyleSpec {
   std::string_view label;
 };
 
-constexpr std::array<StyleSpec, 15> kStyles{{
+constexpr std::array<StyleSpec, 23> kStyles{{
     {"\x1b[1;38;5;2m", "working_copy"},
     {"\x1b[38;5;5m", "change_id"},
+    {"\x1b[1;38;5;5m", "change_id shortest prefix"},
+    {"\x1b[38;5;8m", "change_id shortest rest"},
     {"\x1b[1;38;5;13m", "working_copy change_id"},
+    {"\x1b[1;38;5;13m", "working_copy change_id shortest prefix"},
+    {"\x1b[38;5;8m", "working_copy change_id shortest rest"},
     {"\x1b[38;5;4m", "commit_id"},
+    {"\x1b[1;38;5;4m", "commit_id shortest prefix"},
+    {"\x1b[38;5;8m", "commit_id shortest rest"},
     {"\x1b[1;38;5;12m", "working_copy commit_id"},
+    {"\x1b[1;38;5;12m", "working_copy commit_id shortest prefix"},
+    {"\x1b[38;5;8m", "working_copy commit_id shortest rest"},
     {"\x1b[38;5;5m", "bookmark"},
     {"\x1b[38;5;5m", "tag"},
     {"\x1b[38;5;4m", "operation_id"},
@@ -232,6 +240,38 @@ std::string styled(std::ostream& output,
   if (mode == OutputColorMode::debug) result += ">>";
   result += "\x1b[0m";
   return result;
+}
+
+std::string styled_short_id(std::ostream& output,
+                            const ShortId& id,
+                            OutputStyle prefix_style,
+                            OutputStyle rest_style) {
+  return styled(output, id.value.substr(0, id.prefix_length), prefix_style) +
+         styled(output, id.value.substr(id.prefix_length), rest_style);
+}
+
+std::string styled_short_change_id(Repository& repo,
+                                   std::ostream& output,
+                                   std::string_view id,
+                                   bool working) {
+  return styled_short_id(
+      output, repo.short_change_id_parts(id),
+      working ? OutputStyle::working_change_id_prefix
+              : OutputStyle::change_id_prefix,
+      working ? OutputStyle::working_change_id_rest
+              : OutputStyle::change_id_rest);
+}
+
+std::string styled_short_commit_id(Repository& repo,
+                                   std::ostream& output,
+                                   const git_oid& oid,
+                                   bool working) {
+  return styled_short_id(
+      output, repo.short_commit_id(oid),
+      working ? OutputStyle::working_commit_id_prefix
+              : OutputStyle::commit_id_prefix,
+      working ? OutputStyle::working_commit_id_rest
+              : OutputStyle::commit_id_rest);
 }
 
 bool string_pattern_matches(std::string_view pattern,
