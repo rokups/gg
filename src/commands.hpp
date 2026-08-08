@@ -33,6 +33,7 @@ void command_rebase(Repository&, const RebaseCommand&, std::ostream&);
 void command_split(Repository&, const SplitCommand&, std::ostream&);
 void command_squash(Repository&, const SquashCommand&, std::ostream&);
 void command_abandon(Repository&, const AbandonCommand&, std::ostream&);
+void command_file(Repository&, const FileCommand&, std::ostream&);
 void command_bookmark(Repository&, const BookmarkCommand&, std::ostream&);
 void command_fetch(Repository&, const GitFetchCommand&, std::ostream&);
 void command_push(Repository&, const GitPushCommand&, std::ostream&);

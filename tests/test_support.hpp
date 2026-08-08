@@ -127,6 +127,32 @@ class RepositoryTest : public testing::Test {
     git_reference_free(reference);
   }
 
+  git_filemode_t file_mode(std::string_view revision,
+                           std::string_view path) {
+    const git_oid oid = ref(revision);
+    git_commit* commit = nullptr;
+    if (git_commit_lookup(&commit, repository_.get(), &oid) != 0) {
+      throw std::runtime_error("commit not found");
+    }
+    git_tree* tree = nullptr;
+    if (git_commit_tree(&tree, commit) != 0) {
+      git_commit_free(commit);
+      throw std::runtime_error("tree not found");
+    }
+    git_tree_entry* entry = nullptr;
+    const std::string owned_path(path);
+    if (git_tree_entry_bypath(&entry, tree, owned_path.c_str()) != 0) {
+      git_tree_free(tree);
+      git_commit_free(commit);
+      throw std::runtime_error("tree entry not found");
+    }
+    const git_filemode_t result = git_tree_entry_filemode(entry);
+    git_tree_entry_free(entry);
+    git_tree_free(tree);
+    git_commit_free(commit);
+    return result;
+  }
+
   git_oid raw_commit(std::string_view message,
                      const std::vector<git_oid>& parent_oids = {}) {
     const git_oid head = ref("HEAD");

@@ -61,6 +61,9 @@ int execute(Repository& repository,
             [&](const AbandonCommand& value) {
               command_abandon(repository, value, output);
             },
+            [&](const FileCommand& value) {
+              command_file(repository, value, output);
+            },
             [&](const BookmarkCommand& value) {
               command_bookmark(repository, value, output);
             },

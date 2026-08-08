@@ -52,6 +52,7 @@ using ReferencePtr = GitPtr<git_reference, git_reference_free>;
 using ReferenceIteratorPtr = GitPtr<git_reference_iterator, git_reference_iterator_free>;
 using CommitPtr = GitPtr<git_commit, git_commit_free>;
 using TreePtr = GitPtr<git_tree, git_tree_free>;
+using BlobPtr = GitPtr<git_blob, git_blob_free>;
 using IndexPtr = GitPtr<git_index, git_index_free>;
 using ConflictIteratorPtr = GitPtr<git_index_conflict_iterator, git_index_conflict_iterator_free>;
 using ObjectPtr = GitPtr<git_object, git_object_free>;

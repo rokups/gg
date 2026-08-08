@@ -83,6 +83,55 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   abandon->add_option("revision", abandon_value.revision, "Revision")
       ->expected(0, 1);
 
+  auto* file = app.add_subcommand("file", "Inspect and modify files");
+  file->require_subcommand(1);
+  FileCommand file_list_value;
+  auto* file_list = file->add_subcommand("list", "List files in a revision");
+  file_list->add_option("filesets", file_list_value.paths,
+                        "Repository-relative paths");
+  file_list->add_option("-r,--revision", file_list_value.revision, "Revision");
+  file_list->add_option("-T,--template", file_list_value.template_value,
+                        "File template");
+  FileCommand file_show_value;
+  file_show_value.action = FileAction::show;
+  auto* file_show =
+      file->add_subcommand("show", "Print file contents from a revision");
+  file_show->add_option("filesets", file_show_value.paths,
+                        "Repository-relative paths")
+      ->required();
+  file_show->add_option("-r,--revision", file_show_value.revision, "Revision");
+  file_show->add_option("-T,--template", file_show_value.template_value,
+                        "File template");
+  FileCommand file_search_value;
+  file_search_value.action = FileAction::search;
+  auto* file_search = file->add_subcommand("search", "Search file contents");
+  file_search->add_option("filesets", file_search_value.paths,
+                          "Repository-relative paths");
+  file_search
+      ->add_option("-r,--revision", file_search_value.revision, "Revision");
+  file_search
+      ->add_option("-p,--pattern", file_search_value.pattern, "Search pattern")
+      ->required();
+  CLI::Option* file_search_names = file_search->add_flag(
+      "--name-only", file_search_value.name_only, "Print matching paths only");
+  CLI::Option* file_search_lines = file_search->add_flag(
+      "-n,--line-number", file_search_value.line_number, "Print line numbers");
+  file_search_names->excludes(file_search_lines);
+  FileCommand file_chmod_value;
+  file_chmod_value.action = FileAction::chmod;
+  auto* file_chmod =
+      file->add_subcommand("chmod", "Set or remove executable bits");
+  file_chmod
+      ->add_option("mode", file_chmod_value.mode,
+                   "Mode: n, normal, x, or executable")
+      ->required()
+      ->check(CLI::IsMember({"n", "normal", "x", "executable"}));
+  file_chmod->add_option("filesets", file_chmod_value.paths,
+                         "Repository-relative paths")
+      ->required();
+  file_chmod
+      ->add_option("-r,--revision", file_chmod_value.revision, "Revision");
+
   auto* bookmark = app.add_subcommand("bookmark", "Manage Git-backed bookmarks");
   bookmark->require_subcommand(0, 1);
   BookmarkCommand bookmark_create;
@@ -275,6 +324,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(squash_value)};
   } else if (abandon->parsed()) {
     command = RepositoryCommand{std::move(abandon_value)};
+  } else if (file_list->parsed()) {
+    command = RepositoryCommand{std::move(file_list_value)};
+  } else if (file_show->parsed()) {
+    command = RepositoryCommand{std::move(file_show_value)};
+  } else if (file_search->parsed()) {
+    command = RepositoryCommand{std::move(file_search_value)};
+  } else if (file_chmod->parsed()) {
+    command = RepositoryCommand{std::move(file_chmod_value)};
   } else if (create->parsed()) {
     command = RepositoryCommand{std::move(bookmark_create)};
   } else if (set->parsed()) {

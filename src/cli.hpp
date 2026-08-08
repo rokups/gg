@@ -49,6 +49,18 @@ struct AbandonCommand {
   std::string revision;
 };
 
+enum class FileAction { list, show, search, chmod };
+struct FileCommand {
+  FileAction action{FileAction::list};
+  std::string revision{"@"};
+  std::vector<std::string> paths;
+  std::string template_value;
+  std::string pattern;
+  std::string mode;
+  bool name_only{false};
+  bool line_number{false};
+};
+
 enum class BookmarkAction { list, create, set, erase, forget, rename };
 struct BookmarkCommand {
   BookmarkAction action{BookmarkAction::list};
@@ -97,7 +109,7 @@ struct MovementCommand {
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
-                 AbandonCommand, BookmarkCommand, GitFetchCommand,
+                 AbandonCommand, FileCommand, BookmarkCommand, GitFetchCommand,
                  GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilSnapshotCommand, MovementCommand>;

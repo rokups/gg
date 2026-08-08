@@ -77,6 +77,37 @@ std::vector<std::string> repository_replay_arguments(
             }
             return result;
           },
+          [](const FileCommand& value) {
+            std::vector<std::string> result{"file"};
+            switch (value.action) {
+              case FileAction::list:
+                result.emplace_back("list");
+                break;
+              case FileAction::show:
+                result.emplace_back("show");
+                break;
+              case FileAction::search:
+                result.emplace_back("search");
+                break;
+              case FileAction::chmod:
+                result.emplace_back("chmod");
+                result.push_back(value.mode);
+                break;
+            }
+            result.insert(result.end(), value.paths.begin(), value.paths.end());
+            if (value.revision != "@") {
+              add_option(result, "-r", value.revision);
+            }
+            add_option(result, "--template", value.template_value);
+            add_option(result, "--pattern", value.pattern);
+            if (value.name_only) {
+              result.emplace_back("--name-only");
+            }
+            if (value.line_number) {
+              result.emplace_back("--line-number");
+            }
+            return result;
+          },
           [](const BookmarkCommand& value) {
             std::vector<std::string> result{"bookmark"};
             switch (value.action) {
