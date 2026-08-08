@@ -29,6 +29,8 @@ std::string substitute_target(std::string_view expression,
 }
 
 struct RefListItem {
+  std::string name;
+  std::string remote;
   std::string display_name;
   git_oid oid;
   std::string author_name;
@@ -69,12 +71,17 @@ int compare_refs(const RefListItem& left,
   return compare_date(left.committer_date, right.committer_date);
 }
 
-RefListItem ref_list_item(std::string display_name,
+RefListItem ref_list_item(std::string name,
+                          std::string remote,
                           const git_oid& oid,
                           const git_commit* commit) {
   const git_signature* author = git_commit_author(commit);
   const git_signature* committer = git_commit_committer(commit);
-  return {std::move(display_name),
+  const std::string display_name =
+      remote.empty() ? name : name + "@" + remote;
+  return {std::move(name),
+          std::move(remote),
+          display_name,
           oid,
           author->name,
           author->email,
@@ -82,6 +89,41 @@ RefListItem ref_list_item(std::string display_name,
           committer->name,
           committer->email,
           committer->when.time};
+}
+
+std::map<std::string, std::string> ref_template_values(
+    const RefListItem& item) {
+  const std::string target = oid_string(item.oid);
+  return {{"name", item.name},
+          {"remote", item.remote},
+          {"present", "true"},
+          {"conflict", "false"},
+          {"normal_target", target},
+          {"removed_targets", ""},
+          {"added_targets", target}};
+}
+
+void validate_ref_template(std::string_view template_value) {
+  if (template_value.empty()) return;
+  static const std::map<std::string, std::string> values{
+      {"name", ""},           {"remote", ""},
+      {"present", ""},        {"conflict", ""},
+      {"normal_target", ""},  {"removed_targets", ""},
+      {"added_targets", ""}};  // GG_COV_EXCL_BRANCH
+  (void)render_template(template_value, values);
+}
+
+void render_ref_list_item(const RefListItem& item,
+                          std::string_view template_value,
+                          OutputStyle style,
+                          std::ostream& output) {
+  if (!template_value.empty()) {
+    output << render_template(template_value, ref_template_values(item));
+    return;
+  }
+  output << styled(output, item.display_name, style) << ": "
+         << styled(output, oid_string(item.oid, 8), OutputStyle::commit_id)
+         << '\n';
 }
 
 void sort_refs(std::vector<RefListItem>& items,
@@ -322,9 +364,7 @@ void command_bookmark(Repository& repo,
   }
   if (options.action == BookmarkAction::list) {
     if (options.conflicted) return;
-    if (!options.template_value.empty()) {
-      throw UserError("bookmark templates are not supported yet");
-    }
+    validate_ref_template(options.template_value);
 
     std::set<git_oid, OidLess> revisions;
     const std::vector<git_oid> resolved =
@@ -338,11 +378,10 @@ void command_bookmark(Repository& repo,
       if (!local && !starts_with(reference, remote_prefix)) continue;
 
       std::string name;
-      std::string display_name;
+      std::string remote;
       if (local) {
         if (options.tracked || !options.remotes.empty()) continue;
         name = reference.substr(local_prefix.size());
-        display_name = name;
       } else {
         if (!options.tracked && !options.all_remotes &&
             options.remotes.empty()) {
@@ -352,7 +391,7 @@ void command_bookmark(Repository& repo,
             reference.substr(remote_prefix.size());
         const std::size_t slash = remote_bookmark.find('/');
         if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
-        const std::string remote = remote_bookmark.substr(0, slash);
+        remote = remote_bookmark.substr(0, slash);
         name = remote_bookmark.substr(slash + 1);
         if (name == "HEAD") continue;
         if (options.tracked &&
@@ -365,7 +404,6 @@ void command_bookmark(Repository& repo,
             !any_string_pattern_matches(options.remotes, remote)) {
           continue;
         }
-        display_name = name + "@" + remote;
       }
       const bool name_matches =
           !options.names.empty() &&
@@ -378,14 +416,12 @@ void command_bookmark(Repository& repo,
       }
 
       CommitPtr commit = repo.commit(oid);
-      items.push_back(ref_list_item(display_name, oid, commit.get()));
+      items.push_back(ref_list_item(name, remote, oid, commit.get()));
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      output << styled(output, item.display_name, OutputStyle::bookmark)
-             << ": "
-             << styled(output, oid_string(item.oid, 8), OutputStyle::commit_id)
-             << '\n';
+      render_ref_list_item(item, options.template_value, OutputStyle::bookmark,
+                           output);
     }
     return;
   }
@@ -617,9 +653,7 @@ void command_tag(Repository& repo,
 
   if (options.action == TagAction::list) {
     if (options.conflicted) return;
-    if (!options.template_value.empty()) {
-      throw UserError("tag templates are not supported yet");
-    }
+    validate_ref_template(options.template_value);
     std::set<git_oid, OidLess> revisions;
     const std::vector<git_oid> resolved =
         resolve_revision_arguments(repo, options.revisions);
@@ -632,11 +666,10 @@ void command_tag(Repository& repo,
       if (!local && !starts_with(reference, kRemoteTagPrefix)) continue;
 
       std::string name;
-      std::string display_name;
+      std::string remote;
       if (local) {
         if (options.tracked || !options.remotes.empty()) continue;
         name = reference.substr(local_prefix.size());
-        display_name = name;
       } else {
         const bool selected = options.tracked | options.all_remotes |
                               !options.remotes.empty();
@@ -646,7 +679,7 @@ void command_tag(Repository& repo,
         constexpr std::string_view marker = "/tags/";
         const std::size_t separator = remote_tag.find(marker);
         if (separator == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
-        const std::string remote = remote_tag.substr(0, separator);
+        remote = remote_tag.substr(0, separator);
         name = remote_tag.substr(separator + marker.size());
         if (options.tracked &&
             !repo.ref_target(
@@ -658,7 +691,6 @@ void command_tag(Repository& repo,
             !any_string_pattern_matches(options.remotes, remote)) {
           continue;
         }
-        display_name = name + "@" + remote;
       }
       const std::optional<git_oid> target = tag_target(reference);
       const bool name_matches =
@@ -671,13 +703,12 @@ void command_tag(Repository& repo,
         continue;
       }
       CommitPtr commit = repo.commit(*target);
-      items.push_back(ref_list_item(display_name, *target, commit.get()));
+      items.push_back(ref_list_item(name, remote, *target, commit.get()));
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      output << styled(output, item.display_name, OutputStyle::tag) << ": "
-             << styled(output, oid_string(item.oid, 8), OutputStyle::commit_id)
-             << '\n';
+      render_ref_list_item(item, options.template_value, OutputStyle::tag,
+                           output);
     }
     return;
   }

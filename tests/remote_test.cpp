@@ -88,6 +88,15 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
       invoke({"bookmark", "list", "-r", "alpha | beta"});
   EXPECT_NE(revision_set.output.find("alpha:"), std::string::npos);
   EXPECT_NE(revision_set.output.find("beta:"), std::string::npos);
+  const std::string first_id = git_oid_tostr_s(&first);
+  EXPECT_EQ(invoke({"bookmark", "list", "alpha", "-T",
+                    "name ++ \" \" ++ remote ++ \" \" ++ "
+                    "normal_target.short() ++ \" \" ++ present ++ \" \" ++ "
+                    "conflict ++ \" \" ++ removed_targets ++ \" \" ++ "
+                    "added_targets.short(4) ++ \"\\n\""})
+                .output,
+            "alpha  " + first_id.substr(0, 8) + " true false  " +
+                first_id.substr(0, 4) + "\n");
 
   const Result all = invoke({"bookmark", "list", "--all-remotes"});
   EXPECT_NE(all.output.find("alpha@origin:"), std::string::npos);
@@ -98,6 +107,10 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   EXPECT_NE(origin.output.find("alpha@origin:"), std::string::npos);
   EXPECT_EQ(origin.output.find("beta@backup:"), std::string::npos);
   EXPECT_EQ(origin.output.find("alpha:"), std::string::npos);
+  EXPECT_EQ(invoke({"bookmark", "list", "alpha", "--remote", "origin",
+                    "-T", "name ++ '@' ++ remote ++ \"\\n\""})
+                .output,
+            "alpha@origin\n");
   EXPECT_NE(invoke({"bookmark", "list", "--remote", "glob:ori*"})
                 .output.find("alpha@origin:"),
             std::string::npos);
@@ -137,7 +150,8 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   const Result conflicted = invoke({"bookmark", "list", "--conflicted"});
   EXPECT_EQ(conflicted.code, 0);
   EXPECT_TRUE(conflicted.output.empty());
-  EXPECT_EQ(invoke({"bookmark", "list", "--template", "name"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "list", "--template", "unknown"}).code,
+            2);
   EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--remote",
                     "origin"})
                 .code,
