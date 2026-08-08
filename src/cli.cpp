@@ -537,13 +537,15 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                    "Revision containing a bookmark target");
   list->add_option("-T,--template", bookmark_list.template_value,
                    "Bookmark template");
+  const std::vector<std::string> ref_sort_keys{
+      "name",            "name-",           "author-name",
+      "author-name-",    "author-email",    "author-email-",
+      "author-date",     "author-date-",    "committer-name",
+      "committer-name-", "committer-email", "committer-email-",
+      "committer-date",  "committer-date-"};
   list->add_option("--sort", bookmark_list.sort, "Sort key")
       ->delimiter(',')
-      ->check(CLI::IsMember(
-          {"name", "name-", "author-name", "author-name-", "author-email",
-           "author-email-", "author-date", "author-date-", "committer-name",
-           "committer-name-", "committer-email", "committer-email-",
-           "committer-date", "committer-date-"}));
+      ->check(CLI::IsMember(ref_sort_keys));
 
   auto* tag = app.add_subcommand("tag", "Manage Git-backed tags");
   tag->require_subcommand(1);
@@ -563,17 +565,27 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   TagCommand tag_list_value;
   auto* tag_list = tag->add_subcommand("list", "List tags");
   tag_list->add_option("names", tag_list_value.names, "Tag names");
-  tag_list->add_flag("-a,--all-remotes", tag_list_value.all_remotes,
-                     "Include remote tags");
-  tag_list->add_option("--remote", tag_list_value.remote, "Remote name");
-  tag_list->add_flag("-t,--tracked", tag_list_value.tracked,
-                     "Show tracked tags only");
-  tag_list->add_flag("-c,--conflicted", tag_list_value.conflicted,
-                     "Show conflicted tags only");
-  tag_list->add_option("-r,--revision", tag_list_value.revision, "Revision");
+  CLI::Option* tag_list_all =
+      tag_list->add_flag("-a,--all-remotes", tag_list_value.all_remotes,
+                         "Include remote tags");
+  CLI::Option* tag_list_remotes =
+      tag_list->add_option("--remote", tag_list_value.remotes, "Remote name");
+  CLI::Option* tag_list_tracked =
+      tag_list->add_flag("-t,--tracked", tag_list_value.tracked,
+                         "Show tracked tags only");
+  CLI::Option* tag_list_conflicted =
+      tag_list->add_flag("-c,--conflicted", tag_list_value.conflicted,
+                         "Show conflicted tags only");
+  tag_list_all->excludes(tag_list_remotes)
+      ->excludes(tag_list_tracked)
+      ->excludes(tag_list_conflicted);
+  tag_list->add_option("-r,--revision,--revisions", tag_list_value.revisions,
+                       "Revision containing a tag target");
   tag_list->add_option("-T,--template", tag_list_value.template_value,
                        "Tag template");
-  tag_list->add_option("--sort", tag_list_value.sort, "Sort key");
+  tag_list->add_option("--sort", tag_list_value.sort, "Sort key")
+      ->delimiter(',')
+      ->check(CLI::IsMember(ref_sort_keys));
 
   GitCloneCommand clone_value;
   auto* clone = app.add_subcommand("clone", "Clone a Git repository");

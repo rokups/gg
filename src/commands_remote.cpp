@@ -21,7 +21,7 @@ namespace {
 constexpr std::string_view kUndoPrefix = "undo: restore to operation ";
 constexpr std::string_view kRedoPrefix = "redo: restore to operation ";
 
-struct BookmarkListItem {
+struct RefListItem {
   std::string display_name;
   git_oid oid;
   std::string author_name;
@@ -40,9 +40,9 @@ int compare_date(git_time_t left, git_time_t right) {
   return (left > right) - (left < right);
 }
 
-int compare_bookmarks(const BookmarkListItem& left,
-                      const BookmarkListItem& right,
-                      std::string_view key) {
+int compare_refs(const RefListItem& left,
+                 const RefListItem& right,
+                 std::string_view key) {
   if (key == "name") return compare_text(left.display_name, right.display_name);
   if (key == "author-name") {
     return compare_text(left.author_name, right.author_name);
@@ -60,6 +60,40 @@ int compare_bookmarks(const BookmarkListItem& left,
     return compare_text(left.committer_email, right.committer_email);
   }
   return compare_date(left.committer_date, right.committer_date);
+}
+
+RefListItem ref_list_item(std::string display_name,
+                          const git_oid& oid,
+                          const git_commit* commit) {
+  const git_signature* author = git_commit_author(commit);
+  const git_signature* committer = git_commit_committer(commit);
+  return {std::move(display_name),
+          oid,
+          author->name,
+          author->email,
+          author->when.time,
+          committer->name,
+          committer->email,
+          committer->when.time};
+}
+
+void sort_refs(std::vector<RefListItem>& items,
+               const std::vector<std::string>& requested) {
+  const std::vector<std::string> default_sort{"name"};
+  const std::vector<std::string>& sort =
+      requested.empty() ? default_sort : requested;
+  for (auto iterator = sort.rbegin(); iterator != sort.rend(); ++iterator) {
+    const bool descending = iterator->ends_with('-');
+    const std::string_view key = descending
+                                     ? std::string_view(*iterator).substr(
+                                           0, iterator->size() - 1)
+                                     : std::string_view(*iterator);
+    std::stable_sort(items.begin(), items.end(), [&](const auto& left,
+                                                     const auto& right) {
+      const int comparison = compare_refs(left, right, key);
+      return descending ? comparison > 0 : comparison < 0;
+    });
+  }
 }
 
 std::string operation_timestamp(const git_commit* operation) {
@@ -104,7 +138,7 @@ void command_bookmark(Repository& repo,
     for (const std::string& revision : options.revisions) {
       revisions.insert(repo.resolve(revision));
     }
-    std::vector<BookmarkListItem> items;
+    std::vector<RefListItem> items;
     for (const auto& [reference, oid] : repo.data_refs()) {
       constexpr std::string_view local_prefix = "refs/heads/";
       constexpr std::string_view remote_prefix = "refs/remotes/";
@@ -144,33 +178,10 @@ void command_bookmark(Repository& repo,
       }
 
       CommitPtr commit = repo.commit(oid);
-      const git_signature* author = git_commit_author(commit.get());
-      const git_signature* committer = git_commit_committer(commit.get());
-      items.push_back({display_name,
-                       oid,
-                       author->name,
-                       author->email,
-                       author->when.time,
-                       committer->name,
-                       committer->email,
-                       committer->when.time});
+      items.push_back(ref_list_item(display_name, oid, commit.get()));
     }
-    const std::vector<std::string> default_sort{"name"};
-    const std::vector<std::string>& sort =
-        options.sort.empty() ? default_sort : options.sort;
-    for (auto iterator = sort.rbegin(); iterator != sort.rend(); ++iterator) {
-      const bool descending = iterator->ends_with('-');
-      const std::string_view key = descending
-                                       ? std::string_view(*iterator).substr(
-                                             0, iterator->size() - 1)
-                                       : std::string_view(*iterator);
-      std::stable_sort(items.begin(), items.end(), [&](const auto& left,
-                                                       const auto& right) {
-        const int comparison = compare_bookmarks(left, right, key);
-        return descending ? comparison > 0 : comparison < 0;
-      });
-    }
-    for (const BookmarkListItem& item : items) {
+    sort_refs(items, options.sort);
+    for (const RefListItem& item : items) {
       output << item.display_name << ": " << oid_string(item.oid, 8) << '\n';
     }
     return;
@@ -357,20 +368,18 @@ void command_tag(Repository& repo,
   };
 
   if (options.action == TagAction::list) {
-    if (options.all_remotes || !options.remote.empty() || options.tracked ||
+    if (options.all_remotes || !options.remotes.empty() || options.tracked ||
         options.conflicted) {
       throw UserError("remote tag state is not supported yet");
     }
     if (!options.template_value.empty()) {
       throw UserError("tag templates are not supported yet");
     }
-    if (!options.sort.empty()) {
-      throw UserError("tag sort keys are not supported yet");
+    std::set<git_oid, OidLess> revisions;
+    for (const std::string& revision : options.revisions) {
+      revisions.insert(repo.resolve(revision));
     }
-    std::optional<git_oid> revision;
-    if (!options.revision.empty()) {
-      revision = repo.resolve(options.revision);
-    }
+    std::vector<RefListItem> items;
     for (const auto& [reference, ref_oid] : repo.data_refs()) {
       (void)ref_oid;
       if (!starts_with(reference, "refs/tags/")) {
@@ -378,16 +387,22 @@ void command_tag(Repository& repo,
       }
       const std::string name =
           reference.substr(std::string_view("refs/tags/").size());
-      if (!options.names.empty() &&
-          std::find(options.names.begin(), options.names.end(), name) ==
-              options.names.end()) {
-        continue;
-      }
       const std::optional<git_oid> target = tag_target(name);
-      if (revision.has_value() && !(*revision == *target)) {
+      const bool name_matches =
+          !options.names.empty() &&
+          std::ranges::find(options.names, name) != options.names.end();
+      const bool revision_matches =
+          !revisions.empty() && revisions.contains(*target);
+      if ((!options.names.empty() || !revisions.empty()) && !name_matches &&
+          !revision_matches) {
         continue;
       }
-      output << name << ": " << oid_string(*target, 8) << '\n';
+      CommitPtr commit = repo.commit(*target);
+      items.push_back(ref_list_item(name, *target, commit.get()));
+    }
+    sort_refs(items, options.sort);
+    for (const RefListItem& item : items) {
+      output << item.display_name << ": " << oid_string(item.oid, 8) << '\n';
     }
     return;
   }

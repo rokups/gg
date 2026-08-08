@@ -20,6 +20,20 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
             std::string::npos);
   EXPECT_NE(invoke({"tag", "list", "-r", "@"}).output.find("v1: "),
             std::string::npos);
+  const Result unioned = invoke({"tag", "list", "base", "-r", "@"});
+  EXPECT_NE(unioned.output.find("base: "), std::string::npos);
+  EXPECT_NE(unioned.output.find("stable: "), std::string::npos);
+  EXPECT_NE(unioned.output.find("v1: "), std::string::npos);
+  EXPECT_EQ(invoke({"tag", "list", "-r", "main", "-r", "@"}).code, 0);
+
+  const Result descending = invoke({"tag", "list", "--sort", "name-"});
+  EXPECT_LT(descending.output.find("v1: "),
+            descending.output.find("stable: "));
+  const std::string all_sort_keys =
+      "name,name-,author-name,author-name-,author-email,author-email-,"
+      "author-date,author-date-,committer-name,committer-name-,"
+      "committer-email,committer-email-,committer-date,committer-date-";
+  EXPECT_EQ(invoke({"tag", "list", "--sort", all_sort_keys}).code, 0);
 
   ASSERT_EQ(invoke({"tag", "set", "v1"}).code, 0);
   ASSERT_EQ(invoke({"new"}).code, 0);
@@ -57,7 +71,14 @@ TEST_F(RepositoryTest, ValidatesTagRequestsAndUnsupportedFilters) {
   EXPECT_EQ(invoke({"tag", "list", "--tracked"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "--conflicted"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "-T", "name"}).code, 2);
-  EXPECT_EQ(invoke({"tag", "list", "--sort", "name"}).code, 2);
+  EXPECT_EQ(invoke({"tag", "list", "--sort", "unknown"}).code, 2);
+  EXPECT_EQ(invoke({"tag", "list", "--all-remotes", "--remote", "origin"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"tag", "list", "--all-remotes", "--tracked"}).code, 2);
+  EXPECT_EQ(invoke({"tag", "list", "--all-remotes", "--conflicted"})
+                .code,
+            2);
 }
 
 }  // namespace gg::test

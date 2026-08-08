@@ -175,10 +175,11 @@ enum class TagAction { list, set, erase };
 struct TagCommand {
   TagAction action{TagAction::list};
   std::vector<std::string> names;
+  std::vector<std::string> remotes;
+  std::vector<std::string> revisions;
+  std::vector<std::string> sort;
   std::string revision;
-  std::string remote;
   std::string template_value;
-  std::string sort;
   bool allow_move{false};
   bool all_remotes{false};
   bool tracked{false};

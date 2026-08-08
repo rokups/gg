@@ -42,7 +42,7 @@ gg bookmark rename [--overwrite-existing] OLD NEW
 gg bookmark list [NAMES...] [--all-remotes | --remote REMOTE...] [-r REVISION...] [--sort KEY...]
 gg tag set [--allow-move] NAME... [-r REV]
 gg tag delete NAME...
-gg tag list [NAME...]
+gg tag list [NAME...] [-r REVISION...] [--sort KEY...]
 gg init [DESTINATION]
 gg clone URL [DESTINATION]
 gg fetch [--remote REMOTE]

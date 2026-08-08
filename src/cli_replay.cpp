@@ -325,9 +325,19 @@ std::vector<std::string> repository_replay_arguments(
             }
             result.insert(result.end(), value.names.begin(), value.names.end());
             add_option(result, "--revision", value.revision);
-            add_option(result, "--remote", value.remote);
+            for (const std::string& remote : value.remotes) {
+              result.emplace_back("--remote");
+              result.push_back(remote);
+            }
+            for (const std::string& revision : value.revisions) {
+              result.emplace_back("--revision");
+              result.push_back(revision);
+            }
+            for (const std::string& key : value.sort) {
+              result.emplace_back("--sort");
+              result.push_back(key);
+            }
             add_option(result, "--template", value.template_value);
-            add_option(result, "--sort", value.sort);
             if (value.allow_move) result.emplace_back("--allow-move");
             if (value.all_remotes) result.emplace_back("--all-remotes");
             if (value.tracked) result.emplace_back("--tracked");
