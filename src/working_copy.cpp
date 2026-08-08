@@ -5,9 +5,98 @@
 #include "repository.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <ranges>
+#include <system_error>
 
 namespace gg::detail {
+namespace {
+
+struct FileTrackingState {
+  std::set<std::string> untracked;
+  std::set<std::string> tracked;
+  std::set<std::string> forced;
+};
+
+std::filesystem::path tracking_path(const Repository& repo) {
+  return std::filesystem::path(git_repository_path(repo.raw())) / "gg" /
+         "file-tracking";
+}
+
+FileTrackingState read_tracking(const Repository& repo) {
+  FileTrackingState state;
+  std::ifstream input(tracking_path(repo));
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.size() < 3 || line[1] != ' ') continue;  // GG_COV_EXCL_BRANCH
+    if (line[0] == 'U') {
+      state.untracked.insert(line.substr(2));
+    } else if (line[0] == 'T') {
+      state.tracked.insert(line.substr(2));
+    } else if (line[0] == 'F') {  // GG_COV_EXCL_BRANCH
+      state.forced.insert(line.substr(2));
+    }
+  }
+  return state;
+}
+
+void write_tracking(const Repository& repo, const FileTrackingState& state) {
+  const std::filesystem::path path = tracking_path(repo);
+  std::filesystem::create_directories(path.parent_path());
+  const std::filesystem::path temporary = path.string() + ".tmp";
+  {
+    std::ofstream output(temporary, std::ios::trunc);
+    if (!output) {
+      throw UserError("cannot write file tracking state");
+    }
+    for (const std::string& value : state.untracked) {
+      output << "U " << value << '\n';
+    }
+    for (const std::string& value : state.tracked) {
+      output << "T " << value << '\n';
+    }
+    for (const std::string& value : state.forced) {
+      output << "F " << value << '\n';
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+  if (error) {
+    std::filesystem::remove(temporary);
+    throw UserError("cannot replace file tracking state: " + error.message());
+  }
+}
+
+bool selects(std::string_view selector, std::string_view path) {
+  return selector == "." || path == selector ||
+         (path.size() > selector.size() && starts_with(path, selector) &&
+          path[selector.size()] == '/');
+}
+
+void remove_selector(git_index* index, const std::string& selector) {
+  if (selector == ".") {
+    check(git_index_clear(index), "exclude working-copy paths");
+    return;
+  }
+  git_index_remove_bypath(index, selector.c_str());
+  git_index_remove_directory(index, selector.c_str(), 0);
+}
+
+void add_selector(git_index* index,
+                  const std::string& selector,
+                  unsigned int flags) {
+  char* value = const_cast<char*>(selector.c_str());
+  git_strarray paths{&value, 1};
+  check(git_index_add_all(index, selector == "." ? nullptr : &paths, flags,
+                          nullptr, nullptr),
+        "include working-copy paths");
+}
+
+std::string stored_path(const std::string& path) {
+  return path.empty() ? "." : path;
+}
+
+}  // namespace
 
 git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   git_index* raw_index = nullptr;
@@ -20,6 +109,16 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   check(git_index_add_all(index.get(), nullptr, GIT_INDEX_ADD_DEFAULT, nullptr,
                           nullptr),
         "snapshot working tree");
+  const FileTrackingState tracking = read_tracking(*this);
+  for (const std::string& path : tracking.untracked) {
+    remove_selector(index.get(), path);
+  }
+  for (const std::string& path : tracking.tracked) {
+    add_selector(index.get(), path, GIT_INDEX_ADD_DEFAULT);
+  }
+  for (const std::string& path : tracking.forced) {
+    add_selector(index.get(), path, GIT_INDEX_ADD_FORCE);
+  }
   git_oid result{};
   check(git_index_write_tree_to(&result, index.get(), repo_.get()),
         "write working-copy tree");
@@ -171,6 +270,49 @@ bool Repository::sync_workspace() const {
   record(plan.updates, {}, head_for_workspace(rewritten),
          "gg snapshot working copy");
   return true;
+}
+
+void Repository::track_paths(const std::vector<std::string>& paths,
+                             bool include_ignored) const {
+  FileTrackingState state = read_tracking(*this);
+  const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+  for (const std::string& raw_path : paths) {
+    const std::string path = stored_path(raw_path);
+    std::error_code error;
+    (void)std::filesystem::symlink_status(workdir / path, error);
+    if (error) {
+      throw UserError("path not found: " + path);
+    }
+    int ignored = 0;
+    if (path != ".") {
+      check(git_ignore_path_is_ignored(&ignored, repo_.get(), path.c_str()),
+            "check ignored path");
+    }
+    if (ignored != 0 && !include_ignored) {
+      throw UserError("path is ignored: " + path);
+    }
+    std::erase_if(state.untracked,
+                  [&](const std::string& value) { return selects(path, value); });
+    std::erase_if(state.tracked,
+                  [&](const std::string& value) { return selects(path, value); });
+    std::erase_if(state.forced,
+                  [&](const std::string& value) { return selects(path, value); });
+    (include_ignored ? state.forced : state.tracked).insert(path);
+  }
+  write_tracking(*this, state);
+}
+
+void Repository::untrack_paths(const std::vector<std::string>& paths) const {
+  FileTrackingState state = read_tracking(*this);
+  for (const std::string& raw_path : paths) {
+    const std::string path = stored_path(raw_path);
+    std::erase_if(state.tracked,
+                  [&](const std::string& value) { return selects(path, value); });
+    std::erase_if(state.forced,
+                  [&](const std::string& value) { return selects(path, value); });
+    state.untracked.insert(path);
+  }
+  write_tracking(*this, state);
 }
 
 

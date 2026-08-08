@@ -455,6 +455,22 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required();
   file_chmod
       ->add_option("-r,--revision", file_chmod_value.revision, "Revision");
+  FileCommand file_track_value;
+  file_track_value.action = FileAction::track;
+  auto* file_track = file->add_subcommand(
+      "track", "Start tracking paths in working-copy snapshots");
+  file_track->add_option("filesets", file_track_value.paths,
+                         "Repository-relative paths")
+      ->required();
+  file_track->add_flag("--include-ignored", file_track_value.include_ignored,
+                       "Track paths even when ignored by Git");
+  FileCommand file_untrack_value;
+  file_untrack_value.action = FileAction::untrack;
+  auto* file_untrack = file->add_subcommand(
+      "untrack", "Stop tracking paths in working-copy snapshots");
+  file_untrack->add_option("filesets", file_untrack_value.paths,
+                           "Repository-relative paths")
+      ->required();
 
   auto add_diff_format = [](CLI::App* command, DiffFormatOptions& value) {
     std::vector<CLI::Option*> options;
@@ -1036,6 +1052,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(file_search_value)};
   } else if (file_chmod->parsed()) {
     command = RepositoryCommand{std::move(file_chmod_value)};
+  } else if (file_track->parsed()) {
+    command = RepositoryCommand{std::move(file_track_value)};
+  } else if (file_untrack->parsed()) {
+    command = RepositoryCommand{std::move(file_untrack_value)};
   } else if (diff->parsed()) {
     command = RepositoryCommand{std::move(diff_value)};
   } else if (show->parsed()) {

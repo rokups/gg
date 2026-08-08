@@ -260,6 +260,11 @@ class Repository {
 
   bool sync_workspace() const;
 
+  void track_paths(const std::vector<std::string>& paths,
+                   bool include_ignored) const;
+
+  void untrack_paths(const std::vector<std::string>& paths) const;
+
   std::vector<std::string> bookmarks(const git_oid& oid) const;
 
   const std::vector<std::string>& config_values() const;

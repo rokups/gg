@@ -117,7 +117,7 @@ struct SimplifyParentsCommand {
   std::vector<std::string> revisions;
 };
 
-enum class FileAction { list, show, search, chmod };
+enum class FileAction { list, show, search, chmod, track, untrack };
 struct FileCommand {
   FileAction action{FileAction::list};
   std::string revision{"@"};
@@ -127,6 +127,7 @@ struct FileCommand {
   std::string mode;
   bool name_only{false};
   bool line_number{false};
+  bool include_ignored{false};
 };
 
 struct DiffCommand {

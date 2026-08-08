@@ -268,12 +268,33 @@ void command_file(Repository& repo,
   if (!options.template_value.empty()) {
     throw UserError("file templates are not supported yet");
   }
+  std::vector<std::string> normalized_paths;
+  normalized_paths.reserve(options.paths.size());
+  for (const std::string& path : options.paths) {
+    normalized_paths.push_back(normalize_selector(path));
+  }
+  if (options.action == FileAction::track) {
+    if (!repo.ref_target(kWorkspaceRef).has_value()) {
+      throw UserError("this command requires a working-copy change");
+    }
+    repo.track_paths(normalized_paths, options.include_ignored);
+    repo.sync_workspace();
+    output << "Started tracking " << normalized_paths.size() << " path(s).\n";
+    return;
+  }
   const git_oid revision = repo.resolve(options.revision);
   const std::vector<FileEntry> entries = tree_entries(repo, revision);
   const bool require_matches =
-      options.action == FileAction::show || options.action == FileAction::chmod;
+      options.action == FileAction::show || options.action == FileAction::chmod ||
+      options.action == FileAction::untrack;
   const std::vector<const FileEntry*> selected =
       select_entries(entries, options.paths, require_matches);
+  if (options.action == FileAction::untrack) {
+    repo.untrack_paths(normalized_paths);
+    repo.sync_workspace();
+    output << "Stopped tracking " << normalized_paths.size() << " path(s).\n";
+    return;
+  }
   switch (options.action) {
     case FileAction::list:
       list_files(selected, output);
@@ -285,6 +306,8 @@ void command_file(Repository& repo,
       search_files(repo, options, selected, output);
       return;
     case FileAction::chmod:
+    case FileAction::track:    // Handled above.
+    case FileAction::untrack:  // Handled above.
     default:  // GG_COV_EXCL_BRANCH
       chmod_files(repo, options, revision, selected, output);
       return;

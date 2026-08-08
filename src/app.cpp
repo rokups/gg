@@ -68,7 +68,9 @@ bool has_primary_output(const Command& command) {
                   return true;
                 } else if constexpr (std::is_same_v<RepositoryValue,
                                                     FileCommand>) {
-                  return repository_value.action != FileAction::chmod;
+                  return repository_value.action == FileAction::list ||
+                         repository_value.action == FileAction::show ||
+                         repository_value.action == FileAction::search;
                 } else if constexpr (std::is_same_v<RepositoryValue,
                                                     BookmarkCommand>) {
                   return repository_value.action == BookmarkAction::list;

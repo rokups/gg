@@ -215,6 +215,12 @@ std::vector<std::string> repository_replay_arguments(
                 result.emplace_back("chmod");
                 result.push_back(value.mode);
                 break;
+              case FileAction::track:
+                result.emplace_back("track");
+                break;
+              case FileAction::untrack:
+                result.emplace_back("untrack");
+                break;
             }
             result.insert(result.end(), value.paths.begin(), value.paths.end());
             if (value.revision != "@") {
@@ -227,6 +233,9 @@ std::vector<std::string> repository_replay_arguments(
             }
             if (value.line_number) {
               result.emplace_back("--line-number");
+            }
+            if (value.include_ignored) {
+              result.emplace_back("--include-ignored");
             }
             return result;
           },

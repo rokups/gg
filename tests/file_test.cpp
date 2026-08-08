@@ -111,6 +111,64 @@ TEST_F(RepositoryTest, ChangesExecutableBitsAndRestacksDescendants) {
   EXPECT_EQ(invoke({"file", "chmod", "x", "link"}).code, 2);
 }
 
+TEST_F(RepositoryTest, PersistsFileTrackingOverrides) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("nested/one.txt", "one\n");
+  write("nested/two.txt", "two\n");
+  write("nest", "prefix\n");
+  write("abc", "different\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+
+  EXPECT_EQ(invoke({"file", "untrack", "nested"}).code, 0);
+  EXPECT_EQ(invoke({"file", "list", "nested"}).output, "");
+
+  EXPECT_EQ(invoke({"file", "track", "nest"}).code, 0);
+  EXPECT_EQ(invoke({"file", "track", "abc"}).code, 0);
+  EXPECT_TRUE(std::filesystem::exists(path_ / "nested/one.txt"));
+  write("nested/one.txt", "changed\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  EXPECT_EQ(invoke({"file", "list", "nested"}).output, "");
+
+  EXPECT_EQ(invoke({"file", "track", "nested/one.txt"}).code, 0);
+  EXPECT_EQ(invoke({"file", "list", "nested"}).output,
+            "nested/one.txt\n");
+  EXPECT_EQ(invoke({"file", "track", "nested"}).code, 0);
+  EXPECT_EQ(invoke({"file", "list", "nested"}).output,
+            "nested/one.txt\nnested/two.txt\n");
+
+  EXPECT_EQ(invoke({"file", "untrack", "."}).code, 0);
+  EXPECT_EQ(invoke({"file", "list"}).output, "");
+  const Result root_track = invoke({"file", "track", "."});
+  EXPECT_EQ(root_track.code, 0) << root_track.error;
+  EXPECT_NE(invoke({"file", "list"}).output.find("tracked.txt"),
+            std::string::npos);
+
+  write(".gitignore", "ignored.txt\n");
+  write("ignored.txt", "ignored\n");
+  EXPECT_EQ(invoke({"file", "track", "ignored.txt"}).code, 2);
+  EXPECT_EQ(invoke({"file", "track", "--include-ignored", "ignored.txt"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"file", "track", "--include-ignored", "ignored.txt"})
+                .code,
+            0);
+  EXPECT_NE(invoke({"file", "list"}).output.find("ignored.txt"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"file", "untrack", "ignored.txt"}).code, 0);
+  EXPECT_EQ(invoke({"file", "list"}).output.find("ignored.txt"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"file", "track", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"file", "track", std::string(5000, 'x')}).code, 2);
+
+  const std::filesystem::path tracking = path_ / ".git/gg/file-tracking";
+  std::filesystem::remove(tracking);
+  std::filesystem::create_directory(tracking.string() + ".tmp");
+  EXPECT_EQ(invoke({"file", "track", "tracked.txt"}).code, 2);
+  std::filesystem::remove(tracking.string() + ".tmp");
+  std::filesystem::create_directory(tracking);
+  EXPECT_EQ(invoke({"file", "track", "tracked.txt"}).code, 2);
+}
+
 TEST_F(RepositoryTest, ValidatesFileCommandArguments) {
   EXPECT_EQ(invoke({"file"}).code, 2);
   EXPECT_EQ(invoke({"file", "show"}).code, 2);
@@ -123,6 +181,9 @@ TEST_F(RepositoryTest, ValidatesFileCommandArguments) {
   EXPECT_EQ(invoke({"file", "chmod", "x", "-r", "main", "tracked.txt"})
                 .code,
             2);
+  EXPECT_EQ(invoke({"file", "track", "tracked.txt"}).code, 2);
+  EXPECT_EQ(invoke({"file", "track"}).code, 2);
+  EXPECT_EQ(invoke({"file", "untrack"}).code, 2);
   EXPECT_EQ(invoke({"file", "list", "extra", "-r", "missing"}).code, 2);
 }
 
