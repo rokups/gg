@@ -86,6 +86,44 @@ TEST_F(RepositoryTest, ReportsConfigPathsAndValidatesRequests) {
   EXPECT_EQ(invoke({"config", "path", "--repo", "--user"}).code, 2);
 }
 
+TEST_F(RepositoryTest, AppliesInvocationConfigurationLayers) {
+  const std::filesystem::path extra = path_ / "extra.toml";
+  {
+    std::ofstream output(extra);
+    output << "ui.color = \"file\"\nui.number = 1\n";
+  }
+  const Result configured =
+      invoke({"--config-file", extra.string(), "--config", "ui.color=command",
+              "--config", "ui.number=2", "config", "list",
+              "--include-overridden", "ui"});
+  ASSERT_EQ(configured.code, 0) << configured.error;
+  EXPECT_NE(configured.output.find("ui.color = \"file\""), std::string::npos);
+  EXPECT_NE(configured.output.find("ui.color = command"), std::string::npos);
+  EXPECT_NE(configured.output.find("ui.number = 2"), std::string::npos);
+  EXPECT_EQ(invoke({"--config", "ui.color=command", "config", "get",
+                    "ui.color"})
+                .output,
+            "command\n");
+  EXPECT_EQ(invoke({"--config", "missing", "config", "list"}).code, 2);
+  EXPECT_EQ(invoke({"--config", "bad..key=1", "config", "list"}).code, 2);
+  EXPECT_EQ(invoke({"--config", "key=[", "config", "list"}).code, 2);
+  EXPECT_EQ(invoke({"--config", "key={", "config", "list"}).code, 2);
+  EXPECT_EQ(invoke({"--config", "key='", "config", "list"}).code, 2);
+  EXPECT_EQ(invoke({"--config", "key=\"", "config", "list"}).code, 2);
+  EXPECT_EQ(invoke({"--config-file", (path_ / "missing").string(), "config",
+                    "list"})
+                .code,
+            2);
+
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  const git_oid child = raw_commit("configured child", {workspace});
+  set_ref("refs/heads/configured-child", child);
+  ASSERT_EQ(invoke({"--config", "ui.movement.edit=true", "next"}).code, 0);
+  const git_oid actual = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&actual, &child), 0);
+}
+
 TEST_F(RepositoryTest, PreservesConfigTextAndReportsFileErrors) {
   std::string path = invoke({"config", "path", "--repo"}).output;
   path.pop_back();

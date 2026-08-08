@@ -108,7 +108,10 @@ struct PendingRewrite {
 
 class Repository {
  public:
-  explicit Repository(const std::filesystem::path& path);
+  explicit Repository(
+      const std::filesystem::path& path,
+      std::vector<std::string> config_values = {},
+      std::vector<std::filesystem::path> config_files = {});
 
   git_repository* raw() const;
 
@@ -245,8 +248,14 @@ class Repository {
 
   std::vector<std::string> bookmarks(const git_oid& oid) const;
 
+  const std::vector<std::string>& config_values() const;
+
+  const std::vector<std::filesystem::path>& config_files() const;
+
  private:
   RepositoryPtr repo_;
+  std::vector<std::string> config_values_;
+  std::vector<std::filesystem::path> config_files_;
 };
 
 }  // namespace gg::detail

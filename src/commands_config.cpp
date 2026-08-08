@@ -136,6 +136,31 @@ std::map<std::string, std::string> read_values(
   return values;
 }
 
+std::vector<std::pair<std::string, std::string>> runtime_values(
+    const Repository& repo) {
+  std::vector<std::pair<std::string, std::string>> values;
+  for (const std::filesystem::path& path : repo.config_files()) {
+    if (!std::filesystem::is_regular_file(path)) {
+      throw UserError("cannot read configuration: " + path.string());
+    }
+    for (const auto& entry : read_values(path)) values.push_back(entry);
+  }
+  for (const std::string& raw : repo.config_values()) {
+    const auto assignment = parse_assignment(raw);
+    if (!assignment.has_value()) {
+      throw UserError("--config must be NAME=VALUE");
+    }
+    validate_name(assignment->first);
+    const std::string value = trim(assignment->second);
+    if (value.front() == '[' || value.front() == '{' || value.front() == '\'' ||
+        value.front() == '"') {
+      validate_value(value);
+    }
+    values.push_back(*assignment);
+  }
+  return values;
+}
+
 void write_lines(const std::filesystem::path& path,
                  const std::vector<std::string>& lines) {
   std::filesystem::create_directories(path.parent_path());
@@ -209,6 +234,9 @@ std::optional<std::string> config_value(Repository& repo,
       values[entry.first] = entry.second;
     }
   }
+  for (const auto& entry : runtime_values(repo)) {
+    values[entry.first] = entry.second;
+  }
   const auto value = values.find(std::string(name));
   if (value == values.end()) return std::nullopt;
   return value->second;
@@ -272,6 +300,12 @@ void command_config(Repository& repo,
       if (*scope != layer) continue;
     }
     for (const auto& entry : read_values(config_path(repo, layer))) {
+      merged[entry.first] = entry.second;
+      layered.push_back(entry);
+    }
+  }
+  if (!scope.has_value()) {
+    for (const auto& entry : runtime_values(repo)) {
       merged[entry.first] = entry.second;
       layered.push_back(entry);
     }

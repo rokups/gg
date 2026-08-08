@@ -48,7 +48,11 @@ return text.substr(0, text.find('\n'));
 bool starts_with(std::string_view value, std::string_view prefix) {
 return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
-Repository::Repository(const std::filesystem::path& path) {
+Repository::Repository(const std::filesystem::path& path,
+                       std::vector<std::string> config_values,
+                       std::vector<std::filesystem::path> config_files)
+    : config_values_(std::move(config_values)),
+      config_files_(std::move(config_files)) {
   git_repository* repository = nullptr;
   check(git_repository_open_ext(&repository, path.string().c_str(),
                                 GIT_REPOSITORY_OPEN_CROSS_FS, nullptr),
@@ -60,6 +64,14 @@ Repository::Repository(const std::filesystem::path& path) {
 }
 
 git_repository* Repository::raw() const { return repo_.get(); }
+
+const std::vector<std::string>& Repository::config_values() const {
+  return config_values_;
+}
+
+const std::vector<std::filesystem::path>& Repository::config_files() const {
+  return config_files_;
+}
 
 CommitPtr Repository::commit(const git_oid& oid) const {
   git_commit* value = nullptr;

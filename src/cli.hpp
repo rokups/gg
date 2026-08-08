@@ -294,6 +294,8 @@ struct Invocation {
   std::filesystem::path repository{"."};
   Command command;
   std::vector<std::string> replay_arguments;
+  std::vector<std::string> config_values;
+  std::vector<std::filesystem::path> config_files;
 };
 
 struct ParseResult {

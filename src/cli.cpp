@@ -205,6 +205,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                "Allow rewriting any non-root revision");
   bool no_pager = false;
   app.add_flag("--no-pager", no_pager, "Disable the pager");
+  std::vector<std::string> config_values;
+  app.add_option("--config", config_values, "Additional NAME=VALUE configuration")
+      ->type_size(1)
+      ->allow_extra_args(false);
+  std::vector<std::filesystem::path> config_files;
+  app.add_option("--config-file", config_files, "Additional configuration file")
+      ->type_size(1)
+      ->allow_extra_args(false);
 
   StatusCommand status_value;
   auto* status = app.add_subcommand("status", "Show the working-copy change");
@@ -1061,7 +1069,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(config_unset_value)};
   }
 
-  Invocation invocation{repository, std::move(command), {}};
+  Invocation invocation{repository, std::move(command), {},
+                        std::move(config_values), std::move(config_files)};
   invocation.replay_arguments = replay_arguments(invocation.command);
   return {-1, std::move(invocation)};
 }
