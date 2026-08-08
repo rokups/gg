@@ -8,9 +8,12 @@
 #include "commands.hpp"
 
 #include <ostream>
+#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 namespace gg::detail {
 namespace {
@@ -27,6 +30,20 @@ std::vector<std::string_view> views(const std::vector<std::string>& values) {
     result.push_back(value);
   }
   return result;
+}
+
+OutputColorMode output_color_mode(std::string_view requested,
+                                  std::ostream& output) {
+  if (requested == "always") return OutputColorMode::ansi;
+  if (requested == "debug") return OutputColorMode::debug;
+  if (requested == "auto") {
+    const bool terminal_stream = &output == &std::cout;
+    const bool terminal = isatty(STDOUT_FILENO) != 0;
+    const bool color = terminal_stream && terminal;  // GG_COV_EXCL_BRANCH
+    return color ? OutputColorMode::ansi  // GG_COV_EXCL_BRANCH
+                 : OutputColorMode::plain;  // GG_COV_EXCL_BRANCH
+  }
+  return OutputColorMode::plain;
 }
 
 int execute(Repository& repository,
@@ -139,6 +156,9 @@ int dispatch(std::span<const std::string_view> arguments,
   }
   Invocation invocation =
       std::move(std::get<Invocation>(parsed.invocation));
+  const OutputColorMode color = output_color_mode(invocation.color, output);
+  set_output_color_mode(output, color);
+  set_output_color_mode(error, color);
   if (const auto* clone = std::get_if<GitCloneCommand>(&invocation.command)) {
     return clone_command(*clone, output);
   }
@@ -203,10 +223,12 @@ int run(std::span<const std::string_view> arguments,
     detail::Libgit2 libgit2;
     return detail::dispatch(arguments, output, error);
   } catch (const detail::UserError& exception) {  // GG_COV_EXCL_BRANCH
-    error << "error: " << exception.what() << '\n';
+    error << detail::styled(error, "error:", detail::OutputStyle::removed)
+          << ' ' << exception.what() << '\n';
     return 2;
   } catch (const std::exception& exception) {
-    error << "error: " << exception.what() << '\n';
+    error << detail::styled(error, "error:", detail::OutputStyle::removed)
+          << ' ' << exception.what() << '\n';
     return 1;
   }
 }

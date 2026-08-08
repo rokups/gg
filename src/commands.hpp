@@ -13,6 +13,24 @@
 
 namespace gg::detail {
 
+enum class OutputColorMode { plain, ansi, debug };
+enum class OutputStyle {
+  working_copy,
+  change_id,
+  working_change_id,
+  commit_id,
+  working_commit_id,
+  bookmark,
+  added,
+  removed,
+  modified,
+  heading,
+  hunk
+};
+
+void set_output_color_mode(std::ostream&, OutputColorMode);
+std::string styled(std::ostream&, std::string_view, OutputStyle);
+
 std::vector<git_oid> commit_parents(
     Repository& repo, const std::vector<std::string>& revisions);
 git_oid combined_tree(Repository& repo, const std::vector<git_oid>& parents);

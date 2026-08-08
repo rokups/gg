@@ -208,6 +208,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                "Allow rewriting any non-root revision");
   bool no_pager = false;
   app.add_flag("--no-pager", no_pager, "Disable the pager");
+  std::string color = "auto";
+  app.add_option("--color", color, "When to colorize output")
+      ->check(CLI::IsMember({"always", "never", "debug", "auto"}));
   std::vector<std::string> config_values;
   app.add_option("--config", config_values, "Additional NAME=VALUE configuration")
       ->type_size(1)
@@ -1074,7 +1077,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   Invocation invocation{repository, std::move(command), {},
                         std::move(config_values), std::move(config_files),
-                        ignore_working_copy};
+                        std::move(color), ignore_working_copy};
   invocation.replay_arguments = replay_arguments(invocation.command);
   return {-1, std::move(invocation)};
 }

@@ -314,15 +314,23 @@ void command_status(Repository& repo,
   CommitPtr change = repo.commit(*workspace);
   const auto id = repo.change_id(*workspace);
   output << "Working copy (@): "
-         << (id.has_value() ? repo.short_change_id(*id) : "--------")
-         << ' ' << oid_string(*workspace, 8) << ' ';
+         << styled(output,
+                   id.has_value() ? repo.short_change_id(*id) : "--------",
+                   OutputStyle::working_change_id)
+         << ' '
+         << styled(output, oid_string(*workspace, 8),
+                   OutputStyle::working_commit_id)
+         << ' ';
   const std::string description = first_line(git_commit_message(change.get()));
   output << (description.empty() ? "(no description set)" : description) << '\n';
   const auto parents = repo.parents(*workspace);
   git_oid base_tree_oid{};
   if (!parents.empty()) {
     CommitPtr parent = repo.commit(parents.front());
-    output << "Parent commit (@-): " << oid_string(parents.front(), 8) << ' '
+    output << "Parent commit (@-): "
+           << styled(output, oid_string(parents.front(), 8),
+                     OutputStyle::commit_id)
+           << ' '
            << first_line(git_commit_message(parent.get())) << '\n';
     base_tree_oid = *git_commit_tree_id(parent.get());
   } else {
@@ -372,7 +380,15 @@ void command_status(Repository& repo,
                           : delta->status == GIT_DELTA_DELETED  ? 'D'
                           : delta->status == GIT_DELTA_RENAMED  ? 'R'
                                                                  : 'M';
-      output << status << ' ' << delta->new_file.path << '\n';
+      const OutputStyle style = delta->status == GIT_DELTA_ADDED
+                                    ? OutputStyle::added
+                                : delta->status == GIT_DELTA_DELETED
+                                    ? OutputStyle::removed
+                                    : OutputStyle::modified;
+      output << styled(output,
+                       std::string(1, status) + " " + delta->new_file.path,
+                       style)
+             << '\n';
     }
   }
 }
@@ -453,17 +469,26 @@ void command_log(Repository& repo,
     const auto id = repo.change_id(oid);
     const auto bookmarks = repo.bookmarks(oid);
     if (!options.no_graph) {
-      const std::string_view marker =
-          workspace.has_value() && *workspace == oid ? "@"
-          : id.has_value()                         ? "○"
-                                                   : "*";
+      const bool working = workspace.has_value() && *workspace == oid;
+      const std::string marker =
+          working ? styled(output, "@", OutputStyle::working_copy)
+          : id.has_value() ? styled(output, "○", OutputStyle::change_id)
+                           : "*";
       output << graph_prefix(graph_lanes, oid, graph_successors[oid], marker);
     }
-    output
-           << (id.has_value() ? repo.short_change_id(*id) : oid_string(oid, 8))
-           << ' ' << oid_string(oid, 8);
+    const bool working = workspace.has_value() && *workspace == oid;
+    output << styled(output,
+                     id.has_value() ? repo.short_change_id(*id)
+                                    : oid_string(oid, 8),
+                     working ? OutputStyle::working_change_id
+                             : id.has_value() ? OutputStyle::change_id
+                                              : OutputStyle::commit_id)
+           << ' '
+           << styled(output, oid_string(oid, 8),
+                     working ? OutputStyle::working_commit_id
+                             : OutputStyle::commit_id);
     for (const std::string& bookmark : bookmarks) {
-      output << " " << bookmark;
+      output << " " << styled(output, bookmark, OutputStyle::bookmark);
     }
     const std::string description = first_line(git_commit_message(value.get()));
     output << " " << (description.empty() ? "(no description set)" : description)

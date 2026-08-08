@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <cstdlib>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <utility>
@@ -19,6 +20,56 @@
 extern char** environ;
 
 namespace gg::detail {
+namespace {
+
+struct StyleSpec {
+  std::string_view ansi;
+  std::string_view label;
+};
+
+constexpr std::array<StyleSpec, 11> kStyles{{
+    {"\x1b[1;38;5;2m", "working_copy"},
+    {"\x1b[38;5;5m", "change_id"},
+    {"\x1b[1;38;5;13m", "working_copy change_id"},
+    {"\x1b[38;5;4m", "commit_id"},
+    {"\x1b[1;38;5;12m", "working_copy commit_id"},
+    {"\x1b[38;5;5m", "bookmark"},
+    {"\x1b[38;5;2m", "added"},
+    {"\x1b[38;5;1m", "removed"},
+    {"\x1b[38;5;3m", "modified"},
+    {"\x1b[1m", "heading"},
+    {"\x1b[38;5;6m", "hunk"},
+}};
+
+int color_mode_index() {
+  static const int index = std::ios_base::xalloc();  // GG_COV_EXCL_BRANCH
+  return index;
+}
+
+}  // namespace
+
+void set_output_color_mode(std::ostream& output, OutputColorMode mode) {
+  output.iword(color_mode_index()) = static_cast<long>(mode);
+}
+
+std::string styled(std::ostream& output,
+                   std::string_view value,
+                   OutputStyle style) {
+  const auto mode =
+      static_cast<OutputColorMode>(output.iword(color_mode_index()));
+  if (mode == OutputColorMode::plain) return std::string(value);
+  const StyleSpec& spec = kStyles[static_cast<std::size_t>(style)];
+  std::string result(spec.ansi);
+  if (mode == OutputColorMode::debug) {
+    result += "<<";
+    result += spec.label;
+    result += "::";
+  }
+  result += value;
+  if (mode == OutputColorMode::debug) result += ">>";
+  result += "\x1b[0m";
+  return result;
+}
 
 std::vector<git_oid> commit_parents(Repository& repo,
                                     const std::vector<std::string>& revisions) {

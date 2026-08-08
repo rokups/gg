@@ -167,6 +167,19 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
             "2\n");
   EXPECT_EQ(invoke({"log", "--limit", "0"}).output, "");
 
+  const Result colored =
+      invoke({"--color", "always", "log", "-r", "@", "-n", "1"});
+  EXPECT_NE(colored.output.find("\x1b[1;38;5;2m@\x1b[0m"),
+            std::string::npos);
+  EXPECT_NE(colored.output.find("\x1b[1;38;5;13m"), std::string::npos);
+  EXPECT_EQ(invoke({"--color", "never", "log", "-n", "1"})
+                .output.find("\x1b["),
+            std::string::npos);
+  const Result debug =
+      invoke({"--color", "debug", "log", "-r", "@", "-n", "1"});
+  EXPECT_NE(debug.output.find("<<working_copy::@>>"), std::string::npos);
+  EXPECT_EQ(invoke({"--color", "invalid", "log"}).code, 2);
+
   const Result filtered = invoke({"log", "-r", "@", "tracked.txt"});
   ASSERT_EQ(filtered.code, 0) << filtered.error;
   EXPECT_NE(filtered.output.find("first"), std::string::npos);
