@@ -171,9 +171,6 @@ void command_bookmark(Repository& repo,
                       std::ostream& output) {
   repo.sync_workspace();
   if (options.action == BookmarkAction::list) {
-    if (options.tracked) {
-      throw UserError("bookmark tracking state is not supported yet");
-    }
     if (options.conflicted) {
       throw UserError("bookmark conflict state is not supported yet");
     }
@@ -195,11 +192,14 @@ void command_bookmark(Repository& repo,
       std::string name;
       std::string display_name;
       if (local) {
-        if (!options.remotes.empty()) continue;
+        if (options.tracked || !options.remotes.empty()) continue;
         name = reference.substr(local_prefix.size());
         display_name = name;
       } else {
-        if (!options.all_remotes && options.remotes.empty()) continue;
+        if (!options.tracked && !options.all_remotes &&
+            options.remotes.empty()) {
+          continue;
+        }
         const std::string remote_bookmark =
             reference.substr(remote_prefix.size());
         const std::size_t slash = remote_bookmark.find('/');

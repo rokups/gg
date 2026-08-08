@@ -96,7 +96,15 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   EXPECT_EQ(invoke({"bookmark", "list", "--sort", all_sort_keys}).code, 0);
   EXPECT_EQ(invoke({"bookmark", "list", "--sort", "unknown"}).code, 2);
 
-  EXPECT_EQ(invoke({"bookmark", "list", "--tracked"}).code, 2);
+  const Result tracked = invoke({"bookmark", "list", "--tracked"});
+  ASSERT_EQ(tracked.code, 0) << tracked.error;
+  EXPECT_NE(tracked.output.find("alpha@origin:"), std::string::npos);
+  EXPECT_NE(tracked.output.find("beta@backup:"), std::string::npos);
+  EXPECT_EQ(tracked.output.find("alpha:"), std::string::npos);
+  const Result tracked_origin =
+      invoke({"bookmark", "list", "--tracked", "--remote", "origin"});
+  EXPECT_NE(tracked_origin.output.find("alpha@origin:"), std::string::npos);
+  EXPECT_EQ(tracked_origin.output.find("beta@backup:"), std::string::npos);
   EXPECT_EQ(invoke({"bookmark", "list", "--conflicted"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "list", "--template", "name"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--remote",
