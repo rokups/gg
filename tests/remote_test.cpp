@@ -491,6 +491,49 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
                 0);
       git_reference_free(reference);
     }
+    if (remote_path == origin_path) {
+      git_object* target_object = nullptr;
+      ASSERT_EQ(git_object_lookup(&target_object, bare, &target,
+                                  GIT_OBJECT_COMMIT),
+                0);
+      git_signature* signature = nullptr;
+      ASSERT_EQ(git_signature_now(&signature, "GG Test", "gg@example.test"),
+                0);
+      git_oid annotated{};
+      ASSERT_EQ(git_tag_create(&annotated, bare, "annotated", target_object,
+                               signature, "annotated", 1),
+                0);
+      git_signature_free(signature);
+      git_object_free(target_object);
+    }
+    if (remote_path == backup_path) {
+      git_reference* conflict = nullptr;
+      ASSERT_EQ(git_reference_create(&conflict, bare, "refs/tags/conflict",
+                                     &target, 1, "test"),
+                0);
+      git_reference_free(conflict);
+      git_commit* target_commit = nullptr;
+      ASSERT_EQ(git_commit_lookup(&target_commit, bare, &target), 0);
+      git_tree* tree = nullptr;
+      ASSERT_EQ(git_tree_lookup(&tree, bare,
+                                git_commit_tree_id(target_commit)),
+                0);
+      git_signature* signature = nullptr;
+      ASSERT_EQ(git_signature_now(&signature, "Remote", "remote@example.test"),
+                0);
+      git_oid orphan{};
+      ASSERT_EQ(git_commit_create(&orphan, bare, nullptr, signature, signature,
+                                  nullptr, "remote-only", tree, 0, nullptr),
+                0);
+      git_reference* reference = nullptr;
+      ASSERT_EQ(git_reference_create(&reference, bare, "refs/tags/orphan",
+                                     &orphan, 1, "test"),
+                0);
+      git_reference_free(reference);
+      git_signature_free(signature);
+      git_tree_free(tree);
+      git_commit_free(target_commit);
+    }
     git_repository_free(bare);
   }
 
@@ -539,20 +582,46 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
             0);
   EXPECT_TRUE(has_ref("refs/tags/release"));
   EXPECT_TRUE(has_ref("refs/tags/stable"));
+  EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/release"));
+  EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/stable"));
+  EXPECT_NE(invoke({"tag", "list", "--tracked", "--remote", "origin"})
+                .output.find("release@origin:"),
+            std::string::npos);
 
   git_repository* backup = nullptr;
   ASSERT_EQ(git_repository_open(&backup, backup_path.string().c_str()), 0);
   ASSERT_EQ(git_reference_remove(backup, "refs/heads/two"), 0);
   git_repository_free(backup);
+  set_ref("refs/tags/conflict", later);
+  set_ref("refs/gg/remotes/backup/tags/release", target);
   ASSERT_EQ(invoke({"fetch", "--remote", "backup"}).code, 0);
   EXPECT_FALSE(has_ref("refs/remotes/backup/two"));
+  EXPECT_TRUE(has_ref("refs/gg/remotes/backup/tags/release"));
+  EXPECT_TRUE(has_ref("refs/gg/remotes/backup/tags/stable"));
+  EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/orphan"));
+  EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/conflict"));
 
   remove_ref("refs/remotes/backup/one");
-  const Result no_tracked =
+  const Result tracked_tags =
       invoke({"fetch", "--tracked", "--remote", "backup"});
+  EXPECT_NE(tracked_tags.output.find("Fetched backup"), std::string::npos);
+  EXPECT_TRUE(has_ref("refs/gg/remotes/backup/tags/release"));
+
+  ASSERT_EQ(git_repository_open(&backup, backup_path.string().c_str()), 0);
+  ASSERT_EQ(git_reference_remove(backup, "refs/tags/release"), 0);
+  ASSERT_EQ(git_reference_remove(backup, "refs/tags/stable"), 0);
+  git_repository_free(backup);
+  ASSERT_EQ(invoke({"fetch", "--tracked", "--remote", "backup"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/release"));
+  EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/stable"));
+  const Result no_tracked = invoke({"fetch", "--tracked", "--remote", "backup"});
   EXPECT_NE(no_tracked.output.find("No tracked refs to fetch"),
             std::string::npos);
   EXPECT_FALSE(has_ref("refs/remotes/backup/one"));
+
+  set_ref("refs/gg/remotes/backup/tags/phantom", target);
+  ASSERT_EQ(invoke({"fetch", "--remote", "backup"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/phantom"));
 
   std::filesystem::remove_all(origin_path);
   std::filesystem::remove_all(backup_path);

@@ -532,6 +532,27 @@ git_remote_callbacks remote_callbacks() {
   return callbacks;
 }
 
+std::map<std::string, git_oid> advertised_remote_tags(git_remote* remote) {
+  git_remote_callbacks callbacks = remote_callbacks();
+  check(git_remote_connect(remote, GIT_DIRECTION_FETCH, &callbacks, nullptr,
+                           nullptr),
+        "connect to remote");
+  const git_remote_head** heads = nullptr;
+  std::size_t count = 0;
+  const int result = git_remote_ls(&heads, &count, remote);
+  git_remote_disconnect(remote);
+  check(result, "list remote refs");
+  std::map<std::string, git_oid> tags;
+  constexpr std::string_view prefix = "refs/tags/";
+  for (std::size_t index = 0; index < count; ++index) {
+    const std::string_view reference(heads[index]->name);
+    if (!starts_with(reference, prefix)) continue;
+    if (reference.ends_with("^{}")) continue;
+    tags.emplace(reference.substr(prefix.size()), heads[index]->oid);
+  }
+  return tags;
+}
+
 int create_clone_remote(git_remote** output,
                         git_repository* repository,
                         const char* default_name,
@@ -575,12 +596,23 @@ void command_fetch(Repository& repo,
     names.emplace_back("origin");
   }
 
+  std::map<std::string, git_oid> tracking_updates;
+  std::set<std::string> tracking_deletes;
   for (const std::string& name : names) {
     git_remote* raw_remote = nullptr;
     check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()),
           "find remote");
     RemotePtr remote(raw_remote);
     std::vector<std::string> branches = options.branches;
+    const std::string remote_tag_prefix =
+        std::string(kRemoteTagPrefix) + name + "/tags/";
+    std::set<std::string> tracked_tags;
+    for (const auto& [reference, oid] : repo.data_refs()) {
+      (void)oid;
+      if (starts_with(reference, remote_tag_prefix)) {
+        tracked_tags.insert(reference.substr(remote_tag_prefix.size()));
+      }
+    }
     if (options.tracked) {
       const std::string prefix = "refs/remotes/" + name + "/";
       for (const auto& [reference, oid] : repo.data_refs()) {
@@ -589,9 +621,25 @@ void command_fetch(Repository& repo,
           branches.push_back(reference.substr(prefix.size()));
         }
       }
-      if (branches.empty()) {
+      if (branches.empty() && tracked_tags.empty()) {
         output << "No tracked refs to fetch from " << name << '\n';
         continue;
+      }
+    }
+    const bool default_selection = options.branches.empty() &&
+                                   options.tags.empty() && !options.tracked;
+    std::map<std::string, git_oid> remote_tags;
+    if (default_selection || !options.tags.empty() || !tracked_tags.empty()) {
+      remote_tags = advertised_remote_tags(remote.get());
+    }
+    std::vector<std::string> tags = options.tags;
+    if (options.tracked) {
+      for (const std::string& tag : tracked_tags) {
+        if (remote_tags.contains(tag)) {
+          tags.push_back(tag);
+        } else {
+          tracking_deletes.insert(remote_tag_prefix + tag);
+        }
       }
     }
     std::vector<std::string> storage;
@@ -599,7 +647,7 @@ void command_fetch(Repository& repo,
       storage.push_back("+refs/heads/" + branch + ":refs/remotes/" + name +
                         "/" + branch);
     }
-    for (const std::string& tag : options.tags) {
+    for (const std::string& tag : tags) {
       storage.push_back("+refs/tags/" + tag + ":refs/tags/" + tag);
     }
     std::vector<char*> values;
@@ -611,12 +659,34 @@ void command_fetch(Repository& repo,
     if (!storage.empty()) {
       fetch_options.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE;
     }
-    check(git_remote_fetch(remote.get(),
-                           storage.empty() ? nullptr : &refspecs,
-                           &fetch_options, "gg fetch"),
-          "fetch remote");
+    if (!options.tracked || !storage.empty()) {
+      check(git_remote_fetch(remote.get(),
+                             storage.empty() ? nullptr : &refspecs,
+                             &fetch_options, "gg fetch"),
+            "fetch remote");
+    }
+    if (default_selection) {
+      for (const std::string& tag : tracked_tags) {
+        if (!remote_tags.contains(tag)) {
+          tracking_deletes.insert(remote_tag_prefix + tag);
+        }
+      }
+      tags.clear();
+      for (const auto& [tag, oid] : remote_tags) {
+        (void)oid;
+        tags.push_back(tag);
+      }
+    }
+    for (const std::string& tag : tags) {
+      const git_oid advertised = remote_tags.at(tag);
+      const auto local = repo.ref_target("refs/tags/" + tag);
+      if (!local.has_value()) continue;
+      if (!(*local == advertised)) continue;
+      tracking_updates[remote_tag_prefix + tag] = advertised;
+    }
     output << "Fetched " << name << '\n';
   }
+  repo.apply_refs(tracking_updates, tracking_deletes, "track fetched tags");
   repo.record(repo.missing_change_ids(), {}, repo.head_state(), "gg fetch");
 }
 
