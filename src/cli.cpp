@@ -32,7 +32,7 @@ bool lean_mode_enabled() {
 
 const std::map<std::string, std::string_view> kHelpKeywords{
     {"bookmarks",
-     "# Bookmarks\n\nBookmarks are ordinary local Git branches. Use `gg bookmark` "
+     "# Bookmarks\n\nBookmarks are local branches. Use `gg bookmark` "
      "to create, move, list, rename, forget, or delete them.\n"},
     {"config",
      "# Configuration\n\n`gg config` reads and writes flat dotted keys in user, "
@@ -41,8 +41,8 @@ const std::map<std::string, std::string_view> kHelpKeywords{
      "# Filesets\n\ngg currently accepts literal repository-relative files and "
      "directories where Jujutsu accepts filesets.\n"},
     {"glossary",
-     "# Glossary\n\nA change is a Git commit with a stable gg change ID; a bookmark "
-     "is a Git branch; `@` is the working-copy change.\n"},
+     "# Glossary\n\nA change is a commit with a stable gg change ID; a bookmark "
+     "is a branch; `@` is the working-copy change.\n"},
     {"revsets",
      "# Revision selection\n\ngg accepts `@`, `@-` chains, stable change-ID "
      "prefixes, bookmarks, and Git revision expressions. Set-valued revsets are "
@@ -201,7 +201,7 @@ void write_config_schema(std::ostream& output) {
 ParseResult parse_cli(std::span<const std::string_view> arguments,
                       std::ostream& output,
                       std::ostream& error) {
-  CLI::App app{"A JJ-shaped interface over ordinary Git repositories", "gg"};
+  CLI::App app{"A JJ-shaped Git interface", "gg"};
   app.require_subcommand(1);
   app.set_version_flag("--version", "gg 0.1.0");
 
@@ -543,7 +543,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     show_no_patch->excludes(option);
   }
 
-  auto* bookmark = app.add_subcommand("bookmark", "Manage Git-backed bookmarks");
+  auto* bookmark = app.add_subcommand("bookmark", "Manage bookmarks");
   bookmark->require_subcommand(0, 1);
   BookmarkCommand bookmark_advance;
   bookmark_advance.action = BookmarkAction::advance;
@@ -641,7 +641,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->delimiter(',')
       ->check(CLI::IsMember(ref_sort_keys));
 
-  auto* tag = app.add_subcommand("tag", "Manage Git-backed tags");
+  auto* tag = app.add_subcommand("tag", "Manage tags");
   tag->require_subcommand(1);
   TagCommand tag_set_value;
   tag_set_value.action = TagAction::set;
@@ -696,7 +696,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->check(CLI::IsMember(ref_sort_keys));
 
   GitCloneCommand clone_value;
-  auto* clone = app.add_subcommand("clone", "Clone a Git repository");
+  auto* clone = app.add_subcommand("clone", "Clone a repository");
   clone->add_option("url", clone_value.url, "Repository URL")->required();
   clone->add_option("destination", clone_value.destination, "Destination")
       ->expected(0, 1);
@@ -719,7 +719,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   init->add_option("--object-hash", init_value.object_hash, "Object hash")
       ->check(CLI::IsMember({"sha1", "sha256"}));
   GitFetchCommand fetch_value;
-  auto* fetch = app.add_subcommand("fetch", "Fetch a Git remote");
+  auto* fetch = app.add_subcommand("fetch", "Fetch a remote");
   CLI::Option* fetch_branches =
       fetch->add_option("-b,--branch,--bookmark", fetch_value.branches,
                         "Branch name");
@@ -769,7 +769,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                  "Allow conflicted commits");
   push->add_flag("--dry-run", push_value.dry_run,
                  "Show updates without pushing");
-  push->add_option("-o,--option", push_value.options, "Git push option");
+  push->add_option("-o,--option", push_value.options, "Push option");
 
   auto* continue_rewrite =
       app.add_subcommand("continue", "Continue a paused rewrite");
@@ -820,7 +820,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required();
   util_exec->add_option("args", util_exec_value.arguments, "Command arguments");
   UtilGcCommand util_gc_value;
-  auto* util_gc = util->add_subcommand("gc", "Run Git garbage collection");
+  auto* util_gc = util->add_subcommand("gc", "Run garbage collection");
   util_gc->add_option("--expire", util_gc_value.expire, "Expiration threshold")
       ->check(CLI::IsMember({"now"}));
   std::string util_completion_shell;

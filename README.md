@@ -1,13 +1,12 @@
 # gg
 
-`gg` is a small, JJ-shaped interface over ordinary Git repositories. Git
-commits remain the storage format, local Git branches are exposed as
-**bookmarks**, and remotes receive no custom objects, headers, notes, or refs.
+`gg` is a small Git tool with a JJ-shaped interface. Local branches are exposed
+as **bookmarks**, and remotes receive no custom objects, headers, notes, or refs.
 
-The working copy is represented by an ordinary commit under
+The working copy is represented by a commit under
 `refs/gg/workspaces/default`. Stable change IDs live under
 `refs/gg/changes/<id>`. Git `HEAD` stays at the working change's parent so
-existing Git-aware editors continue to see normal working-tree changes.
+existing tooling continues to see normal working-tree changes.
 
 ## MVP commands
 
@@ -73,7 +72,7 @@ gg config edit (--user|--repo|--workspace)
 ```
 
 Revisions use JJ names: `@`, `@-`, stable change-ID prefixes, bookmarks, or
-ordinary Git object IDs. Rewrites restack descendants and move affected local
+Git object IDs. Rewrites restack descendants and move affected local
 refs together. If libgit2 reports a merge conflict, the rewrite pauses before
 moving its refs and writes conflict markers into the working tree. Resolve the
 files and run `gg continue`, or run `gg abort` to restore the pre-rewrite
@@ -84,8 +83,8 @@ Commands show the shortest unique prefix with a minimum length of eight.
 
 Set `GG_LEAN=1` to enable lean mode. It keeps gg's change-editing, revision
 graph, operation-history, remote-tracking, workspace, and configuration
-workflows, while hiding and rejecting commands that Git already provides
-directly. Those include status, diff, show, file inspection, ordinary bookmark
+workflows, while hiding and rejecting equivalent native commands. Those
+include status, diff, show, file inspection, basic bookmark
 and tag management, clone/init, sparse-checkout helpers, external command
 execution, and garbage collection. Help, generated manuals, and shell
 completions expose the same reduced command set.
@@ -102,12 +101,12 @@ only repository or remote-tracking state with repeated `--what` options.
 The public runner and CLI dispatch are thin. Repository access, working-copy
 snapshots, revision lookup, rewrites, operation history, conflict state, and
 command families live in separate translation units under `src/`. Tests are
-split by CLI validation, ordinary workflows, rewrites, conflicts, remotes, and
+split by CLI validation, core workflows, rewrites, conflicts, remotes, and
 internal state invariants, with one shared fixture in `tests/test_support.hpp`.
 
 ## Build and test
 
-Dependencies are pinned and downloaded by CPM.cmake: libgit2 provides Git
+Dependencies are pinned and downloaded by CPM.cmake: libgit2 provides repository
 plumbing, CLI11 defines the command line, and GoogleTest provides the test
 harness.
 

@@ -215,7 +215,7 @@ void Repository::import_git_history() const {
   std::map<std::string, git_oid> updates = missing_change_ids();
   if (updates.empty() && deletes.empty()) return;
   record(std::move(updates), std::move(deletes), head_state(),
-         "gg import Git history");
+         "gg import history");
 }
 
 std::string Repository::short_change_id(std::string_view id) const {

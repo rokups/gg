@@ -326,7 +326,7 @@ TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
             2);
 }
 
-TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
+TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   const auto remote_path = path_.parent_path() / (path_.filename().string() + "-bare");
   const auto clone_path = path_.parent_path() / (path_.filename().string() + "-clone");
   std::filesystem::remove_all(remote_path);
@@ -807,7 +807,7 @@ TEST_F(RepositoryTest, InfersCloneDestinationWithoutDotGitSuffix) {
   std::filesystem::remove_all(remote_path);
 }
 
-TEST_F(RepositoryTest, InitializesNewAndExistingGitRepositories) {
+TEST_F(RepositoryTest, InitializesNewAndExistingRepositories) {
   const git_oid base = ref("HEAD");
   Result initialized = run({"init", path_.string()});
   ASSERT_EQ(initialized.code, 0) << initialized.error;

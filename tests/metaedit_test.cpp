@@ -85,7 +85,7 @@ TEST_F(RepositoryTest, EditsMetadataAndRestacksDescendants) {
   EXPECT_NE(git_oid_equal(&unchanged_workspace, &after_side), 0);
 }
 
-TEST_F(RepositoryTest, EditsRawGitMetadataWithoutAWorkspace) {
+TEST_F(RepositoryTest, EditsExternalCommitMetadataWithoutAWorkspace) {
   const Result edited = invoke({"metaedit", "main", "-m", "updated",
                                 "--update-change-id"});
   ASSERT_EQ(edited.code, 0) << edited.error;

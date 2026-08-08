@@ -104,7 +104,7 @@ std::string stored_path(const std::string& path) {
 
 git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   git_index* raw_index = nullptr;
-  check(git_repository_index(&raw_index, repo_.get()), "open Git index");
+  check(git_repository_index(&raw_index, repo_.get()), "open index");
   IndexPtr index(raw_index);
   TreePtr baseline = tree(baseline_tree);
   git_oid indexed_tree{};
@@ -276,7 +276,7 @@ bool Repository::sync_workspace() const {
         {*workspace_reference, imported},
         {std::string(kChangePrefix) + id, imported}};
     updates.merge(missing_ids);
-    record(updates, {}, head_for_workspace(imported), "gg import Git state");
+    record(updates, {}, head_for_workspace(imported), "gg import state");
     return true;
   }
 

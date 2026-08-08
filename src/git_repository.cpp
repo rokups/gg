@@ -58,10 +58,10 @@ Repository::Repository(const std::filesystem::path& path,
   git_repository* repository = nullptr;
   check(git_repository_open_ext(&repository, path.string().c_str(),
                                 GIT_REPOSITORY_OPEN_CROSS_FS, nullptr),
-        "open Git repository");
+        "open repository");
   repo_.reset(repository);
   if (git_repository_is_bare(repo_.get()) != 0) {
-    throw UserError("this command requires a Git working tree");
+    throw UserError("this command requires a working tree");
   }
 }
 

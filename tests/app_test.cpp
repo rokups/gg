@@ -391,9 +391,9 @@ TEST_F(RepositoryTest, PrunesUnreachableGitObjects) {
       orphan_path, std::filesystem::file_time_type::clock::now() -
                        std::chrono::hours(1));
 
-  const Result ordinary = invoke({"util", "gc"});
-  ASSERT_EQ(ordinary.code, 0) << ordinary.error;
-  EXPECT_NE(ordinary.output.find("Garbage collection completed."),
+  const Result default_gc = invoke({"util", "gc"});
+  ASSERT_EQ(default_gc.code, 0) << default_gc.error;
+  EXPECT_NE(default_gc.output.find("Garbage collection completed."),
             std::string::npos);
   EXPECT_NE(git_odb_exists(odb.get(), &orphan), 0);
 

@@ -716,7 +716,7 @@ void command_util_gc(Repository& repo,
   }
   const int status =
       command_util_exec(command, git_repository_path(repo.raw()));
-  if (status != 0) throw UserError("Git garbage collection failed");  // GG_COV_EXCL_BRANCH
+  if (status != 0) throw UserError("garbage collection failed");  // GG_COV_EXCL_BRANCH
   output << "Garbage collection completed.\n";
 }
 

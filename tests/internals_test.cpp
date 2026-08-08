@@ -166,7 +166,7 @@ TEST_F(RepositoryTest, RendersJujutsuStyleGraphRows) {
   EXPECT_NE(output.str().find("╯"), std::string::npos);
 }
 
-TEST_F(RepositoryTest, AssignsGgIdsToReachableGitHistory) {
+TEST_F(RepositoryTest, AssignsGgIdsToReachableHistory) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
   const git_oid child = raw_commit("child", {base});
@@ -197,7 +197,7 @@ TEST_F(RepositoryTest, AssignsGgIdsToReachableGitHistory) {
       std::string(detail::kChangePrefix) + invalid));
 }
 
-TEST_F(RepositoryTest, ReplacesGitHashChangeIdsWhenReadingARepository) {
+TEST_F(RepositoryTest, ReplacesCommitHashChangeIdsWhenReadingARepository) {
   const git_oid base = ref("HEAD");
   const git_oid child = raw_commit("child", {base});
   set_ref("refs/heads/side", child);
@@ -342,7 +342,7 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
   EXPECT_THROW(repo.create_operation(state, std::nullopt, ""), detail::GitError);
 }
 
-TEST_F(RepositoryTest, AssignsAStableIdWhenReadingAnOrdinaryWorkspace) {
+TEST_F(RepositoryTest, AssignsAStableIdWhenReadingAWorkspace) {
   set_ref(detail::kWorkspaceRef, ref("HEAD"));
   ASSERT_EQ(git_repository_set_head(repository_.get(),
                                     "refs/heads/does-not-exist"),

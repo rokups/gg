@@ -435,7 +435,7 @@ TEST_F(RepositoryTest, EditsAndValidatesNavigationTargets) {
   EXPECT_EQ(invoke({"prev", "--edit", "99"}).code, 2);
 }
 
-TEST_F(RepositoryTest, NavigationAssignsChangeIdsToRawGitCommits) {
+TEST_F(RepositoryTest, NavigationAssignsChangeIdsToExternalCommits) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
   const git_oid child = raw_commit("raw child", {workspace});
@@ -588,7 +588,7 @@ TEST_F(RepositoryTest, DescribesFromMessagesStdinAndEditors) {
   EXPECT_EQ(invoke({"describe", "-m", "x", "--stdin"}).code, 2);
 }
 
-TEST_F(RepositoryTest, DescribesRawGitHistoryWithoutAWorkspace) {
+TEST_F(RepositoryTest, DescribesExternalHistoryWithoutAWorkspace) {
   const Result described = invoke({"describe", "-m", "raw", "main"});
   ASSERT_EQ(described.code, 0) << described.error;
   EXPECT_NE(invoke({"show", "main", "--no-patch"})
@@ -1012,7 +1012,7 @@ TEST_F(RepositoryTest, MergesUnrelatedParents) {
   EXPECT_NE(graph.output.find("┬"), std::string::npos);
 }
 
-TEST_F(RepositoryTest, ImportsRawGitHeadChangesAndResolvesObjectIds) {
+TEST_F(RepositoryTest, ImportsExternalHeadChangesAndResolvesObjectIds) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   const git_oid base = ref("refs/heads/main");
   const git_oid external = raw_commit("external", {base});
