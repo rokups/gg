@@ -26,9 +26,13 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
             0);
   git_reference_free(symbolic);
   set_ref("refs/remotes/origin/main", base);
+  set_ref("refs/gg/remotes/origin/tags/v1", base);
   const auto refs = repo.data_refs();
   EXPECT_FALSE(refs.contains("refs/heads/unborn-link"));
+  EXPECT_TRUE(refs.contains("refs/gg/remotes/origin/tags/v1"));
   EXPECT_FALSE(repo.rewrite_refs().contains("refs/remotes/origin/main"));
+  EXPECT_FALSE(
+      repo.rewrite_refs().contains("refs/gg/remotes/origin/tags/v1"));
 
   const std::string id = repo.new_change_id();
   EXPECT_EQ(id.size(), 32U);

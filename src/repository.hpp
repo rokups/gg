@@ -24,6 +24,7 @@ inline constexpr std::string_view kChangePrefix = "refs/gg/changes/";
 inline constexpr std::string_view kWorkspaceRef = "refs/gg/workspaces/default";
 inline constexpr std::string_view kOperationRef = "refs/gg/operations/current";
 inline constexpr std::string_view kRewriteRef = "refs/gg/rewrite";
+inline constexpr std::string_view kRemoteTagPrefix = "refs/gg/remotes/";
 
 class UserError : public std::runtime_error {
  public:

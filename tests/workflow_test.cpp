@@ -512,6 +512,7 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
   const git_oid first = ref("refs/gg/workspaces/default");
   set_ref("refs/remotes/origin/main", first);
+  set_ref("refs/gg/remotes/origin/tags/v1", first);
   ASSERT_EQ(invoke({"bookmark", "create", "keep"}).code, 0);
   const git_oid target_operation = ref("refs/gg/operations/current");
   const std::string target =
@@ -520,6 +521,7 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
   const git_oid second = ref("refs/gg/workspaces/default");
   set_ref("refs/remotes/origin/main", second);
+  set_ref("refs/gg/remotes/origin/tags/v1", second);
   ASSERT_EQ(invoke({"bookmark", "delete", "keep"}).code, 0);
 
   Result restored = invoke({"operation", "restore", "--what", "repo", target});
@@ -530,15 +532,20 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
   actual = ref("refs/remotes/origin/main");
   EXPECT_NE(git_oid_equal(&actual, &second), 0);
+  actual = ref("refs/gg/remotes/origin/tags/v1");
+  EXPECT_NE(git_oid_equal(&actual, &second), 0);
 
   restored = invoke(
       {"op", "restore", "--what", "remote-tracking", target});
   ASSERT_EQ(restored.code, 0) << restored.error;
   actual = ref("refs/remotes/origin/main");
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
+  actual = ref("refs/gg/remotes/origin/tags/v1");
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
 
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
   set_ref("refs/remotes/origin/main", second);
+  set_ref("refs/gg/remotes/origin/tags/v1", second);
   ASSERT_EQ(invoke({"operation", "restore", target}).code, 0);
   actual = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&actual, &first), 0);

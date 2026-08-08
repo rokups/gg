@@ -394,11 +394,12 @@ void command_tag(Repository& repo,
                  const TagCommand& options,
                  std::ostream& output) {
   repo.sync_workspace();
-  const auto tag_target = [&](const std::string& name) -> std::optional<git_oid> {
+  const auto tag_target = [&](std::string_view reference)
+      -> std::optional<git_oid> {
     git_object* raw_object = nullptr;
-    const std::string reference = "refs/tags/" + name;
+    const std::string owned_reference(reference);
     const int lookup =
-        git_revparse_single(&raw_object, repo.raw(), reference.c_str());
+        git_revparse_single(&raw_object, repo.raw(), owned_reference.c_str());
     if (lookup == GIT_ENOTFOUND) {
       git_error_clear();
       return std::nullopt;
@@ -414,9 +415,6 @@ void command_tag(Repository& repo,
 
   if (options.action == TagAction::list) {
     if (options.conflicted) return;
-    if (options.all_remotes || !options.remotes.empty() || options.tracked) {
-      throw UserError("remote tag state is not supported yet");
-    }
     if (!options.template_value.empty()) {
       throw UserError("tag templates are not supported yet");
     }
@@ -427,12 +425,35 @@ void command_tag(Repository& repo,
     std::vector<RefListItem> items;
     for (const auto& [reference, ref_oid] : repo.data_refs()) {
       (void)ref_oid;
-      if (!starts_with(reference, "refs/tags/")) {
-        continue;
+      constexpr std::string_view local_prefix = "refs/tags/";
+      const bool local = starts_with(reference, local_prefix);
+      if (!local && !starts_with(reference, kRemoteTagPrefix)) continue;
+
+      std::string name;
+      std::string display_name;
+      if (local) {
+        if (options.tracked || !options.remotes.empty()) continue;
+        name = reference.substr(local_prefix.size());
+        display_name = name;
+      } else {
+        const bool selected = options.tracked | options.all_remotes |
+                              !options.remotes.empty();
+        if (!selected) continue;
+        const std::string remote_tag =
+            reference.substr(kRemoteTagPrefix.size());
+        constexpr std::string_view marker = "/tags/";
+        const std::size_t separator = remote_tag.find(marker);
+        if (separator == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
+        const std::string remote = remote_tag.substr(0, separator);
+        name = remote_tag.substr(separator + marker.size());
+        if (!options.remotes.empty() &&
+            std::ranges::find(options.remotes, remote) ==
+                options.remotes.end()) {
+          continue;
+        }
+        display_name = name + "@" + remote;
       }
-      const std::string name =
-          reference.substr(std::string_view("refs/tags/").size());
-      const std::optional<git_oid> target = tag_target(name);
+      const std::optional<git_oid> target = tag_target(reference);
       const bool name_matches =
           !options.names.empty() &&
           std::ranges::find(options.names, name) != options.names.end();
@@ -443,7 +464,7 @@ void command_tag(Repository& repo,
         continue;
       }
       CommitPtr commit = repo.commit(*target);
-      items.push_back(ref_list_item(name, *target, commit.get()));
+      items.push_back(ref_list_item(display_name, *target, commit.get()));
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
@@ -477,7 +498,7 @@ void command_tag(Repository& repo,
     if (valid == 0) {
       throw UserError("invalid tag name: " + name);
     }
-    const std::optional<git_oid> current = tag_target(name);
+    const std::optional<git_oid> current = tag_target(reference);
     if (current.has_value() && !(*current == target) && !options.allow_move) {
       throw UserError("tag already exists at a different revision: " + name);
     }
