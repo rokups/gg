@@ -5,11 +5,8 @@
 #include "commands.hpp"
 
 #include <git2.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <set>
@@ -52,9 +49,6 @@ void command_commit(Repository& repo,
   if (options.interactive || !options.tool.empty()) {
     throw UserError("interactive commit selection is not supported yet");
   }
-  if (options.editor) {
-    throw UserError("commit message editing is not supported yet");
-  }
   const auto workspace = repo.ref_target(kWorkspaceRef);
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
@@ -88,10 +82,10 @@ void command_commit(Repository& repo,
           ? full_tree
           : repo.selected_tree(base_tree, full_tree, paths);
   const char* old_message = git_commit_message(current.get());
-  const std::string_view message =
-      options.message_provided
-          ? std::string_view(options.message)
-          : std::string_view(old_message == nullptr ? "" : old_message);  // GG_COV_EXCL_BRANCH
+  std::string message = options.message_provided
+                            ? options.message
+                            : (old_message == nullptr ? "" : old_message);  // GG_COV_EXCL_BRANCH
+  if (options.editor) message = edit_text(message);
   const git_oid committed =
       repo.rewrite_commit(*workspace, parents, selected_tree, message);
   const git_oid new_workspace = repo.create_commit(full_tree, {committed}, "");
@@ -305,27 +299,8 @@ void command_describe(Repository& repo,
     message.assign(std::istreambuf_iterator<char>(std::cin),
                    std::istreambuf_iterator<char>());
   } else if (!options.message_provided) {
-    std::string pattern =
-        (std::filesystem::temp_directory_path() / "gg-description-XXXXXX")
-            .string();
-    const int descriptor = mkstemp(pattern.data());
-    if (descriptor < 0) throw UserError("cannot create description file");  // GG_COV_EXCL_BRANCH
-    close(descriptor);
-    {
-      std::ofstream temporary(pattern);
-      const char* original = git_commit_message(value.get());
-      temporary << (original == nullptr ? "" : original);  // GG_COV_EXCL_BRANCH
-    }
-    try {
-      edit_file_with_editor(pattern);
-      std::ifstream temporary(pattern);
-      message.assign(std::istreambuf_iterator<char>(temporary),
-                     std::istreambuf_iterator<char>());
-    } catch (...) {
-      std::filesystem::remove(pattern);
-      throw;
-    }
-    std::filesystem::remove(pattern);
+    const char* original = git_commit_message(value.get());
+    message = edit_text(original == nullptr ? "" : original);  // GG_COV_EXCL_BRANCH
   }
   const git_oid rewritten = repo.rewrite_commit(
       old, repo.parents(old), *git_commit_tree_id(value.get()), message);

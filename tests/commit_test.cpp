@@ -4,6 +4,8 @@
 
 #include "test_support.hpp"
 
+#include <cstdlib>
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, CommitsTheWorkingChangeAndStartsANewOne) {
@@ -59,12 +61,37 @@ TEST_F(RepositoryTest, PreservesOrClearsCommitDescriptions) {
             std::string::npos);
 }
 
+TEST_F(RepositoryTest, EditsCommitDescriptions) {
+  ASSERT_EQ(invoke({"new", "-m", "draft", "main"}).code, 0);
+  const std::filesystem::path editor = path_ / "commit-editor";
+  {
+    std::ofstream script(editor);
+    script << "#!/bin/sh\nprintf 'edited commit\\n' > \"$1\"\n";
+  }
+  std::filesystem::permissions(
+      editor, std::filesystem::perms::owner_exec |
+                  std::filesystem::perms::owner_read |
+                  std::filesystem::perms::owner_write);
+  const char* old_visual = std::getenv("VISUAL");
+  const std::string saved_visual = old_visual == nullptr ? "" : old_visual;
+  ASSERT_EQ(setenv("VISUAL", editor.string().c_str(), 1), 0);
+  const Result committed = invoke({"commit", "--editor", "-m", "seed"});
+  if (saved_visual.empty()) {
+    unsetenv("VISUAL");
+  } else {
+    setenv("VISUAL", saved_visual.c_str(), 1);
+  }
+  ASSERT_EQ(committed.code, 0) << committed.error;
+  EXPECT_NE(invoke({"show", "@-", "--no-patch"})
+                .output.find("Description: edited commit"),
+            std::string::npos);
+}
+
 TEST_F(RepositoryTest, ValidatesCommitRequests) {
   EXPECT_EQ(invoke({"commit", "-m", "message"}).code, 2);
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   EXPECT_EQ(invoke({"commit", "--interactive"}).code, 2);
   EXPECT_EQ(invoke({"commit", "--tool", "meld"}).code, 2);
-  EXPECT_EQ(invoke({"commit", "--editor"}).code, 2);
   EXPECT_EQ(invoke({"commit", ""}).code, 2);
   EXPECT_EQ(invoke({"commit", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"commit", "../outside"}).code, 2);

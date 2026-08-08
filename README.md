@@ -21,7 +21,7 @@ gg squash [-r REV | --from REV --into REV]
 gg split [-r REV] [-m DESCRIPTION] PATH...
 gg abandon [--retain-bookmarks] [--restore-descendants] [REV]
 gg rebase -s REV -d REV
-gg commit [-m DESCRIPTION] [PATH...]
+gg commit [-m DESCRIPTION] [--editor] [PATH...]
 gg restore [--from REV] [--into REV] [PATH...]
 gg simplify-parents [-s REV]... [-r REV]...
 gg file list [-r REV] [PATH...]

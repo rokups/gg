@@ -8,8 +8,11 @@
 
 #include <spawn.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <utility>
 
 extern char** environ;
@@ -85,6 +88,26 @@ void edit_file_with_editor(const std::filesystem::path& path) {
   if (!WIFEXITED(status)) throw UserError("editor exited unsuccessfully");  // GG_COV_EXCL_BRANCH
   if (WEXITSTATUS(status) != 0) {
     throw UserError("editor exited unsuccessfully");
+  }
+}
+
+std::string edit_text(std::string_view initial) {
+  std::string pattern =
+      (std::filesystem::temp_directory_path() / "gg-edit-XXXXXX").string();
+  const int descriptor = mkstemp(pattern.data());
+  if (descriptor < 0) throw UserError("cannot create editor file");  // GG_COV_EXCL_BRANCH
+  close(descriptor);
+  std::ofstream(pattern) << initial;
+  try {
+    edit_file_with_editor(pattern);
+    std::ifstream input(pattern);
+    std::string result{std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>()};
+    std::filesystem::remove(pattern);
+    return result;
+  } catch (...) {
+    std::filesystem::remove(pattern);
+    throw;
   }
 }
 
