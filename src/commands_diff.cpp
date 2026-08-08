@@ -101,11 +101,19 @@ char mode_type(std::uint16_t mode) {
                    : mode == GIT_FILEMODE_COMMIT ? 'G' : 'F';  // GG_COV_EXCL_BRANCH
 }
 
+OutputStyle delta_style(git_delta_t status) {
+  return status == GIT_DELTA_ADDED     ? OutputStyle::added
+         : status == GIT_DELTA_DELETED ? OutputStyle::removed
+                                        : OutputStyle::modified;
+}
+
 void render_summary(git_diff* diff, std::ostream& output) {
   for (std::size_t index = 0; index < git_diff_num_deltas(diff); ++index) {
     const git_diff_delta* delta = git_diff_get_delta(diff, index);
-    output << git_diff_status_char(delta->status) << ' '
-           << display_path(*delta) << '\n';
+    const std::string line =
+        std::string(1, git_diff_status_char(delta->status)) + " " +
+        display_path(*delta);
+    output << styled(output, line, delta_style(delta->status)) << '\n';
   }
 }
 
@@ -143,7 +151,31 @@ void render_patch(git_diff* diff, std::ostream& output) {
   check(git_diff_to_buf(&buffer, diff, GIT_DIFF_FORMAT_PATCH),
         "format Git patch");
   if (buffer.size != 0) {
-    output.write(buffer.ptr, static_cast<std::streamsize>(buffer.size));
+    const std::string_view patch(buffer.ptr, buffer.size);
+    std::size_t begin = 0;
+    while (begin < patch.size()) {
+      const std::size_t end = patch.find('\n', begin);
+      const std::string_view line = patch.substr(begin, end - begin);
+      if (starts_with(line, "diff --git") || starts_with(line, "index ") ||
+          starts_with(line, "--- ") || starts_with(line, "+++ ") ||
+          starts_with(line, "new file mode ") ||
+          starts_with(line, "deleted file mode ") ||
+          starts_with(line, "similarity index ") ||
+          starts_with(line, "rename from ") || starts_with(line, "rename to ")) {
+        output << styled(output, line, OutputStyle::heading);
+      } else if (starts_with(line, "@@")) {
+        output << styled(output, line, OutputStyle::hunk);
+      } else if (starts_with(line, "+")) {
+        output << styled(output, line, OutputStyle::added);
+      } else if (starts_with(line, "-")) {
+        output << styled(output, line, OutputStyle::removed);
+      } else {
+        output << line;
+      }
+      if (end == std::string_view::npos) break;  // GG_COV_EXCL_BRANCH
+      output << '\n';
+      begin = end + 1;
+    }
   }
   git_buf_dispose(&buffer);
 }
@@ -169,15 +201,17 @@ void render_revision_header(Repository& repo,
                             const git_oid& revision,
                             std::ostream& output) {
   CommitPtr commit = repo.commit(revision);
-  output << "Commit ID: " << oid_string(revision) << '\n';
+  output << "Commit ID: "
+         << styled(output, oid_string(revision), OutputStyle::commit_id) << '\n';
   if (const auto id = repo.change_id(revision); id.has_value()) {
-    output << "Change ID: " << *id << '\n';
+    output << "Change ID: " << styled(output, *id, OutputStyle::change_id)
+           << '\n';
   }
   const std::vector<std::string> bookmarks = repo.bookmarks(revision);
   if (!bookmarks.empty()) {
     output << "Bookmarks:";
     for (const std::string& bookmark : bookmarks) {
-      output << ' ' << bookmark;
+      output << ' ' << styled(output, bookmark, OutputStyle::bookmark);
     }
     output << '\n';
   }

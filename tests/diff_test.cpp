@@ -34,6 +34,25 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
                 .output.find("@@ -1 +1 @@"),
             std::string::npos);
 
+  const Result colored_summary =
+      invoke({"--color", "always", "diff", "--summary"});
+  EXPECT_NE(colored_summary.output.find(
+                "\x1b[38;5;2mA added.txt\x1b[0m"),
+            std::string::npos);
+  EXPECT_NE(colored_summary.output.find(
+                "\x1b[38;5;3mM tracked.txt\x1b[0m"),
+            std::string::npos);
+  const Result colored_patch = invoke({"--color", "always", "diff"});
+  EXPECT_NE(colored_patch.output.find(
+                "\x1b[1mdiff --git a/added.txt b/added.txt\x1b[0m"),
+            std::string::npos);
+  EXPECT_NE(colored_patch.output.find("\x1b[38;5;6m@@"),
+            std::string::npos);
+  EXPECT_NE(colored_patch.output.find("\x1b[38;5;1m-base\x1b[0m"),
+            std::string::npos);
+  EXPECT_NE(colored_patch.output.find("\x1b[38;5;2m+changed\x1b[0m"),
+            std::string::npos);
+
   EXPECT_EQ(invoke({"diff", "--from", "@"}).output, "");
   EXPECT_NE(invoke({"diff", "--to", "main"}).output.find("-changed"),
             std::string::npos);
@@ -56,10 +75,16 @@ TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
             "R {tracked.txt => renamed.txt}\n");
   EXPECT_EQ(invoke({"diff", "--types"}).output,
             "FF {tracked.txt => renamed.txt}\n");
+  EXPECT_NE(invoke({"--color", "always", "diff"})
+                .output.find("\x1b[1mrename from tracked.txt\x1b[0m"),
+            std::string::npos);
 
   std::filesystem::remove(path_ / "renamed.txt");
   EXPECT_EQ(invoke({"diff", "--summary"}).output, "D tracked.txt\n");
   EXPECT_EQ(invoke({"diff", "--types"}).output, "F- tracked.txt\n");
+  EXPECT_NE(invoke({"--color", "always", "diff"})
+                .output.find("\x1b[1mdeleted file mode"),
+            std::string::npos);
 }
 
 TEST_F(RepositoryTest, IgnoresRequestedWhitespaceChanges) {
@@ -84,6 +109,11 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   const Result plain = invoke({"show", "main", "--no-patch"});
   EXPECT_NE(plain.output.find("Bookmarks: main"), std::string::npos);
   EXPECT_EQ(plain.output.find("diff --git"), std::string::npos);
+  const Result colored =
+      invoke({"--color", "debug", "show", "main", "--no-patch"});
+  EXPECT_NE(colored.output.find("<<commit_id::"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<change_id::"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<bookmark::main>>"), std::string::npos);
 
   const Result ordered = invoke({"show", "main", "@", "--no-patch"});
   const Result reversed =
