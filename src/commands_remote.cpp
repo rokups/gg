@@ -470,16 +470,66 @@ void command_fetch(Repository& repo,
                    const GitFetchCommand& options,
                    std::ostream& output) {
   repo.sync_workspace();
-  git_remote* raw_remote = nullptr;
-  const std::string name = options.remote.empty() ? "origin" : options.remote;
-  check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()), "find remote");
-  RemotePtr remote(raw_remote);
-  git_fetch_options fetch_options = GIT_FETCH_OPTIONS_INIT;
-  fetch_options.callbacks = remote_callbacks();
-  check(git_remote_fetch(remote.get(), nullptr, &fetch_options, "gg fetch"),
-        "fetch remote");
+  if (options.tracked) {
+    throw UserError("remote tracking state is not supported yet");
+  }
+  const auto validate_names = [](const std::vector<std::string>& names,
+                                 std::string_view prefix,
+                                 std::string_view kind) {
+    for (const std::string& name : names) {
+      int valid = 0;
+      const std::string reference = std::string(prefix) + name;
+      check(git_reference_name_is_valid(&valid, reference.c_str()),
+            "validate fetch selector");
+      if (valid == 0) {
+        throw UserError("invalid " + std::string(kind) + " name: " + name);
+      }
+    }
+  };
+  validate_names(options.branches, "refs/heads/", "branch");
+  validate_names(options.tags, "refs/tags/", "tag");
+
+  std::vector<std::string> names = options.remotes;
+  if (options.all_remotes) {
+    git_strarray listed{};
+    check(git_remote_list(&listed, repo.raw()), "list remotes");
+    for (std::size_t index = 0; index < listed.count; ++index) {
+      names.emplace_back(listed.strings[index]);
+    }
+    git_strarray_dispose(&listed);
+    if (names.empty()) throw UserError("no remotes found");
+  } else if (names.empty()) {
+    names.emplace_back("origin");
+  }
+
+  for (const std::string& name : names) {
+    git_remote* raw_remote = nullptr;
+    check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()),
+          "find remote");
+    RemotePtr remote(raw_remote);
+    std::vector<std::string> storage;
+    for (const std::string& branch : options.branches) {
+      storage.push_back("+refs/heads/" + branch + ":refs/remotes/" + name +
+                        "/" + branch);
+    }
+    for (const std::string& tag : options.tags) {
+      storage.push_back("+refs/tags/" + tag + ":refs/tags/" + tag);
+    }
+    std::vector<char*> values;
+    for (std::string& refspec : storage) values.push_back(refspec.data());
+    git_strarray refspecs{values.data(), values.size()};
+    git_fetch_options fetch_options = GIT_FETCH_OPTIONS_INIT;
+    fetch_options.callbacks = remote_callbacks();
+    if (!storage.empty()) {
+      fetch_options.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE;
+    }
+    check(git_remote_fetch(remote.get(),
+                           storage.empty() ? nullptr : &refspecs,
+                           &fetch_options, "gg fetch"),
+          "fetch remote");
+    output << "Fetched " << name << '\n';
+  }
   repo.record({}, {}, repo.head_state(), "gg fetch");
-  output << "Fetched " << name << '\n';
 }
 
 void command_push(Repository& repo,

@@ -346,7 +346,20 @@ std::vector<std::string> repository_replay_arguments(
           },
           [](const GitFetchCommand& value) {
             std::vector<std::string> result{"fetch"};
-            add_option(result, "--remote", value.remote);
+            for (const std::string& branch : value.branches) {
+              result.emplace_back("--branch");
+              result.push_back(branch);
+            }
+            for (const std::string& tag : value.tags) {
+              result.emplace_back("--tag");
+              result.push_back(tag);
+            }
+            for (const std::string& remote : value.remotes) {
+              result.emplace_back("--remote");
+              result.push_back(remote);
+            }
+            if (value.tracked) result.emplace_back("--tracked");
+            if (value.all_remotes) result.emplace_back("--all-remotes");
             return result;
           },
           [](const GitPushCommand& value) {

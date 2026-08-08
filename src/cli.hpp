@@ -195,7 +195,11 @@ struct GitInitCommand {
   std::string object_hash{"sha1"};
 };
 struct GitFetchCommand {
-  std::string remote;
+  std::vector<std::string> branches;
+  std::vector<std::string> tags;
+  std::vector<std::string> remotes;
+  bool tracked{false};
+  bool all_remotes{false};
 };
 struct GitPushCommand {
   std::string bookmark;

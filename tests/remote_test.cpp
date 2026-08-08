@@ -276,6 +276,99 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   std::filesystem::remove_all(remote_path);
 }
 
+TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
+  const auto origin_path =
+      path_.parent_path() / (path_.filename().string() + "-fetch-origin");
+  const auto backup_path =
+      path_.parent_path() / (path_.filename().string() + "-fetch-backup");
+  std::filesystem::remove_all(origin_path);
+  std::filesystem::remove_all(backup_path);
+  for (const auto& remote_path : {origin_path, backup_path}) {
+    git_repository* bare = nullptr;
+    ASSERT_EQ(git_repository_init(&bare, remote_path.string().c_str(), 1), 0);
+    git_repository_free(bare);
+  }
+  for (const auto& [name, remote_path] :
+       std::vector<std::pair<std::string, std::filesystem::path>>{
+           {"origin", origin_path}, {"backup", backup_path}}) {
+    git_remote* remote = nullptr;
+    ASSERT_EQ(git_remote_create(&remote, repository_.get(), name.c_str(),
+                                remote_path.string().c_str()),
+              0);
+    git_remote_free(remote);
+  }
+
+  ASSERT_EQ(invoke({"new", "-m", "publish", "main"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "one", "two"}).code, 0);
+  ASSERT_EQ(invoke({"tag", "set", "release", "stable"}).code, 0);
+  const git_oid target = ref("refs/heads/one");
+  for (const std::string_view remote : {"origin", "backup"}) {
+    ASSERT_EQ(
+        invoke({"push", "-b", "one", "--remote", std::string(remote)}).code,
+        0);
+    ASSERT_EQ(
+        invoke({"push", "-b", "two", "--remote", std::string(remote)}).code,
+        0);
+  }
+  for (const auto& remote_path : {origin_path, backup_path}) {
+    git_repository* bare = nullptr;
+    ASSERT_EQ(git_repository_open(&bare, remote_path.string().c_str()), 0);
+    for (const std::string_view tag : {"release", "stable"}) {
+      git_reference* reference = nullptr;
+      ASSERT_EQ(git_reference_create(&reference, bare,
+                                     ("refs/tags/" + std::string(tag)).c_str(),
+                                     &target, 1,
+                                     "test"),
+                0);
+      git_reference_free(reference);
+    }
+    git_repository_free(bare);
+  }
+
+  const auto remove_ref = [&](std::string_view name) {
+    if (has_ref(name)) {
+      const std::string owned_name(name);
+      ASSERT_EQ(git_reference_remove(repository_.get(), owned_name.c_str()), 0);
+    }
+  };
+  remove_ref("refs/remotes/origin/one");
+  remove_ref("refs/remotes/origin/two");
+  remove_ref("refs/remotes/backup/one");
+  remove_ref("refs/remotes/backup/two");
+  remove_ref("refs/tags/release");
+  remove_ref("refs/tags/stable");
+
+  ASSERT_EQ(invoke({"fetch", "--remote", "origin", "-b", "one"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/remotes/origin/one"));
+  EXPECT_FALSE(has_ref("refs/remotes/origin/two"));
+  EXPECT_FALSE(has_ref("refs/tags/release"));
+  remove_ref("refs/remotes/origin/one");
+
+  ASSERT_EQ(invoke({"fetch", "--remote", "origin", "--remote", "backup",
+                    "--bookmark", "one"})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref("refs/remotes/origin/one"));
+  EXPECT_TRUE(has_ref("refs/remotes/backup/one"));
+
+  ASSERT_EQ(invoke({"fetch", "--all-remotes", "--branch", "one",
+                    "--branch", "two"})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref("refs/remotes/origin/two"));
+  EXPECT_TRUE(has_ref("refs/remotes/backup/two"));
+
+  ASSERT_EQ(invoke({"fetch", "--remote", "origin", "--tag", "release",
+                    "--tag", "stable"})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref("refs/tags/release"));
+  EXPECT_TRUE(has_ref("refs/tags/stable"));
+
+  std::filesystem::remove_all(origin_path);
+  std::filesystem::remove_all(backup_path);
+}
+
 TEST_F(RepositoryTest, InfersCloneDestinationFromDotGitUrl) {
   const auto remote_path =
       path_.parent_path() / (path_.filename().string() + "-inferred.git");

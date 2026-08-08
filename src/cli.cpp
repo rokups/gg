@@ -600,7 +600,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->check(CLI::IsMember({"sha1", "sha256"}));
   GitFetchCommand fetch_value;
   auto* fetch = app.add_subcommand("fetch", "Fetch a Git remote");
-  fetch->add_option("--remote", fetch_value.remote, "Remote name");
+  CLI::Option* fetch_branches =
+      fetch->add_option("-b,--branch,--bookmark", fetch_value.branches,
+                        "Branch name");
+  CLI::Option* fetch_tags =
+      fetch->add_option("-t,--tag", fetch_value.tags, "Tag name");
+  CLI::Option* fetch_tracked =
+      fetch->add_flag("--tracked", fetch_value.tracked,
+                      "Fetch tracked branches and tags only");
+  fetch_tracked->excludes(fetch_branches)->excludes(fetch_tags);
+  CLI::Option* fetch_remotes =
+      fetch->add_option("--remote", fetch_value.remotes, "Remote name");
+  fetch->add_flag("--all-remotes", fetch_value.all_remotes,
+                  "Fetch every remote")
+      ->excludes(fetch_remotes);
   GitPushCommand push_value;
   auto* push = app.add_subcommand("push", "Push a bookmark");
   push->add_option("-b,--bookmark", push_value.bookmark, "Bookmark name")

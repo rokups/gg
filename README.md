@@ -45,7 +45,7 @@ gg tag delete NAME...
 gg tag list [NAME...] [-r REVISION...] [--sort KEY...]
 gg init [DESTINATION]
 gg clone URL [DESTINATION]
-gg fetch [--remote REMOTE]
+gg fetch [-b BRANCH...] [-t TAG...] [--remote REMOTE... | --all-remotes]
 gg push --bookmark NAME [--remote REMOTE]
 gg continue
 gg abort
