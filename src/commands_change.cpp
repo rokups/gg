@@ -615,13 +615,24 @@ void command_move(Repository& repo,
   if (options.conflict) {
     throw UserError("gg has no first-class conflicted revisions");
   }
-  if (!options.edit && !repo.children(*workspace).empty()) {
+  bool edit = options.edit;
+  if (!edit && !options.no_edit) {
+    if (const auto configured = config_value(repo, "ui.movement.edit");
+        configured.has_value()) {
+      if (*configured == "true") {
+        edit = true;
+      } else if (*configured != "false") {
+        throw UserError("ui.movement.edit must be true or false");
+      }
+    }
+  }
+  if (!edit && !repo.children(*workspace).empty()) {
     throw UserError(
         "the working-copy change has children; create a new change or use --edit");
   }
 
   std::set<git_oid, OidLess> frontier;
-  if (options.edit) {
+  if (edit) {
     frontier.insert(*workspace);
   } else {
     const auto parents = repo.parents(*workspace);
@@ -634,7 +645,7 @@ void command_move(Repository& repo,
           options.direction == MovementDirection::next ? repo.children(oid)
                                                        : repo.parents(oid);
       for (const git_oid& candidate : candidates) {
-        if (!(options.direction == MovementDirection::next && !options.edit &&  // GG_COV_EXCL_BRANCH
+        if (!(options.direction == MovementDirection::next && !edit &&  // GG_COV_EXCL_BRANCH
               step == 0 && candidate == *workspace)) {
           next.insert(candidate);
         }
@@ -655,7 +666,7 @@ void command_move(Repository& repo,
   std::map<std::string, git_oid> updates;
   git_oid destination = target;
   std::string id;
-  if (options.edit) {
+  if (edit) {
     const auto existing = repo.change_id(target);
     id = existing.value_or(repo.new_change_id());
     if (!existing.has_value()) {

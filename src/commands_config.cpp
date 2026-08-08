@@ -196,6 +196,19 @@ bool name_matches(std::string_view name, std::string_view filter) {
 
 }  // namespace
 
+std::optional<std::string> config_value(Repository& repo,
+                                        std::string_view name) {
+  std::optional<std::string> result;
+  const std::array<ConfigScope, 3> scopes{
+      ConfigScope::user, ConfigScope::repository, ConfigScope::workspace};
+  for (const ConfigScope scope : scopes) {
+    const auto values = read_values(config_path(repo, scope));
+    const auto value = values.find(std::string(name));
+    if (value != values.end()) result = value->second;
+  }
+  return result;
+}
+
 void command_config(Repository& repo,
                     const ConfigCommand& options,
                     std::ostream& output) {

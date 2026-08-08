@@ -204,7 +204,7 @@ TEST_F(RepositoryTest, NavigatesRevisionStacks) {
   const git_oid second = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
 
-  ASSERT_EQ(invoke({"prev", "--no-edit"}).code, 0);
+  ASSERT_EQ(invoke({"prev"}).code, 0);
   git_oid workspace = ref("refs/gg/workspaces/default");
   git_oid parent = commit_parent(workspace);
   EXPECT_NE(git_oid_equal(&parent, &first), 0);
@@ -259,6 +259,40 @@ TEST_F(RepositoryTest, NavigationAssignsChangeIdsToRawGitCommits) {
   const git_oid unreferenced = raw_commit("unreferenced", {child});
   const Result edited = invoke({"edit", git_oid_tostr_s(&unreferenced)});
   ASSERT_EQ(edited.code, 0) << edited.error;
+}
+
+TEST_F(RepositoryTest, NavigationUsesLayeredEditConfiguration) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  const git_oid child = raw_commit("configured child", {workspace});
+  set_ref("refs/heads/configured-child", child);
+  ASSERT_EQ(invoke({"config", "set", "--repo", "ui.movement.edit", "true"})
+                .code,
+            0);
+
+  ASSERT_EQ(invoke({"next"}).code, 0);
+  git_oid actual = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&actual, &child), 0);
+
+  detail::Repository repo(path_);
+  const std::size_t ids_before_no_edit = repo.changes().size();
+  ASSERT_EQ(invoke({"prev", "--no-edit"}).code, 0);
+  const git_oid no_edit = ref("refs/gg/workspaces/default");
+  EXPECT_EQ(repo.changes().size(), ids_before_no_edit + 1);
+  const std::vector<git_oid> no_edit_parents = repo.parents(no_edit);
+  ASSERT_EQ(no_edit_parents.size(), 1U);
+  const git_oid main = ref("refs/heads/main");
+  EXPECT_NE(git_oid_equal(&no_edit_parents.front(), &main), 0);
+
+  ASSERT_EQ(invoke({"config", "set", "--workspace", "ui.movement.edit", "1"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"prev"}).code, 2);
+  ASSERT_EQ(invoke({"config", "set", "--workspace", "ui.movement.edit", "false"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"prev"}).code, 2);
+  EXPECT_EQ(invoke({"prev", "--edit"}).code, 0);
 }
 
 TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {

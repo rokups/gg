@@ -65,6 +65,7 @@ void command_util_snapshot(Repository&, std::ostream&);
 void command_workspace(Repository&, const WorkspaceCommand&, std::ostream&);
 void command_move(Repository&, const MovementCommand&, std::ostream&);
 void command_config(Repository&, const ConfigCommand&, std::ostream&);
+std::optional<std::string> config_value(Repository&, std::string_view);
 int clone_command(const GitCloneCommand&, std::ostream&);
 int init_command(const GitInitCommand&, std::ostream&);
 
