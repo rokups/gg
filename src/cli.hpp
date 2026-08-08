@@ -45,6 +45,9 @@ struct LogCommand {
 struct NewCommand {
   std::string message;
   std::vector<std::string> parents;
+  std::string insert_after;
+  std::string insert_before;
+  bool no_edit{false};
 };
 struct DescribeCommand {
   std::string message;

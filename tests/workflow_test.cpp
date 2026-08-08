@@ -17,6 +17,63 @@ TEST_F(RepositoryTest, StartsFromGitHeadWithoutAnExplicitParent) {
   EXPECT_NE(invoke({"status"}).output.find("Parent commit"), std::string::npos);
 }
 
+TEST_F(RepositoryTest, CreatesChangesWithoutEditingThem) {
+  const Result detached = invoke({"new", "--no-edit", "-m", "detached", "main"});
+  ASSERT_EQ(detached.code, 0) << detached.error;
+  EXPECT_NE(detached.output.find("Created change: "), std::string::npos);
+  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+
+  ASSERT_EQ(invoke({"new", "-m", "current", "main"}).code, 0);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"new", "--no-edit", "-m", "side"}).code, 0);
+  const git_oid unchanged = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&workspace, &unchanged), 0);
+
+  ASSERT_EQ(
+      invoke({"new", "--no-edit", "-m", "inserted", "--before", "@"})
+          .code,
+      0);
+  const git_oid rewritten = ref("refs/gg/workspaces/default");
+  EXPECT_EQ(git_oid_equal(&workspace, &rewritten), 0);
+  const git_oid inserted = commit_parent(rewritten);
+  EXPECT_NE(invoke({"show", git_oid_tostr_s(&inserted), "--no-patch"})
+                .output.find("Description: inserted"),
+            std::string::npos);
+}
+
+TEST_F(RepositoryTest, InsertsNewChangesBeforeAndAfterRevisions) {
+  const Result first = invoke({"new", "-m", "first", "main"});
+  ASSERT_EQ(first.code, 0) << first.error;
+  const std::string first_id = token_after(first.output, "Working copy now at: ");
+  ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "child"}).code, 0);
+
+  const Result after =
+      invoke({"new", "-m", "after", "--after", first_id});
+  ASSERT_EQ(after.code, 0) << after.error;
+  const git_oid after_oid = ref("refs/gg/workspaces/default");
+  const git_oid rewritten_child = ref("refs/heads/child");
+  const git_oid child_parent = commit_parent(rewritten_child);
+  EXPECT_NE(git_oid_equal(&child_parent, &after_oid), 0);
+
+  const Result before =
+      invoke({"new", "-m", "before", "--before", "child", "--no-edit"});
+  ASSERT_EQ(before.code, 0) << before.error;
+  const git_oid newest_child = ref("refs/heads/child");
+  const git_oid before_oid = commit_parent(newest_child);
+  EXPECT_NE(invoke({"show", git_oid_tostr_s(&before_oid), "--no-patch"})
+                .output.find("Description: before"),
+            std::string::npos);
+  const git_oid current = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&current, &after_oid), 0);
+
+  EXPECT_EQ(invoke({"new", "main", "--insert-after", "main"}).code, 2);
+  EXPECT_EQ(invoke({"new", "--insert-after", "main", "--insert-before",
+                    "main"})
+                .code,
+            2);
+}
+
 TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   const std::string root = std::filesystem::weakly_canonical(path_).string();
   EXPECT_EQ(invoke({"workspace", "root"}).output, root + "\n");

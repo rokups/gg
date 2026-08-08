@@ -14,7 +14,8 @@ existing Git-aware editors continue to see normal working-tree changes.
 ```text
 gg status [PATH...]
 gg log [-r REV] [-n LIMIT] [--reversed] [--count] [PATH...]
-gg new [-m DESCRIPTION] [PARENT...]
+gg new [-m DESCRIPTION] [--no-edit] [PARENT...]
+gg new [-m DESCRIPTION] [--no-edit] (--insert-after REV | --insert-before REV)
 gg describe [-m DESCRIPTION | --stdin | --editor] [REV]
 gg edit [REV | -r REV]
 gg squash [-r REV | --from REV --into REV]

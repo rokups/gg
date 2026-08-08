@@ -18,6 +18,7 @@ void command_new(Repository& repo,
                  const NewCommand& options,
                  std::ostream& output) {
   repo.sync_workspace();
+  const auto old_workspace = repo.ref_target(kWorkspaceRef);
   std::vector<git_oid> parents;
   std::vector<std::string> revisions = options.parents;
   if (revisions.empty()) {
@@ -30,13 +31,44 @@ void command_new(Repository& repo,
   if (!revisions.empty()) {
     parents = commit_parents(repo, revisions);
   }
-  const git_oid change =
-      repo.create_commit(combined_tree(repo, parents), parents, options.message);
+  git_oid change{};
+  RewritePlan plan;
+  if (!options.insert_after.empty()) {
+    const git_oid target = repo.resolve(options.insert_after);
+    parents = {target};
+    change =
+        repo.create_commit(combined_tree(repo, parents), parents, options.message);
+    plan = repo.descendants({{target, change}});
+    plan.commits.erase(target);
+    for (const auto& [name, oid] : repo.rewrite_refs()) {
+      if (oid == target) plan.updates.erase(name);
+    }
+  } else if (!options.insert_before.empty()) {
+    const git_oid target = repo.resolve(options.insert_before);
+    parents = repo.parents(target);
+    change =
+        repo.create_commit(combined_tree(repo, parents), parents, options.message);
+    const git_oid rewritten = repo.rewrite_commit(
+        target, {change}, *git_commit_tree_id(repo.commit(target).get()));
+    plan = repo.descendants({{target, rewritten}});
+  } else {
+    change =
+        repo.create_commit(combined_tree(repo, parents), parents, options.message);
+  }
   const std::string id = repo.new_change_id();
-  std::map<std::string, git_oid> updates{
-      {std::string(kChangePrefix) + id, change}};
-  finish_workspace(repo, change, std::move(updates), {}, "gg new");
-  output << "Working copy now at: " << repo.short_change_id(id) << ' '
+  plan.updates[std::string(kChangePrefix) + id] = change;
+  if (!options.no_edit) {
+    finish_workspace(repo, change, std::move(plan.updates), {}, "gg new");
+  } else if (old_workspace.has_value()) {
+    const git_oid workspace = plan.commits.contains(*old_workspace)
+                                  ? plan.commits.at(*old_workspace)
+                                  : *old_workspace;
+    finish_workspace(repo, workspace, std::move(plan.updates), {}, "gg new");
+  } else {
+    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg new");
+  }
+  output << (options.no_edit ? "Created change: " : "Working copy now at: ")
+         << repo.short_change_id(id) << ' '
          << oid_string(change, 8) << ' '
          << (options.message.empty() ? "(no description set)" : options.message)
          << '\n';
