@@ -414,6 +414,16 @@ void render_revision_diff(Repository& repo,
   render_diff(diff.get(), format, output);
 }
 
+void render_tree_diff(Repository& repo,
+                      const git_oid& from_tree,
+                      const git_oid& to_tree,
+                      const std::vector<std::string>& paths,
+                      const DiffFormatOptions& format,
+                      std::ostream& output) {
+  DiffPtr diff = create_diff(repo, from_tree, to_tree, paths, format);
+  render_diff(diff.get(), format, output);
+}
+
 void command_diff(Repository& repo,
                   const DiffCommand& options,
                   std::ostream& output) {

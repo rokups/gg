@@ -52,6 +52,9 @@ bool revision_matches_paths(Repository&, const git_oid&,
 void render_revision_diff(Repository&, const git_oid&,
                           const std::vector<std::string>&,
                           const DiffFormatOptions&, std::ostream&);
+void render_tree_diff(Repository&, const git_oid&, const git_oid&,
+                      const std::vector<std::string>&,
+                      const DiffFormatOptions&, std::ostream&);
 void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,

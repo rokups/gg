@@ -236,6 +236,9 @@ struct OperationLogCommand {
   bool reversed{false};
   bool no_graph{false};
   bool op_diff{false};
+  bool patch{false};
+  DiffFormatOptions format;
+  std::string show_changes_in;
   std::string template_value;
 };
 struct OperationRestoreCommand {

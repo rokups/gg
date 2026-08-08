@@ -786,6 +786,12 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                           "Do not show the operation graph");
   operation_log->add_flag("-d,--op-diff", operation_log_value.op_diff,
                           "Show repository-state changes");
+  operation_log->add_flag("-p,--patch", operation_log_value.patch,
+                          "Show patches for changed revisions");
+  add_diff_format(operation_log, operation_log_value.format);
+  operation_log->add_option("--show-changes-in",
+                            operation_log_value.show_changes_in,
+                            "Changed revisions to show");
   operation_log->add_option("-T,--template",
                             operation_log_value.template_value,
                             "Operation template");

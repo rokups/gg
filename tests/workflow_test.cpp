@@ -708,6 +708,65 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   EXPECT_EQ(invoke({"operation", "log", "--limit", "word"}).code, 2);
 }
 
+TEST_F(RepositoryTest, ShowsChangedRevisionPatchesInOperationLogs) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("tracked.txt", "first\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid first = ref("refs/gg/workspaces/default");
+  const std::string first_oid = git_oid_tostr_s(&first);
+  write("tracked.txt", "second\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+
+  const std::vector<std::string> prefix{
+      "operation", "log", "--limit", "1", "--no-graph"};
+  const auto with = [&](std::vector<std::string> suffix) {
+    std::vector<std::string> arguments = prefix;
+    arguments.insert(arguments.end(), suffix.begin(), suffix.end());
+    return invoke(std::move(arguments));
+  };
+  const Result patch = with({"--patch"});
+  ASSERT_EQ(patch.code, 0) << patch.error;
+  EXPECT_NE(patch.output.find("diff --git a/tracked.txt b/tracked.txt"),
+            std::string::npos);
+  EXPECT_NE(patch.output.find("-first"), std::string::npos);
+  EXPECT_NE(patch.output.find("+second"), std::string::npos);
+  EXPECT_NE(with({"--git"}).output.find("diff --git"), std::string::npos);
+  EXPECT_NE(with({"--summary"}).output.find("M tracked.txt"),
+            std::string::npos);
+  EXPECT_NE(with({"--stat"}).output.find("1 file changed"),
+            std::string::npos);
+  EXPECT_NE(with({"--types"}).output.find("FF tracked.txt"),
+            std::string::npos);
+  EXPECT_NE(with({"--name-only"}).output.find("tracked.txt"),
+            std::string::npos);
+  EXPECT_NE(with({"--color-words"}).output.find("+second"),
+            std::string::npos);
+  EXPECT_NE(with({"--context", "0"}).output.find("@@ -1 +1 @@"),
+            std::string::npos);
+  EXPECT_NE(with({"--ignore-all-space"}).output.find("diff --git"),
+            std::string::npos);
+  EXPECT_NE(with({"--ignore-space-change"}).output.find("diff --git"),
+            std::string::npos);
+  EXPECT_EQ(with({"--summary", "--show-changes-in", "none()"})
+                .output.find("M tracked.txt"),
+            std::string::npos);
+  EXPECT_NE(with({"--summary", "--show-changes-in", "all()"})
+                .output.find("M tracked.txt"),
+            std::string::npos);
+  EXPECT_NE(with({"--summary", "--show-changes-in", first_oid})
+                .output.find("M tracked.txt"),
+            std::string::npos);
+  EXPECT_EQ(with({"--tool", "missing"}).code, 2);
+  ASSERT_EQ(invoke({"operation", "log", "--no-graph", "--summary"}).code,
+            0);
+
+  ASSERT_EQ(invoke({"new"}).code, 0);
+  ASSERT_EQ(with({"--summary", "--show-changes-in", "none()"}).code, 0);
+  ASSERT_EQ(invoke({"abandon", "@"}).code, 0);
+  ASSERT_EQ(with({"--summary"}).code, 0);
+  ASSERT_EQ(with({"--summary", "--show-changes-in", "none()"}).code, 0);
+}
+
 TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
   const git_oid first = ref("refs/gg/workspaces/default");

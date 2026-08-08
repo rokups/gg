@@ -248,6 +248,57 @@ void render_operation_diff(Repository& repo,
   }
 }
 
+void render_operation_patches(
+    Repository& repo,
+    const git_oid& operation,
+    const DiffFormatOptions& format,
+    const std::optional<std::set<git_oid, OidLess>>& selected,
+    std::ostream& output) {
+  const OperationState after = repo.parse_operation(operation);
+  const auto previous = repo.operation_previous(operation);
+  if (!previous.has_value()) return;
+  const OperationState before = repo.parse_operation(*previous);
+  std::set<std::string> changes;
+  for (const auto& [name, oid] : before.refs) {
+    (void)oid;
+    if (starts_with(name, kChangePrefix)) changes.insert(name);
+  }
+  for (const auto& [name, oid] : after.refs) {
+    (void)oid;
+    if (starts_with(name, kChangePrefix)) changes.insert(name);
+  }
+  for (const std::string& name : changes) {
+    bool has_old = false;
+    git_oid old_oid{};
+    const auto old = before.refs.find(name);
+    if (old != before.refs.end()) {
+      has_old = true;
+      old_oid = old->second;
+    }
+    const auto current = after.refs.find(name);
+    const bool has_new = current != after.refs.end();
+    const git_oid new_oid = has_new ? current->second : git_oid{};
+    if (has_old && has_new && old_oid == new_oid) {
+      continue;
+    }
+    if (selected.has_value()) {
+      bool matches = false;
+      if (has_new) matches = selected->contains(new_oid);
+      if (!matches) {
+        if (has_old) matches = selected->contains(old_oid);
+      }
+      if (!matches) continue;
+    }
+    const git_oid from_tree =
+        has_old ? *git_commit_tree_id(repo.commit(old_oid).get())
+                : combined_tree(repo, repo.parents(new_oid));
+    const git_oid to_tree =
+        has_new ? *git_commit_tree_id(repo.commit(new_oid).get())
+                : combined_tree(repo, repo.parents(old_oid));
+    render_tree_diff(repo, from_tree, to_tree, {}, format, output);
+  }
+}
+
 enum class TrackedRefKind { bookmark, tag };
 
 struct TrackingCandidate {
@@ -1269,6 +1320,20 @@ void command_operation_log(Repository& repo,
   if (options.reversed) {
     std::reverse(operations.begin(), operations.end());
   }
+  const bool show_patch = options.patch || options.format.summary ||
+                          options.format.stat || options.format.types ||
+                          options.format.name_only || options.format.git ||
+                          options.format.color_words ||
+                          !options.format.tool.empty() ||
+                          options.format.context != 3 ||
+                          options.format.ignore_all_space ||
+                          options.format.ignore_space_change;
+  std::optional<std::set<git_oid, OidLess>> selected;
+  if (!options.show_changes_in.empty()) {
+    const std::vector<git_oid> revisions =
+        repo.resolve_set(options.show_changes_in);
+    selected.emplace(revisions.begin(), revisions.end());
+  }
   for (std::size_t index = 0; index < operations.size(); ++index) {
     const git_oid& oid = operations[index];
     CommitPtr operation = repo.commit(oid);
@@ -1293,7 +1358,10 @@ void command_operation_log(Repository& repo,
                        OutputStyle::timestamp)
              << ' ' << description << '\n';
     }
-    if (options.op_diff) render_operation_diff(repo, oid, output);
+    if (options.op_diff || show_patch) render_operation_diff(repo, oid, output);
+    if (show_patch) {
+      render_operation_patches(repo, oid, options.format, selected, output);
+    }
     if (!options.no_graph && index + 1 < operations.size()) {
       output << "│\n";
     }
