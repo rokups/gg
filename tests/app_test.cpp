@@ -100,7 +100,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"git", "wat"}).code, 2);
   EXPECT_EQ(run({"git", "fetch"}).code, 2);
   EXPECT_EQ(invoke({"fetch", "extra"}).code, 2);
-  EXPECT_EQ(invoke({"fetch", "--tracked"}).code, 2);
+  EXPECT_EQ(invoke({"fetch", "--tracked"}).code, 1);
   EXPECT_EQ(invoke({"fetch", "--tracked", "--branch", "main"}).code, 2);
   EXPECT_EQ(invoke({"fetch", "--tracked", "--tag", "v1"}).code, 2);
   EXPECT_EQ(invoke({"fetch", "--all-remotes", "--remote", "origin"}).code,

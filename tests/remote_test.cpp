@@ -458,6 +458,9 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   ASSERT_EQ(invoke({"bookmark", "create", "one", "two"}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "release", "stable"}).code, 0);
   const git_oid target = ref("refs/heads/one");
+  ASSERT_EQ(invoke({"new", "-m", "later"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "set", "two", "-r", "@"}).code, 0);
+  const git_oid later = ref("refs/heads/two");
   for (const std::string_view remote : {"origin", "backup"}) {
     ASSERT_EQ(
         invoke({"push", "-b", "one", "--remote", std::string(remote)}).code,
@@ -514,12 +517,26 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   EXPECT_TRUE(has_ref("refs/remotes/origin/two"));
   EXPECT_TRUE(has_ref("refs/remotes/backup/two"));
 
+  set_ref("refs/remotes/origin/one", later);
+  set_ref("refs/remotes/origin/HEAD", later);
+  ASSERT_EQ(invoke({"fetch", "--tracked", "--remote", "origin"}).code, 0);
+  const git_oid refreshed = ref("refs/remotes/origin/one");
+  EXPECT_NE(git_oid_equal(&refreshed, &target), 0);
+
   ASSERT_EQ(invoke({"fetch", "--remote", "origin", "--tag", "release",
                     "--tag", "stable"})
                 .code,
             0);
   EXPECT_TRUE(has_ref("refs/tags/release"));
   EXPECT_TRUE(has_ref("refs/tags/stable"));
+
+  remove_ref("refs/remotes/backup/one");
+  remove_ref("refs/remotes/backup/two");
+  const Result no_tracked =
+      invoke({"fetch", "--tracked", "--remote", "backup"});
+  EXPECT_NE(no_tracked.output.find("No tracked refs to fetch"),
+            std::string::npos);
+  EXPECT_FALSE(has_ref("refs/remotes/backup/one"));
 
   std::filesystem::remove_all(origin_path);
   std::filesystem::remove_all(backup_path);

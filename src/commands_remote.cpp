@@ -480,9 +480,6 @@ void command_fetch(Repository& repo,
                    const GitFetchCommand& options,
                    std::ostream& output) {
   repo.sync_workspace();
-  if (options.tracked) {
-    throw UserError("remote tracking state is not supported yet");
-  }
   const auto validate_names = [](const std::vector<std::string>& names,
                                  std::string_view prefix,
                                  std::string_view kind) {
@@ -517,8 +514,22 @@ void command_fetch(Repository& repo,
     check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()),
           "find remote");
     RemotePtr remote(raw_remote);
+    std::vector<std::string> branches = options.branches;
+    if (options.tracked) {
+      const std::string prefix = "refs/remotes/" + name + "/";
+      for (const auto& [reference, oid] : repo.data_refs()) {
+        (void)oid;
+        if (starts_with(reference, prefix) && reference != prefix + "HEAD") {
+          branches.push_back(reference.substr(prefix.size()));
+        }
+      }
+      if (branches.empty()) {
+        output << "No tracked refs to fetch from " << name << '\n';
+        continue;
+      }
+    }
     std::vector<std::string> storage;
-    for (const std::string& branch : options.branches) {
+    for (const std::string& branch : branches) {
       storage.push_back("+refs/heads/" + branch + ":refs/remotes/" + name +
                         "/" + branch);
     }
