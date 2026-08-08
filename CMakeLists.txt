@@ -96,7 +96,11 @@ if(GG_BUILD_TESTS)
   target_compile_options(gg_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
   include(GoogleTest)
-  gtest_discover_tests(gg_tests DISCOVERY_MODE PRE_TEST)
+  gtest_discover_tests(
+    gg_tests
+    DISCOVERY_MODE PRE_TEST
+    PROPERTIES ENVIRONMENT "GG_LEAN=0"
+  )
   add_test(NAME gg_help COMMAND gg --help)
 
   if(GG_COVERAGE)

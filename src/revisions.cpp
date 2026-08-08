@@ -209,9 +209,13 @@ std::set<std::string> Repository::invalid_change_id_refs() const {
   return refs;
 }
 
-void Repository::import_git_history() const {
+void Repository::import_git_history(std::ostream* progress) const {
+  const bool initializing = !operation().has_value();
+  if (initializing && progress != nullptr && head_oid().has_value()) {
+    *progress << "Initializing gg for this repository; this may take a moment...\n";
+  }
   std::set<std::string> deletes = invalid_change_id_refs();
-  if (operation().has_value() && deletes.empty()) return;
+  if (!initializing && deletes.empty()) return;
   std::map<std::string, git_oid> updates = missing_change_ids();
   if (updates.empty() && deletes.empty()) return;
   record(std::move(updates), std::move(deletes), head_state(),

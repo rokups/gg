@@ -264,6 +264,11 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   write("second.txt", "second\n");
   ASSERT_EQ(invoke({"status"}).code, 0);
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
+  ASSERT_EQ(invoke({"tag", "set", "release", "-r", second_id}).code, 0);
+  git_oid blob{};
+  ASSERT_EQ(git_blob_create_from_buffer(&blob, repository_.get(), "blob", 4),
+            0);
+  set_ref("refs/tags/blob", blob);
 
   const Result limited =
       invoke({"log", "-r", "ancestors(@)", "--limit", "2", "--reversed",
@@ -280,6 +285,8 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
       invoke({"log", "-r", "@ | @-", "--no-graph"});
   EXPECT_NE(revset_log.output.find("third"), std::string::npos);
   EXPECT_NE(revset_log.output.find("second"), std::string::npos);
+  EXPECT_NE(revset_log.output.find("release"), std::string::npos);
+  EXPECT_EQ(revset_log.output.find(" blob"), std::string::npos);
   EXPECT_EQ(invoke({"log", "--limit", "0"}).output, "");
 
   const Result colored =
@@ -301,6 +308,9 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
             std::string::npos);
   EXPECT_NE(debug.output.find("<<working_copy commit_id shortest rest::"),
             std::string::npos);
+  const Result tagged = invoke(
+      {"--color", "debug", "log", "-r", second_id, "-n", "1"});
+  EXPECT_NE(tagged.output.find("<<tag::release>>"), std::string::npos);
   EXPECT_EQ(invoke({"--color", "invalid", "log"}).code, 2);
 
   const Result filtered =

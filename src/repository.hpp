@@ -270,7 +270,7 @@ class Repository {
 
   std::set<std::string> invalid_change_id_refs() const;
 
-  void import_git_history() const;
+  void import_git_history(std::ostream* progress = nullptr) const;
 
   std::string new_change_id() const;
 

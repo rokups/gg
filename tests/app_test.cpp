@@ -56,12 +56,15 @@ TEST(AppTest, ReportsUserAndGitErrors) {
   EXPECT_EQ(run({"-R", "."}).code, 2);
 }
 
-TEST(AppTest, LeanModeKeepsOnlyGgValueAddedCommands) {
+TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   const char* previous_raw = std::getenv("GG_LEAN");
   const std::optional<std::string> previous =
       previous_raw == nullptr ? std::nullopt
                               : std::optional<std::string>(previous_raw);
 
+  EXPECT_EQ(unsetenv("GG_LEAN"), 0);
+  const Result default_help = run({});
+  const Result default_status = run({"status"});
   EXPECT_EQ(setenv("GG_LEAN", "0", 1), 0);
   const Result normal_status = run({"status", "--help"});
   EXPECT_EQ(setenv("GG_LEAN", "1", 1), 0);
@@ -93,9 +96,12 @@ TEST(AppTest, LeanModeKeepsOnlyGgValueAddedCommands) {
   }
 
   EXPECT_EQ(normal_status.code, 0);
+  EXPECT_EQ(default_status.code, 2);
+  EXPECT_EQ(default_help.output.find("  status, st "), std::string::npos);
   EXPECT_EQ(root_help.code, 0);
   EXPECT_EQ(root_help.output.find("  status, st "), std::string::npos);
-  for (std::string_view command : {"diff", "show", "clone", "init", "sparse"}) {
+  for (std::string_view command :
+       {"diff", "show", "clone", "init", "workspace", "sparse"}) {
     EXPECT_EQ(root_help.output.find("  " + std::string(command) + " "),
               std::string::npos)
         << command;
@@ -266,6 +272,17 @@ TEST_F(RepositoryTest, ReportsBareRepositoriesAndEmptyUndoHistory) {
   EXPECT_EQ(invoke({"redo"}).code, 2);
   EXPECT_EQ(invoke({"operation", "log"}).output, "No operations.\n");
   std::filesystem::remove_all(bare_path);
+}
+
+TEST_F(RepositoryTest, ReportsOneTimeRepositoryInitialization) {
+  const std::string message =
+      "Initializing gg for this repository; this may take a moment...\n";
+  const Result first = invoke({"log", "--limit", "1"});
+  ASSERT_EQ(first.code, 0) << first.error;
+  EXPECT_EQ(first.error, message);
+  const Result second = invoke({"log", "--limit", "1"});
+  ASSERT_EQ(second.code, 0) << second.error;
+  EXPECT_TRUE(second.error.empty());
 }
 
 TEST_F(RepositoryTest, ExecutesUtilitiesWithExactArgumentsAndWorkspaceRoot) {

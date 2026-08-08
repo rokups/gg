@@ -322,7 +322,7 @@ int dispatch(std::span<const std::string_view> arguments,
     throw UserError("no rewrite is in progress");
   }
   if (invocation.at_operation.empty() && reads_revisions(invocation.command)) {
-    repository.import_git_history();
+    repository.import_git_history(&error);
   }
   return execute(repository, std::get<RepositoryCommand>(invocation.command),
                  invocation.replay_arguments, command_output, output);

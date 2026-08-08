@@ -27,7 +27,7 @@ std::vector<const CLI::App*> schema_children(const CLI::App& command) {
 
 bool lean_mode_enabled() {
   const char* value = std::getenv("GG_LEAN");
-  return value != nullptr && std::string_view(value) == "1";
+  return value == nullptr || std::string_view(value) != "0";
 }
 
 const std::map<std::string, std::string_view> kHelpKeywords{
@@ -975,13 +975,13 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   const bool lean = lean_mode_enabled();
   if (lean) {
-    for (CLI::App* command : {status, diff, show, clone, init, sparse}) {
+    for (CLI::App* command :
+         {status, diff, show, clone, init, workspace, sparse}) {
       command->disabled()->group("");
     }
     for (CLI::App* command : {file_list, file_show, file_search, create, set,
                               move, erase, forget, rename, list, tag_set,
-                              tag_delete, tag_list, util_exec, util_gc,
-                              workspace_root}) {
+                              tag_delete, tag_list, util_exec, util_gc}) {
       command->disabled()->group("");
     }
     bookmark->require_subcommand(1);
@@ -1007,7 +1007,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     app.parse(static_cast<int>(argv.size()), argv.data());
   } catch (const CLI::CallForHelp&) {  // GG_COV_EXCL_BRANCH
     if (lean && !app.remaining(true).empty()) {
-      error << "error: command disabled by GG_LEAN\n";
+      error << "error: command disabled in lean mode\n";
       return {2, std::monostate{}};
     }
     output << app.help();

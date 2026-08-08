@@ -5,6 +5,7 @@
 #include "commands.hpp"
 
 #include <git2.h>
+#include <git2/sys/errors.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -529,6 +530,23 @@ void command_log(Repository& repo,
   show_diff |= options.format.context != 3;
   show_diff |= options.format.ignore_all_space;
   show_diff |= options.format.ignore_space_change;
+  std::map<git_oid, std::vector<std::string>, OidLess> tags;
+  constexpr std::string_view tag_prefix = "refs/tags/";
+  for (const auto& [reference, target] : repo.data_refs()) {
+    if (!starts_with(reference, tag_prefix)) continue;
+    git_object* raw_object = nullptr;
+    check(git_object_lookup(&raw_object, repo.raw(), &target, GIT_OBJECT_ANY),
+          "read tag");
+    ObjectPtr object(raw_object);
+    git_object* raw_commit = nullptr;
+    if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
+      git_error_clear();
+      continue;
+    }
+    ObjectPtr commit(raw_commit);
+    tags[*git_object_id(commit.get())].push_back(
+        reference.substr(tag_prefix.size()));
+  }
   GraphRenderer graph;
   for (const git_oid& revision : revisions) {
     const git_oid oid = revision;
@@ -552,6 +570,11 @@ void command_log(Repository& repo,
               << styled_short_commit_id(repo, content, oid, working);
       for (const std::string& bookmark : bookmarks) {
         content << " " << styled(content, bookmark, OutputStyle::bookmark);
+      }
+      if (const auto tagged = tags.find(oid); tagged != tags.end()) {
+        for (const std::string& tag : tagged->second) {
+          content << " " << styled(content, tag, OutputStyle::tag);
+        }
       }
       const std::string description =
           first_line(git_commit_message(value.get()));
