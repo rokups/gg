@@ -302,6 +302,7 @@ struct Invocation {
   std::vector<std::string> config_values;
   std::vector<std::filesystem::path> config_files;
   std::string color{"auto"};
+  std::string at_operation;
   bool ignore_working_copy{false};
   bool debug{false};
   bool quiet{false};

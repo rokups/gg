@@ -182,6 +182,13 @@ git_oid Repository::resolve_operation(std::string_view expression) const {
   return *match;
 }
 
+void Repository::view_at_operation(std::string_view expression) {
+  const git_oid operation_oid = resolve_operation(expression);
+  operation_view_ = parse_operation(operation_oid);
+  viewed_operation_ = operation_oid;
+  ignore_working_copy_ = true;
+}
+
 git_oid Repository::ensure_operation() const {
   const auto current = operation();
   if (current.has_value()) {

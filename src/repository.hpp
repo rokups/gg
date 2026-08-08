@@ -215,6 +215,8 @@ class Repository {
 
   git_oid resolve_operation(std::string_view expression) const;
 
+  void view_at_operation(std::string_view expression);
+
   std::optional<PendingRewrite> pending() const;
 
   std::string serialize(const PendingRewrite& pending) const;
@@ -278,6 +280,8 @@ class Repository {
   std::vector<std::string> config_values_;
   std::vector<std::filesystem::path> config_files_;
   bool ignore_working_copy_{false};
+  std::optional<OperationState> operation_view_;
+  std::optional<git_oid> viewed_operation_;
 };
 
 }  // namespace gg::detail

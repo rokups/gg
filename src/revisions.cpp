@@ -417,7 +417,17 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
             if (function == "bookmarks") {
               append_unique(result, {oid});
             } else {
-              append_unique(result, {resolve_atom(reference)});
+              git_object* raw_object = nullptr;
+              check(git_object_lookup(&raw_object, repo_.get(), &oid,
+                                      GIT_OBJECT_ANY),
+                    "read tag target");
+              ObjectPtr object(raw_object);
+              git_object* raw_commit = nullptr;
+              check(git_object_peel(&raw_commit, object.get(),
+                                    GIT_OBJECT_COMMIT),
+                    "resolve tag target");
+              ObjectPtr commit_object(raw_commit);
+              append_unique(result, {*git_object_id(commit_object.get())});
             }
           }
         }

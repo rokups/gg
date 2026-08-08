@@ -227,6 +227,13 @@ int dispatch(std::span<const std::string_view> arguments,
       invocation.quiet && !primary_output
           ? static_cast<std::ostream&>(discarded)
           : output;
+  if (!invocation.at_operation.empty()) {
+    const auto* repository_command =
+        std::get_if<RepositoryCommand>(&invocation.command);
+    if (repository_command == nullptr || !primary_output) {
+      throw UserError("--at-operation only supports read-only commands");
+    }
+  }
   if (const auto* clone = std::get_if<GitCloneCommand>(&invocation.command)) {
     return clone_command(*clone, command_output);
   }
@@ -240,7 +247,11 @@ int dispatch(std::span<const std::string_view> arguments,
 
   Repository repository(invocation.repository, std::move(invocation.config_values),
                         std::move(invocation.config_files),
-                        invocation.ignore_working_copy);
+                        invocation.ignore_working_copy ||
+                            !invocation.at_operation.empty());
+  if (!invocation.at_operation.empty()) {
+    repository.view_at_operation(invocation.at_operation);
+  }
   if (repository.pending().has_value()) {
     const auto* repository_command =
         std::get_if<RepositoryCommand>(&invocation.command);

@@ -88,6 +88,23 @@ TreePtr Repository::tree(const git_oid& oid) const {
 }
 
 std::optional<git_oid> Repository::ref_target(std::string_view name) const {
+  if (operation_view_.has_value()) {
+    if (name == kOperationRef) return viewed_operation_;
+    if (name == "HEAD") {
+      if (operation_view_->head.symbolic) {
+        const auto target = operation_view_->refs.find(operation_view_->head.value);
+        if (target == operation_view_->refs.end()) return std::nullopt;
+        return target->second;
+      }
+      git_oid oid{};
+      check(git_oid_fromstr(&oid, operation_view_->head.value.c_str()),
+            "parse historical HEAD");
+      return oid;
+    }
+    const auto target = operation_view_->refs.find(std::string(name));
+    if (target == operation_view_->refs.end()) return std::nullopt;
+    return target->second;
+  }
   git_reference* direct = nullptr;
   const int lookup =
       git_reference_lookup(&direct, repo_.get(), std::string(name).c_str());
@@ -109,6 +126,7 @@ std::optional<git_oid> Repository::ref_target(std::string_view name) const {
 }
 
 HeadState Repository::head_state() const {
+  if (operation_view_.has_value()) return operation_view_->head;
   git_reference* head = nullptr;
   check(git_reference_lookup(&head, repo_.get(), "HEAD"), "read HEAD");
   ReferencePtr reference(head);
@@ -121,6 +139,7 @@ HeadState Repository::head_state() const {
 std::optional<git_oid> Repository::head_oid() const { return ref_target("HEAD"); }
 
 std::map<std::string, git_oid> Repository::data_refs() const {
+  if (operation_view_.has_value()) return operation_view_->refs;
   std::map<std::string, git_oid> refs;
   git_reference_iterator* raw_iterator = nullptr;
   check(git_reference_iterator_new(&raw_iterator, repo_.get()),

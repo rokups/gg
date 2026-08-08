@@ -676,6 +676,71 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   EXPECT_EQ(invoke({"operation", "restore", "@-x"}).code, 2);
 }
 
+TEST_F(RepositoryTest, ReadsRepositoryStateAtHistoricalOperations) {
+  ASSERT_EQ(invoke({"new", "-m", "before", "main"}).code, 0);
+  ASSERT_EQ(invoke({"tag", "set", "historical"}).code, 0);
+  detail::Repository repo(path_);
+  const git_oid before_revision = repo.resolve("@");
+  const git_oid before_operation = *repo.operation();
+  const std::string before_id = detail::oid_string(before_operation);
+  ASSERT_EQ(invoke({"describe", "-m", "after"}).code, 0);
+
+  const Result historical = invoke(
+      {"--at-operation", before_id, "show", "@", "--no-patch"});
+  ASSERT_EQ(historical.code, 0) << historical.error;
+  EXPECT_NE(historical.output.find("Description: before"), std::string::npos);
+  EXPECT_EQ(historical.output.find("Description: after"), std::string::npos);
+  const Result historical_tag =
+      invoke({"--at-operation", before_id, "tag", "list", "historical"});
+  ASSERT_EQ(historical_tag.code, 0) << historical_tag.error;
+  EXPECT_NE(historical_tag.output.find(detail::oid_string(before_revision, 8)),
+            std::string::npos);
+  EXPECT_NE(invoke({"--at-operation", before_id, "log", "-r",
+                    "tags(exact:historical)"})
+                .output.find("before"),
+            std::string::npos);
+
+  const Result operation_log =
+      invoke({"--at-op", before_id, "operation", "log", "--limit", "1"});
+  ASSERT_EQ(operation_log.code, 0) << operation_log.error;
+  EXPECT_NE(operation_log.output.find(detail::oid_string(before_operation, 8)),
+            std::string::npos);
+  EXPECT_EQ(invoke({"--at-operation", before_id, "new", "main"}).code, 2);
+  EXPECT_EQ(invoke({"--at-operation", before_id, "util", "exec", "true"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"--at-operation", "missing", "log"}).code, 2);
+
+  detail::Repository historical_repo(path_);
+  historical_repo.view_at_operation(before_id);
+  EXPECT_FALSE(historical_repo.head_state().symbolic);
+  EXPECT_TRUE(historical_repo.ref_target("HEAD").has_value());
+  EXPECT_TRUE(historical_repo.ref_target(detail::kOperationRef).has_value());
+  EXPECT_FALSE(historical_repo.ref_target("refs/heads/missing").has_value());
+  const auto new_operation = repo.operation_previous(before_operation);
+  ASSERT_TRUE(new_operation.has_value());
+  const auto initial_operation = repo.operation_previous(*new_operation);
+  ASSERT_TRUE(initial_operation.has_value());
+  historical_repo = detail::Repository(path_);
+  historical_repo.view_at_operation(detail::oid_string(*initial_operation));
+  EXPECT_TRUE(historical_repo.head_state().symbolic);
+  EXPECT_TRUE(historical_repo.ref_target("HEAD").has_value());
+  detail::OperationState missing_head = historical_repo.state();
+  missing_head.head = {true, "refs/heads/missing"};
+  const git_oid missing_head_operation = historical_repo.create_operation(
+      missing_head, initial_operation, "missing historical HEAD");
+  repo.apply_refs({{std::string(detail::kOperationRef), missing_head_operation}},
+                  {}, "test historical HEAD");
+  historical_repo = detail::Repository(path_);
+  historical_repo.view_at_operation(
+      detail::oid_string(missing_head_operation));
+  EXPECT_FALSE(historical_repo.ref_target("HEAD").has_value());
+
+  const git_oid current = repo.resolve("@");
+  EXPECT_EQ(std::string(git_commit_message(repo.commit(current).get())),
+            "after");
+}
+
 TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
   EXPECT_NE(invoke({"status"}).output.find("No working-copy"), std::string::npos);
   ASSERT_EQ(git_reference_remove(repository_.get(), "refs/heads/main"), 0);

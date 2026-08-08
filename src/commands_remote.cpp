@@ -602,15 +602,11 @@ void command_tag(Repository& repo,
   }
   const auto tag_target = [&](std::string_view reference)
       -> std::optional<git_oid> {
+    const std::optional<git_oid> target = repo.ref_target(reference);
+    if (!target.has_value()) return std::nullopt;
     git_object* raw_object = nullptr;
-    const std::string owned_reference(reference);
-    const int lookup =
-        git_revparse_single(&raw_object, repo.raw(), owned_reference.c_str());
-    if (lookup == GIT_ENOTFOUND) {
-      git_error_clear();
-      return std::nullopt;
-    }
-    check(lookup, "read tag");
+    check(git_object_lookup(&raw_object, repo.raw(), &*target, GIT_OBJECT_ANY),
+          "read tag");
     ObjectPtr object(raw_object);
     git_object* raw_commit = nullptr;
     check(git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT),
