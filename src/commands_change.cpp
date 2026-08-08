@@ -155,66 +155,6 @@ bool same_signature(const git_signature* left, const git_signature* right) {
   return left->when.offset == right->when.offset;
 }
 
-std::string graph_prefix(std::vector<git_oid>& lanes,
-                         const git_oid& revision,
-                         const std::vector<git_oid>& successors,
-                         std::string_view marker) {
-  auto current = std::find_if(lanes.begin(), lanes.end(),
-                              [&](const git_oid& oid) { return oid == revision; });
-  if (current == lanes.end()) {
-    lanes.push_back(revision);
-    current = std::prev(lanes.end());
-  }
-  const std::size_t lane = std::distance(lanes.begin(), current);
-  std::optional<std::size_t> convergence;
-  if (successors.size() == 1) {
-    const auto existing = std::find_if(
-        lanes.begin(), lanes.end(),
-        [&](const git_oid& oid) { return oid == successors.front(); });
-    if (existing != lanes.end()) {
-      convergence = std::distance(lanes.begin(), existing);
-    }
-  }
-
-  std::ostringstream prefix;
-  if (convergence.has_value()) {
-    const std::size_t first = std::min(lane, *convergence);
-    const std::size_t last = std::max(lane, *convergence);
-    for (std::size_t index = 0; index < first; ++index) {
-      prefix << "│ ";
-    }
-    prefix << "╰";
-    for (std::size_t index = first; index < last; ++index) prefix << "─";
-    prefix << marker;
-  } else {
-    for (std::size_t index = 0; index < lane; ++index) {
-      prefix << "│ ";
-    }
-    prefix << marker;
-    if (successors.size() > 1) {
-      for (std::size_t index = 1; index < successors.size(); ++index) {
-        prefix << "─" << (index + 1 == successors.size() ? "╮" : "┬");
-      }
-    }
-  }
-  prefix << "  ";
-  for (std::size_t index = lane + 1; index < lanes.size(); ++index) {
-    prefix << "│ ";
-  }
-
-  lanes.erase(current);
-  std::size_t insertion = std::min(lane, lanes.size());
-  for (const git_oid& successor : successors) {
-    const bool present = std::ranges::any_of(
-        lanes, [&](const git_oid& oid) { return oid == successor; });
-    if (!present) {
-      lanes.insert(lanes.begin() + insertion, successor);
-      ++insertion;
-    }
-  }
-  return prefix.str();
-}
-
 }  // namespace
 
 void command_new(Repository& repo,
@@ -562,6 +502,7 @@ void command_log(Repository& repo,
   if (options.reversed) {
     std::reverse(revisions.begin(), revisions.end());
   }
+  repo.set_short_id_scope(revisions);
   std::map<git_oid, std::vector<git_oid>, OidLess> graph_successors;
   if (options.reversed) {
     const std::set<git_oid, OidLess> visible(revisions.begin(), revisions.end());
@@ -588,41 +529,43 @@ void command_log(Repository& repo,
   show_diff |= options.format.context != 3;
   show_diff |= options.format.ignore_all_space;
   show_diff |= options.format.ignore_space_change;
-  std::vector<git_oid> graph_lanes;
+  GraphRenderer graph;
   for (const git_oid& revision : revisions) {
     const git_oid oid = revision;
     CommitPtr value = repo.commit(oid);
     const auto id = repo.change_id(oid);
     const auto bookmarks = repo.bookmarks(oid);
-    if (!options.no_graph) {
-      const bool working = workspace.has_value() && *workspace == oid;
-      const std::string marker =
-          working ? styled(output, "@", OutputStyle::working_copy)
-          : id.has_value() ? styled(output, "○", OutputStyle::change_id)
-                           : "*";
-      output << graph_prefix(graph_lanes, oid, graph_successors[oid], marker);
-    }
+    std::ostringstream content;
+    set_output_color_mode(content, output_color_mode(output));
+    const bool working = workspace.has_value() && *workspace == oid;
+    const std::string marker =
+        styled(output, working ? "@" : "○",
+               working ? OutputStyle::working_copy : OutputStyle::change_id);
     if (!options.template_value.empty()) {
-      output << render_template(options.template_value,
-                                revision_template_values(repo, oid));
+      content << render_template(options.template_value,
+                                 revision_template_values(repo, oid));
     } else {
-      const bool working = workspace.has_value() && *workspace == oid;
-      output << (id.has_value()
-                     ? styled_short_change_id(repo, output, *id, working)
-                     : styled_short_commit_id(repo, output, oid, working))
-             << ' '
-             << styled_short_commit_id(repo, output, oid, working);
+      content << (id.has_value()
+                      ? styled_short_change_id(repo, content, *id, working)
+                      : styled_short_commit_id(repo, content, oid, working))
+              << ' '
+              << styled_short_commit_id(repo, content, oid, working);
       for (const std::string& bookmark : bookmarks) {
-        output << " " << styled(output, bookmark, OutputStyle::bookmark);
+        content << " " << styled(content, bookmark, OutputStyle::bookmark);
       }
       const std::string description =
           first_line(git_commit_message(value.get()));
-      output << " "
-             << (description.empty() ? "(no description set)" : description)
-             << '\n';
+      content << (options.no_graph ? " " : "\n")
+              << (description.empty() ? "(no description set)" : description)
+              << '\n';
     }
     if (show_diff) {
-      render_revision_diff(repo, oid, options.paths, options.format, output);
+      render_revision_diff(repo, oid, options.paths, options.format, content);
+    }
+    if (options.no_graph) {
+      output << content.str();
+    } else {
+      graph.add(output, oid, graph_successors[oid], marker, content.str());
     }
   }
 }

@@ -396,8 +396,10 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   EXPECT_TRUE(has_ref("refs/remotes/origin/" +
                       generated_name.substr(std::string("refs/heads/").size())));
 
-  EXPECT_EQ(invoke({"fetch"}).code, 0);
-  EXPECT_EQ(invoke({"fetch", "--remote", "origin"}).code, 0);
+  const Result fetched_default = invoke({"fetch"});
+  EXPECT_EQ(fetched_default.code, 0) << fetched_default.error;
+  const Result fetched_origin = invoke({"fetch", "--remote", "origin"});
+  EXPECT_EQ(fetched_origin.code, 0) << fetched_origin.error;
   EXPECT_EQ(invoke({"push", "--bookmark", "topic", "--remote", "origin"})
                 .code,
             0);

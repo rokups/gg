@@ -12,11 +12,13 @@
 #include <unistd.h>
 
 #include <array>
+#include <algorithm>
 #include <charconv>
 #include <cstdlib>
 #include <fnmatch.h>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <regex>
 #include <sstream>
 #include <utility>
@@ -25,6 +27,81 @@ extern char** environ;
 
 namespace gg::detail {
 namespace {
+
+enum GraphLink : std::uint16_t {
+  graph_horizontal = 1 << 0,
+  graph_vertical = 1 << 1,
+  graph_left_fork = 1 << 2,
+  graph_right_fork = 1 << 3,
+  graph_left_merge = 1 << 4,
+  graph_right_merge = 1 << 5,
+  graph_child = 1 << 6,
+};
+
+bool has_link(std::uint16_t value, GraphLink link) {
+  return (value & link) != 0;
+}
+
+std::string_view graph_link_glyph(std::uint16_t link, bool merge) {
+  const bool fork = has_link(link, graph_left_fork) ||
+                    has_link(link, graph_right_fork);
+  const bool joins = has_link(link, graph_left_merge) ||
+                     has_link(link, graph_right_merge);
+  if (has_link(link, graph_horizontal)) {
+    if (has_link(link, graph_child) || (fork && joins) ||
+        (fork && has_link(link, graph_vertical) && !merge)) {
+      return "┼─";
+    }
+    if (fork) return "┬─";
+    if (joins) return "┴─";
+    return "──";
+  }
+  if (has_link(link, graph_vertical) && !merge) {
+    const bool left = has_link(link, graph_left_merge) ||
+                      has_link(link, graph_left_fork);
+    const bool right = has_link(link, graph_right_merge) ||
+                       has_link(link, graph_right_fork);
+    if (left && right) return "┼─";
+    if (left) return "┤ ";
+    if (right) return "├─";
+    return "│ ";
+  }
+  if (has_link(link, graph_vertical) && !fork) {
+    const bool left = has_link(link, graph_left_merge);
+    const bool right = has_link(link, graph_right_merge);
+    if (left && right) return "┼─";
+    if (left) return "┤ ";
+    if (right) return "├─";
+    return "│ ";
+  }
+  if (has_link(link, graph_left_fork) &&
+      (has_link(link, graph_left_merge) || has_link(link, graph_child))) {
+    return "┤ ";
+  }
+  if (has_link(link, graph_right_fork) &&
+      (has_link(link, graph_right_merge) || has_link(link, graph_child))) {
+    return "├─";
+  }
+  if (has_link(link, graph_left_merge) &&
+      has_link(link, graph_right_merge)) {
+    return "┴─";
+  }
+  if (has_link(link, graph_left_fork) &&
+      has_link(link, graph_right_fork)) {
+    return "┬─";
+  }
+  if (has_link(link, graph_left_fork)) return "╮ ";
+  if (has_link(link, graph_left_merge)) return "╯ ";
+  if (has_link(link, graph_right_fork)) return "╭─";
+  if (has_link(link, graph_right_merge)) return "╰─";
+  return "  ";
+}
+
+void trim_graph_line(std::string& line) {
+  while (!line.empty() && line.back() == ' ') {  // GG_COV_EXCL_BRANCH
+    line.pop_back();
+  }
+}
 
 struct StyleSpec {
   std::string_view ansi;
@@ -175,6 +252,156 @@ int color_mode_index() {
 
 }  // namespace
 
+std::string_view graph_link_glyph_for_test(std::uint16_t link, bool merge) {
+  return graph_link_glyph(link, merge);
+}
+
+void GraphRenderer::add(std::ostream& output,
+                        const git_oid& node,
+                        std::span<const git_oid> parents,
+                        std::string_view marker,
+                        std::string_view content) {
+  const auto same_oid = [](const std::optional<git_oid>& value,
+                           const git_oid& expected) {
+    return value.has_value() && *value == expected;
+  };
+  auto current = std::find_if(columns_.begin(), columns_.end(),
+                              [&](const auto& value) {
+                                return same_oid(value, node);
+                              });
+  if (current == columns_.end()) {
+    current = std::find(columns_.begin(), columns_.end(), std::nullopt);
+    if (current == columns_.end()) {
+      columns_.emplace_back();
+      current = std::prev(columns_.end());
+    }
+  }
+  const std::size_t column = std::distance(columns_.begin(), current);
+  columns_[column].reset();
+
+  std::vector<bool> node_line(columns_.size());
+  std::vector<std::uint16_t> link_line(columns_.size());
+  for (std::size_t index = 0; index < columns_.size(); ++index) {
+    node_line[index] = columns_[index].has_value();
+    if (columns_[index].has_value()) link_line[index] = graph_vertical;
+  }
+  std::map<std::size_t, git_oid> parent_columns;
+  for (const git_oid& parent : parents) {
+    auto assigned = std::find_if(columns_.begin(), columns_.end(),
+                                 [&](const auto& value) {
+                                   return same_oid(value, parent);
+                                 });
+    if (assigned == columns_.end()) {
+      if (!columns_[column].has_value()) {
+        assigned = columns_.begin() + column;
+      } else {
+        assigned = std::find(columns_.begin(), columns_.end(), std::nullopt);
+      }
+      if (assigned == columns_.end()) {
+        columns_.emplace_back();
+        node_line.push_back(false);
+        link_line.push_back(0);
+        assigned = std::prev(columns_.end());
+      }
+      *assigned = parent;
+    }
+    parent_columns.emplace(std::distance(columns_.begin(), assigned), parent);
+  }
+
+  bool needs_link_line = false;
+  if (parents.size() == 1 && !parent_columns.empty()) {  // GG_COV_EXCL_BRANCH
+    const std::size_t parent_column = parent_columns.begin()->first;
+    if (parent_column > column) {
+      std::swap(columns_[column], columns_[parent_column]);
+      const git_oid parent = parent_columns.begin()->second;
+      parent_columns.clear();
+      parent_columns.emplace(column, parent);
+      link_line[column] |= graph_right_fork;
+      for (std::size_t index = column + 1; index < parent_column; ++index) {
+        link_line[index] |= graph_horizontal;
+      }
+      link_line[parent_column] = graph_left_merge;
+      needs_link_line = true;
+    }
+  }
+
+  if (!parent_columns.empty()) {
+    const std::size_t first = std::min(column, parent_columns.begin()->first);
+    const std::size_t last =
+        std::max(column, parent_columns.rbegin()->first);
+    for (std::size_t index = first + 1; index < last; ++index) {
+      if (index != column) link_line[index] |= graph_horizontal;
+      needs_link_line |= index != column;
+    }
+    if (last > column) {
+      link_line[column] |= graph_right_merge;
+      needs_link_line = true;
+    }
+    if (first < column) {
+      link_line[column] |= graph_left_merge;
+      needs_link_line = true;
+    }
+    for (const auto& [index, parent] : parent_columns) {
+      (void)parent;
+      if (index < column) {
+        link_line[index] |= graph_right_fork;
+      } else if (index == column) {
+        link_line[index] |= graph_child | graph_vertical;
+      } else {
+        link_line[index] |= graph_left_fork;
+      }
+    }
+  }
+
+  std::vector<std::string> message_lines;
+  std::istringstream messages{std::string(content)};
+  std::string message;
+  while (std::getline(messages, message)) message_lines.push_back(message);
+  std::size_t message_index = 0;
+  std::string rendered;
+  for (std::size_t index = 0; index < node_line.size(); ++index) {
+    if (index == column) {
+      rendered += marker;
+      rendered += ' ';
+    } else {
+      rendered += node_line[index] ? "│ " : "  ";
+    }
+  }
+  if (message_index < message_lines.size()) {
+    rendered += ' ';
+    rendered += message_lines[message_index++];
+  }
+  trim_graph_line(rendered);
+  output << rendered << '\n';
+
+  if (needs_link_line) {
+    rendered.clear();
+    for (const std::uint16_t link : link_line) {
+      rendered += graph_link_glyph(link, parents.size() > 1);
+    }
+    if (message_index < message_lines.size()) {
+      rendered += ' ';
+      rendered += message_lines[message_index++];
+    }
+    trim_graph_line(rendered);
+    output << rendered << '\n';
+  }
+
+  while (message_index < message_lines.size()) {
+    rendered.clear();
+    for (const auto& value : columns_) {
+      rendered += value.has_value() ? "│ " : "  ";
+    }
+    rendered += ' ';
+    rendered += message_lines[message_index++];
+    trim_graph_line(rendered);
+    output << rendered << '\n';
+  }
+  while (!columns_.empty() && !columns_.back().has_value()) {
+    columns_.pop_back();
+  }
+}
+
 std::string render_template(
     std::string_view expression,
     const std::map<std::string, std::string>& values) {
@@ -223,11 +450,14 @@ void set_output_color_mode(std::ostream& output, OutputColorMode mode) {
   output.iword(color_mode_index()) = static_cast<long>(mode);
 }
 
+OutputColorMode output_color_mode(std::ostream& output) {
+  return static_cast<OutputColorMode>(output.iword(color_mode_index()));
+}
+
 std::string styled(std::ostream& output,
                    std::string_view value,
                    OutputStyle style) {
-  const auto mode =
-      static_cast<OutputColorMode>(output.iword(color_mode_index()));
+  const auto mode = output_color_mode(output);
   if (mode == OutputColorMode::plain) return std::string(value);
   const StyleSpec& spec = kStyles[static_cast<std::size_t>(style)];
   std::string result(spec.ansi);

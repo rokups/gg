@@ -140,7 +140,10 @@ std::optional<git_oid> Repository::head_oid() const { return ref_target("HEAD");
 
 std::map<std::string, git_oid> Repository::data_refs() const {
   if (operation_view_.has_value()) return operation_view_->refs;
-  std::map<std::string, git_oid> refs;
+  if (!ref_cache_enabled_) data_refs_cache_.reset();
+  if (data_refs_cache_.has_value()) return *data_refs_cache_;
+  data_refs_cache_.emplace();
+  auto& refs = *data_refs_cache_;
   git_reference_iterator* raw_iterator = nullptr;
   check(git_reference_iterator_new(&raw_iterator, repo_.get()),
         "list references");
@@ -176,6 +179,14 @@ std::map<std::string, git_oid> Repository::data_refs() const {
     }
   }
   return refs;
+}
+
+void Repository::enable_ref_cache() { ref_cache_enabled_ = true; }
+
+void Repository::invalidate_ref_cache() const {
+  data_refs_cache_.reset();
+  changes_cache_.reset();
+  change_ids_by_oid_cache_.reset();
 }
 
 std::optional<std::string> Repository::workspace_ref() const {

@@ -64,6 +64,7 @@ using ReferencePtr = GitPtr<git_reference, git_reference_free>;
 using ReferenceIteratorPtr = GitPtr<git_reference_iterator, git_reference_iterator_free>;
 using CommitPtr = GitPtr<git_commit, git_commit_free>;
 using TreePtr = GitPtr<git_tree, git_tree_free>;
+using TreeEntryPtr = GitPtr<git_tree_entry, git_tree_entry_free>;
 using BlobPtr = GitPtr<git_blob, git_blob_free>;
 using IndexPtr = GitPtr<git_index, git_index_free>;
 using ConflictIteratorPtr = GitPtr<git_index_conflict_iterator, git_index_conflict_iterator_free>;
@@ -141,6 +142,10 @@ class Repository {
 
   std::map<std::string, git_oid> data_refs() const;
 
+  void enable_ref_cache();
+
+  void invalidate_ref_cache() const;
+
   std::optional<std::string> workspace_ref() const;
 
   std::optional<git_oid> workspace() const;
@@ -206,9 +211,16 @@ class Repository {
 
   OperationState parse_operation(const git_oid& oid) const;
 
+  OperationState parse_operation(const git_commit* operation) const;
+
   std::optional<git_oid> operation_previous(const git_oid& oid) const;
 
+  std::optional<git_oid> operation_previous(
+      const git_commit* operation) const;
+
   std::string operation_description(const git_oid& oid) const;
+
+  std::string operation_description(const git_commit* operation) const;
 
   std::optional<git_oid> operation_target(const git_oid& oid,
                                             std::string_view prefix) const;
@@ -252,9 +264,13 @@ class Repository {
                          bool restore_repository = true,
                          bool restore_remote_tracking = true) const;
 
-  std::map<std::string, git_oid> changes() const;
+  const std::map<std::string, git_oid>& changes() const;
 
   std::map<std::string, git_oid> missing_change_ids() const;
+
+  std::set<std::string> invalid_change_id_refs() const;
+
+  void import_git_history() const;
 
   std::string new_change_id() const;
 
@@ -263,6 +279,8 @@ class Repository {
   ShortId short_change_id_parts(std::string_view id) const;
 
   ShortId short_commit_id(const git_oid& oid) const;
+
+  void set_short_id_scope(std::span<const git_oid> revisions);
 
   std::optional<std::string> change_id(const git_oid& oid) const;
 
@@ -292,6 +310,13 @@ class Repository {
   bool ignore_working_copy_{false};
   std::optional<OperationState> operation_view_;
   std::optional<git_oid> viewed_operation_;
+  mutable std::optional<std::map<std::string, git_oid>> data_refs_cache_;
+  mutable std::optional<std::map<std::string, git_oid>> changes_cache_;
+  mutable std::optional<std::map<git_oid, std::string, OidLess>>
+      change_ids_by_oid_cache_;
+  std::optional<std::vector<std::string>> scoped_change_ids_;
+  std::optional<std::vector<std::string>> scoped_commit_ids_;
+  bool ref_cache_enabled_{false};
 };
 
 }  // namespace gg::detail

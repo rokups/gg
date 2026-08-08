@@ -337,6 +337,45 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   EXPECT_EQ(invoke({"log", "--limit", "word"}).code, 2);
 }
 
+TEST_F(RepositoryTest, HighlightsPrefixesWithinTheDisplayedLog) {
+  const git_oid first = ref("HEAD");
+  const std::string first_commit = detail::oid_string(first);
+  git_oid second{};
+  for (int index = 0; index < 1000; ++index) {
+    second = raw_commit("prefix collision " + std::to_string(index));
+    if (detail::oid_string(second).front() == first_commit.front()) break;
+  }
+  ASSERT_EQ(detail::oid_string(second).front(), first_commit.front());
+  set_ref("refs/heads/first", first);
+  set_ref("refs/heads/second", second);
+  const std::string first_change = "zzzzzzzzl" + std::string(23, 'k');
+  const std::string second_change = "zzzzzzzzm" + std::string(23, 'k');
+  set_ref(std::string(detail::kChangePrefix) + first_change, first);
+  set_ref(std::string(detail::kChangePrefix) + second_change, second);
+
+  const Result single = invoke(
+      {"--color", "debug", "log", "-r", "first", "--no-graph"});
+  ASSERT_EQ(single.code, 0) << single.error;
+  EXPECT_NE(single.output.find("<<change_id shortest prefix::z>>"),
+            std::string::npos);
+  EXPECT_NE(single.output.find("<<commit_id shortest prefix::" +
+                               first_commit.substr(0, 1) + ">>"),
+            std::string::npos);
+
+  const Result both = invoke({"--color", "debug", "log", "-r",
+                              "first | second", "--no-graph"});
+  ASSERT_EQ(both.code, 0) << both.error;
+  EXPECT_NE(both.output.find(
+                "<<change_id shortest prefix::zzzzzzzzl>>"),
+            std::string::npos);
+  std::size_t common = 0;
+  const std::string second_commit = detail::oid_string(second);
+  while (first_commit[common] == second_commit[common]) ++common;
+  EXPECT_NE(both.output.find("<<commit_id shortest prefix::" +
+                             first_commit.substr(0, common + 1) + ">>"),
+            std::string::npos);
+}
+
 TEST_F(RepositoryTest, ExplicitlySnapshotsTheWorkingCopy) {
   EXPECT_EQ(invoke({"util", "snapshot"}).output, "Nothing changed.\n");
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
@@ -651,7 +690,7 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   EXPECT_NE(log.output.find("initialize repository"), std::string::npos);
   EXPECT_NE(log.output.find("T"), std::string::npos);
   EXPECT_NE(log.output.find("○ "), std::string::npos);
-  EXPECT_NE(log.output.find("│\n"), std::string::npos);
+  EXPECT_NE(log.output.find("\n│  "), std::string::npos);
   EXPECT_EQ(invoke({"op", "log"}).output, log.output);
 
   const Result colored =
@@ -679,9 +718,9 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
             std::string::npos);
 
   const Result limited = invoke({"operation", "log", "--limit", "1"});
-  EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 1);
+  EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 2);
   EXPECT_EQ(limited.output.front(), '@');
-  EXPECT_EQ(limited.output.find("│"), std::string::npos);
+  EXPECT_NE(limited.output.find("│"), std::string::npos);
   EXPECT_EQ(invoke({"operation", "log", "-n", "0"}).output, "");
 
   const Result flat =
@@ -694,6 +733,21 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   const Result reversed = invoke({"operation", "log", "--reversed"});
   EXPECT_LT(reversed.output.find("initialize repository"),
             reversed.output.find("redo: restore to operation "));
+  const Result reversed_diff =
+      invoke({"operation", "log", "--reversed", "--op-diff"});
+  EXPECT_EQ(reversed_diff.code, 0) << reversed_diff.error;
+  EXPECT_NE(reversed_diff.output.find("refs/"), std::string::npos);
+  EXPECT_EQ(invoke({"operation", "log", "--reversed", "--limit", "2",
+                    "--op-diff"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"operation", "log", "--reversed", "--limit", "0",
+                    "--op-diff"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"operation", "log", "--limit", "0", "--op-diff"})
+                .code,
+            0);
   const git_oid current = ref("refs/gg/operations/current");
   const std::string current_id = git_oid_tostr_s(&current);
   const Result templated = invoke(
@@ -933,10 +987,11 @@ TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
   EXPECT_EQ(git_commit_parentcount(merge), 2U);
   git_commit_free(merge);
   const Result graph = invoke({"log", "-r", "ancestors(@)"});
-  EXPECT_NE(graph.output.find("@─╮"), std::string::npos) << graph.output;
-  EXPECT_NE(graph.output.find("○  │"), std::string::npos) << graph.output;
+  EXPECT_NE(graph.output.find("├─╮"), std::string::npos) << graph.output;
+  EXPECT_NE(graph.output.find("○ │"), std::string::npos) << graph.output;
   EXPECT_NE(graph.output.find("│ ○"), std::string::npos) << graph.output;
-  EXPECT_NE(graph.output.find("╰─○"), std::string::npos) << graph.output;
+  EXPECT_NE(graph.output.find("├─╯"), std::string::npos) << graph.output;
+  EXPECT_EQ(graph.output.find('*'), std::string::npos) << graph.output;
   const Result reversed =
       invoke({"log", "-r", "ancestors(@)", "--reversed"});
   EXPECT_NE(reversed.output.find("│"), std::string::npos);

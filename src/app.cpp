@@ -104,6 +104,32 @@ bool has_primary_output(const Command& command) {
       command);
 }
 
+bool reads_revisions(const Command& command) {
+  const auto* repository_command = std::get_if<RepositoryCommand>(&command);
+  if (repository_command == nullptr) return false;  // GG_COV_EXCL_BRANCH
+  return std::visit(
+      [](const auto& value) {
+        using Value = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Value, StatusCommand> ||
+                      std::is_same_v<Value, LogCommand> ||
+                      std::is_same_v<Value, DiffCommand> ||
+                      std::is_same_v<Value, ShowCommand>) {
+          return true;
+        } else if constexpr (std::is_same_v<Value, FileCommand>) {
+          return value.action == FileAction::list ||
+                 value.action == FileAction::show ||
+                 value.action == FileAction::search;
+        } else if constexpr (std::is_same_v<Value, BookmarkCommand>) {
+          return value.action == BookmarkAction::list;
+        } else if constexpr (std::is_same_v<Value, TagCommand>) {
+          return value.action == TagAction::list;
+        } else {
+          return false;
+        }
+      },
+      *repository_command);
+}
+
 int execute(Repository& repository,
             const RepositoryCommand& command,
             const std::vector<std::string>& replay,
@@ -257,6 +283,7 @@ int dispatch(std::span<const std::string_view> arguments,
                         std::move(invocation.config_files),
                         invocation.ignore_working_copy ||
                             !invocation.at_operation.empty());
+  repository.enable_ref_cache();
   if (!invocation.at_operation.empty()) {
     repository.view_at_operation(invocation.at_operation);
   }
@@ -293,6 +320,9 @@ int dispatch(std::span<const std::string_view> arguments,
   if (std::holds_alternative<ContinueCommand>(invocation.command) ||
       std::holds_alternative<AbortCommand>(invocation.command)) {
     throw UserError("no rewrite is in progress");
+  }
+  if (invocation.at_operation.empty() && reads_revisions(invocation.command)) {
+    repository.import_git_history();
   }
   return execute(repository, std::get<RepositoryCommand>(invocation.command),
                  invocation.replay_arguments, command_output, output);

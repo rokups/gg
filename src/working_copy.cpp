@@ -4,6 +4,10 @@
 
 #include "repository.hpp"
 
+#include <git2/sys/errors.h>
+
+#include <sys/resource.h>
+
 #include <algorithm>
 #include <fstream>
 #include <ranges>
@@ -103,7 +107,14 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   check(git_repository_index(&raw_index, repo_.get()), "open Git index");
   IndexPtr index(raw_index);
   TreePtr baseline = tree(baseline_tree);
-  check(git_index_read_tree(index.get(), baseline.get()), "prepare snapshot");
+  git_oid indexed_tree{};
+  const bool prepared =
+      git_index_write_tree_to(&indexed_tree, index.get(), repo_.get()) == 0 &&  // GG_COV_EXCL_BRANCH
+      indexed_tree == baseline_tree;
+  if (!prepared) {
+    git_error_clear();
+    check(git_index_read_tree(index.get(), baseline.get()), "prepare snapshot");
+  }
   check(git_index_update_all(index.get(), nullptr, nullptr, nullptr),
         "snapshot tracked files");
   check(git_index_add_all(index.get(), nullptr, GIT_INDEX_ADD_DEFAULT, nullptr,
@@ -122,6 +133,7 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   git_oid result{};
   check(git_index_write_tree_to(&result, index.get(), repo_.get()),
         "write working-copy tree");
+  check(git_index_write(index.get()), "cache working-copy snapshot");
   return result;
 }
 
@@ -177,6 +189,13 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
     names.insert(name);
   }
   names.insert(deletes.begin(), deletes.end());
+  struct rlimit limit {};
+  const rlim_t needed = names.size() + 64;
+  if (getrlimit(RLIMIT_NOFILE, &limit) == 0 &&  // GG_COV_EXCL_BRANCH
+      limit.rlim_cur < needed) {
+    limit.rlim_cur = std::min(limit.rlim_max, needed);
+    (void)setrlimit(RLIMIT_NOFILE, &limit);
+  }
   for (const std::string& name : names) {
     check(git_transaction_lock_ref(transaction.get(), name.c_str()),
           "lock reference");
@@ -193,6 +212,7 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
           "queue reference deletion");
   }
   check(git_transaction_commit(transaction.get()), "update references");
+  invalidate_ref_cache();
 }
 
 void Repository::set_head(const HeadState& head) const {

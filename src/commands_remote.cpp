@@ -22,6 +22,14 @@ namespace {
 constexpr std::string_view kUndoPrefix = "undo: restore to operation ";
 constexpr std::string_view kRedoPrefix = "redo: restore to operation ";
 
+struct OperationLogEntry {
+  git_oid oid;
+  std::optional<git_oid> previous;
+  std::string description;
+  std::string timestamp;
+  std::string user;
+};
+
 std::string substitute_target(std::string_view expression,
                               const git_oid& target) {
   return std::regex_replace(std::string(expression), std::regex("\\bto\\b"),
@@ -167,13 +175,12 @@ std::string operation_timestamp(const git_commit* operation) {
 }
 
 std::map<std::string, std::string> operation_template_values(
-    Repository& repo,
     const git_oid& oid,
     const git_oid& newest,
-    const git_commit* operation,
-    std::string_view description) {
-  const std::optional<git_oid> previous = repo.operation_previous(oid);
-  const git_signature* author = git_commit_author(operation);
+    const std::optional<git_oid>& previous,
+    std::string_view description,
+    std::string_view timestamp,
+    std::string_view user) {
   return {{"current_operation", oid == newest ? "true" : "false"},
           {"description", std::string(description)},
           {"id", oid_string(oid)},
@@ -181,8 +188,8 @@ std::map<std::string, std::string> operation_template_values(
           {"tags", ""},
           {"snapshot", "false"},
           {"workspace_name", "default@"},
-          {"time", operation_timestamp(operation)},
-          {"user", std::string(author->name) + "@" + author->email},
+          {"time", std::string(timestamp)},
+          {"user", std::string(user)},
           {"root", previous.has_value() ? "false" : "true"},
           {"parents", previous.has_value() ? oid_string(*previous) : ""}};
 }
@@ -191,16 +198,10 @@ std::string head_text(const HeadState& head) {
   return std::string(head.symbolic ? "symbolic " : "detached ") + head.value;
 }
 
-void render_operation_diff(Repository& repo,
-                           const git_oid& operation,
+void render_operation_diff(const OperationState& after,
+                           const OperationState* before,
                            std::ostream& output) {
-  const OperationState after = repo.parse_operation(operation);
-  const auto previous = repo.operation_previous(operation);
-  const std::optional<OperationState> before =
-      previous.has_value()
-          ? std::optional<OperationState>{repo.parse_operation(*previous)}
-          : std::nullopt;
-  if (!before.has_value()) {
+  if (before == nullptr) {
     output << styled(output, "  + HEAD " + head_text(after.head),
                      OutputStyle::added)
            << '\n';
@@ -214,7 +215,7 @@ void render_operation_diff(Repository& repo,
   }
 
   std::set<std::string> names;
-  if (before.has_value()) {
+  if (before != nullptr) {
     for (const auto& [name, oid] : before->refs) {
       (void)oid;
       names.insert(name);
@@ -225,10 +226,10 @@ void render_operation_diff(Repository& repo,
     names.insert(name);
   }
   for (const std::string& name : names) {
-    const auto old = before.has_value() ? before->refs.find(name)
-                                        : after.refs.end();
+    const auto old =
+        before != nullptr ? before->refs.find(name) : after.refs.end();
     const auto current = after.refs.find(name);
-    if (!before.has_value() || old == before->refs.end()) {
+    if (before == nullptr || old == before->refs.end()) {
       output << styled(output,
                        "  + " + name + " " + oid_string(current->second, 8),
                        OutputStyle::added)
@@ -250,16 +251,14 @@ void render_operation_diff(Repository& repo,
 
 void render_operation_patches(
     Repository& repo,
-    const git_oid& operation,
+    const OperationState& after,
+    const OperationState* before,
     const DiffFormatOptions& format,
     const std::optional<std::set<git_oid, OidLess>>& selected,
     std::ostream& output) {
-  const OperationState after = repo.parse_operation(operation);
-  const auto previous = repo.operation_previous(operation);
-  if (!previous.has_value()) return;
-  const OperationState before = repo.parse_operation(*previous);
+  if (before == nullptr) return;
   std::set<std::string> changes;
-  for (const auto& [name, oid] : before.refs) {
+  for (const auto& [name, oid] : before->refs) {
     (void)oid;
     if (starts_with(name, kChangePrefix)) changes.insert(name);
   }
@@ -270,8 +269,8 @@ void render_operation_patches(
   for (const std::string& name : changes) {
     bool has_old = false;
     git_oid old_oid{};
-    const auto old = before.refs.find(name);
-    if (old != before.refs.end()) {
+    const auto old = before->refs.find(name);
+    if (old != before->refs.end()) {
       has_old = true;
       old_oid = old->second;
     }
@@ -882,7 +881,6 @@ AdvertisedRemoteRefs advertised_remote_refs(git_remote* remote) {
   const git_remote_head** heads = nullptr;
   std::size_t count = 0;
   const int result = git_remote_ls(&heads, &count, remote);
-  git_remote_disconnect(remote);
   check(result, "list remote refs");
   AdvertisedRemoteRefs refs;
   constexpr std::string_view branch_prefix = "refs/heads/";
@@ -896,6 +894,7 @@ AdvertisedRemoteRefs advertised_remote_refs(git_remote* remote) {
       refs.tags.emplace(reference.substr(tag_prefix.size()), heads[index]->oid);
     }
   }
+  git_remote_disconnect(remote);
   return refs;
 }
 
@@ -1019,6 +1018,7 @@ void command_fetch(Repository& repo,
                              storage.empty() ? nullptr : &refspecs,
                              &fetch_options, "gg fetch"),
             "fetch remote");
+      repo.invalidate_ref_cache();
     }
     if (default_selection) {
       for (const std::string& tag : known_tags) {
@@ -1312,13 +1312,34 @@ void command_operation_log(Repository& repo,
     return;
   }
   const git_oid newest = *current;
-  std::vector<git_oid> operations;
+  std::vector<OperationLogEntry> operations;
   while (current.has_value() && operations.size() < options.limit) {
-    operations.push_back(*current);
-    current = repo.operation_previous(*current);
+    CommitPtr operation = repo.commit(*current);
+    const auto previous = repo.operation_previous(operation.get());
+    const std::string description =
+        repo.operation_description(operation.get());
+    const git_signature* author = git_commit_author(operation.get());
+    operations.push_back({*current, previous, description,
+                          operation_timestamp(operation.get()),
+                          std::string(author->name) + "@" + author->email});
+    current = previous;
   }
   if (options.reversed) {
     std::reverse(operations.begin(), operations.end());
+  }
+  std::map<git_oid, std::vector<git_oid>, OidLess> graph_edges;
+  if (options.reversed) {
+    for (const OperationLogEntry& entry : operations) {
+      if (entry.previous.has_value()) {
+        graph_edges[*entry.previous].push_back(entry.oid);
+      }
+    }
+  } else {
+    for (const OperationLogEntry& entry : operations) {
+      if (entry.previous.has_value()) {
+        graph_edges[entry.oid].push_back(*entry.previous);
+      }
+    }
   }
   const bool show_patch = options.patch || options.format.summary ||
                           options.format.stat || options.format.types ||
@@ -1334,36 +1355,79 @@ void command_operation_log(Repository& repo,
         repo.resolve_set(options.show_changes_in);
     selected.emplace(revisions.begin(), revisions.end());
   }
-  for (std::size_t index = 0; index < operations.size(); ++index) {
-    const git_oid& oid = operations[index];
-    CommitPtr operation = repo.commit(oid);
-    const std::string description = repo.operation_description(oid);
-    if (!options.no_graph) {
-      output << styled(output, oid == newest ? "@" : "○",
-                       oid == newest ? OutputStyle::working_copy
-                                     : OutputStyle::change_id)
-             << ' ';
-    }
+  GraphRenderer graph;
+  const auto render_entry = [&](std::size_t index,
+                                const OperationState* after,
+                                const OperationState* before) {
+    const OperationLogEntry& entry = operations[index];
+    std::ostringstream content;
+    set_output_color_mode(content, output_color_mode(output));
     if (!options.template_value.empty()) {
-      output << render_template(
+      content << render_template(
           options.template_value,
-          operation_template_values(repo, oid, newest, operation.get(),
-                                    description));
+          operation_template_values(entry.oid, newest, entry.previous,
+                                    entry.description, entry.timestamp,
+                                    entry.user));
     } else {
-      output << styled(output, oid_string(oid, 8),
-                       oid == newest ? OutputStyle::current_operation_id
-                                     : OutputStyle::operation_id)
-             << ' '
-             << styled(output, operation_timestamp(operation.get()),
-                       OutputStyle::timestamp)
-             << ' ' << description << '\n';
+      content << styled(content, oid_string(entry.oid, 8),
+                        entry.oid == newest
+                            ? OutputStyle::current_operation_id
+                            : OutputStyle::operation_id)
+              << ' '
+              << styled(content, entry.timestamp, OutputStyle::timestamp)
+              << (options.no_graph ? " " : "\n") << entry.description
+              << '\n';
     }
-    if (options.op_diff || show_patch) render_operation_diff(repo, oid, output);
+    if (options.op_diff || show_patch) {
+      render_operation_diff(*after, before, content);
+    }
     if (show_patch) {
-      render_operation_patches(repo, oid, options.format, selected, output);
+      render_operation_patches(repo, *after, before, options.format, selected,
+                               content);
     }
-    if (!options.no_graph && index + 1 < operations.size()) {
-      output << "│\n";
+    if (options.no_graph) {
+      output << content.str();
+    } else {
+      const std::string marker =
+          styled(output, entry.oid == newest ? "@" : "○",
+                 entry.oid == newest ? OutputStyle::working_copy
+                                     : OutputStyle::change_id);
+      graph.add(output, entry.oid, graph_edges[entry.oid], marker,
+                content.str());
+    }
+  };
+
+  const bool needs_state = options.op_diff || show_patch;
+  if (!needs_state) {
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+      render_entry(index, nullptr, nullptr);
+    }
+  } else if (options.reversed) {
+    std::optional<OperationState> before;
+    if (!operations.empty() && operations.front().previous.has_value()) {
+      before = repo.parse_operation(*operations.front().previous);
+    }
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+      OperationState after =
+          repo.parse_operation(operations[index].oid);
+      render_entry(index, &after, before.has_value() ? &*before : nullptr);
+      before = std::move(after);
+    }
+  } else if (!operations.empty()) {
+    std::optional<OperationState> after =
+        repo.parse_operation(operations.front().oid);
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+      std::optional<OperationState> before;
+      if (operations[index].previous.has_value()) {
+        if (index + 1 < operations.size()) {
+          before = repo.parse_operation(operations[index + 1].oid);
+        } else {
+          before = repo.parse_operation(*operations[index].previous);
+        }
+      }
+      render_entry(index, &*after,
+                   before.has_value() ? &*before : nullptr);
+      after = std::move(before);
     }
   }
 }
@@ -1414,6 +1478,7 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
   repository.reset();
   try {
     Repository repo(destination);
+    repo.enable_ref_cache();
     const std::string remote_prefix = "refs/remotes/" + options.remote + "/";
     std::vector<std::string> available_branches;
     std::vector<std::string> available_tags;
@@ -1519,6 +1584,7 @@ int init_command(const GitInitCommand& options, std::ostream& output) {
   initialized.reset();
 
   Repository repo(destination);
+  repo.enable_ref_cache();
   output << "Initialized repository at "
          << std::filesystem::weakly_canonical(destination).string() << '\n';
   if (!repo.workspace().has_value()) {

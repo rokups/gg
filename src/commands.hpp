@@ -42,7 +42,9 @@ enum class OutputStyle {
 };
 
 void set_output_color_mode(std::ostream&, OutputColorMode);
+OutputColorMode output_color_mode(std::ostream&);
 std::string styled(std::ostream&, std::string_view, OutputStyle);
+std::string_view graph_link_glyph_for_test(std::uint16_t, bool);
 std::string styled_short_change_id(Repository&, std::ostream&,
                                    std::string_view, bool working = false);
 std::string styled_short_commit_id(Repository&, std::ostream&, const git_oid&,
@@ -52,6 +54,15 @@ std::string render_template(
     const std::map<std::string, std::string>& values);
 std::map<std::string, std::string> revision_template_values(
     Repository&, const git_oid&);
+
+class GraphRenderer {
+ public:
+  void add(std::ostream&, const git_oid&, std::span<const git_oid>,
+           std::string_view marker, std::string_view content);
+
+ private:
+  std::vector<std::optional<git_oid>> columns_;
+};
 
 std::vector<git_oid> resolve_revision_arguments(
     Repository& repo, const std::vector<std::string>& revisions);

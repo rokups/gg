@@ -26,6 +26,11 @@ std::string random_change_id() {
   return result;
 }
 
+bool valid_change_id(std::string_view id) {
+  return id.size() == 32 &&
+         id.find_first_not_of("zyxwvutsrqponmlk") == std::string_view::npos;
+}
+
 std::string_view trim(std::string_view value) {
   const std::size_t begin = value.find_first_not_of(" \t\n\r");
   if (begin == std::string_view::npos) return {};
@@ -123,8 +128,11 @@ std::size_t unique_prefix_length(
 
 }  // namespace
 
-std::map<std::string, git_oid> Repository::changes() const {
-  std::map<std::string, git_oid> result;
+const std::map<std::string, git_oid>& Repository::changes() const {
+  if (!ref_cache_enabled_) changes_cache_.reset();
+  if (changes_cache_.has_value()) return *changes_cache_;
+  changes_cache_.emplace();
+  auto& result = *changes_cache_;
   for (const auto& [name, oid] : data_refs()) {
     if (starts_with(name, kChangePrefix)) {
       result.emplace(name.substr(kChangePrefix.size()), oid);
@@ -145,6 +153,7 @@ std::map<std::string, git_oid> Repository::missing_change_ids() const {
   std::set<std::string> ids;
   std::set<git_oid, OidLess> assigned;
   for (const auto& [id, oid] : changes()) {
+    if (!valid_change_id(id)) continue;
     ids.insert(id);
     assigned.insert(oid);
   }
@@ -152,10 +161,10 @@ std::map<std::string, git_oid> Repository::missing_change_ids() const {
   git_revwalk* raw_walk = nullptr;
   check(git_revwalk_new(&raw_walk, repo_.get()), "create change ID walk");
   RevwalkPtr walk(raw_walk);
-  const auto push = [&](const git_oid& oid) {
+  const auto push = [&](std::string_view reference, const git_oid& oid) {
     git_object* raw_object = nullptr;
     check(git_object_lookup(&raw_object, repo_.get(), &oid, GIT_OBJECT_ANY),
-          "read change ID root");
+          "read change ID root " + std::string(reference));
     ObjectPtr object(raw_object);
     git_object* raw_commit = nullptr;
     if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
@@ -167,10 +176,9 @@ std::map<std::string, git_oid> Repository::missing_change_ids() const {
           "walk change ID roots");
   };
   for (const auto& [reference, oid] : data_refs()) {
-    (void)reference;
-    push(oid);
+    push(reference, oid);
   }
-  if (const auto head = head_oid(); head.has_value()) push(*head);
+  if (const auto head = head_oid(); head.has_value()) push("HEAD", *head);
 
   std::map<std::string, git_oid> updates;
   while (true) {
@@ -190,17 +198,44 @@ std::map<std::string, git_oid> Repository::missing_change_ids() const {
   return updates;
 }
 
+std::set<std::string> Repository::invalid_change_id_refs() const {
+  std::set<std::string> refs;
+  for (const auto& [id, oid] : changes()) {
+    (void)oid;
+    if (!valid_change_id(id)) {
+      refs.insert(std::string(kChangePrefix) + id);
+    }
+  }
+  return refs;
+}
+
+void Repository::import_git_history() const {
+  std::set<std::string> deletes = invalid_change_id_refs();
+  if (operation().has_value() && deletes.empty()) return;
+  std::map<std::string, git_oid> updates = missing_change_ids();
+  if (updates.empty() && deletes.empty()) return;
+  record(std::move(updates), std::move(deletes), head_state(),
+         "gg import Git history");
+}
+
 std::string Repository::short_change_id(std::string_view id) const {
   return short_change_id_parts(id).value;
 }
 
 ShortId Repository::short_change_id_parts(std::string_view id) const {
-  const auto values = changes();
   std::vector<std::string_view> ids;
-  ids.reserve(values.size());
-  for (const auto& [other, oid] : values) {
-    (void)oid;
-    ids.push_back(other);
+  if (scoped_change_ids_.has_value()) {
+    ids.reserve(scoped_change_ids_->size());
+    for (const std::string& other : *scoped_change_ids_) {
+      ids.push_back(other);
+    }
+  } else {
+    const auto& values = changes();
+    ids.reserve(values.size());
+    for (const auto& [other, oid] : values) {
+      (void)oid;
+      ids.push_back(other);
+    }
   }
   const std::size_t unique = unique_prefix_length(id, ids);
   return {std::string(id.substr(0, std::max<std::size_t>(8, unique))), unique};
@@ -208,25 +243,47 @@ ShortId Repository::short_change_id_parts(std::string_view id) const {
 
 ShortId Repository::short_commit_id(const git_oid& oid) const {
   const std::string value = oid_string(oid);
-  const auto revisions = changes();
   std::vector<std::string> storage;
-  storage.reserve(revisions.size());
-  for (const auto& [id, target] : revisions) {
-    (void)id;
-    storage.push_back(oid_string(target));
+  if (scoped_commit_ids_.has_value()) {
+    storage = *scoped_commit_ids_;
+  } else {
+    const auto& revisions = changes();
+    storage.reserve(revisions.size());
+    for (const auto& [id, target] : revisions) {
+      (void)id;
+      storage.push_back(oid_string(target));
+    }
   }
   std::vector<std::string_view> ids(storage.begin(), storage.end());
   const std::size_t unique = unique_prefix_length(value, ids);
   return {value.substr(0, std::max<std::size_t>(8, unique)), unique};
 }
 
-std::optional<std::string> Repository::change_id(const git_oid& oid) const {
-  for (const auto& [id, target] : changes()) {
-    if (target == oid) {
-      return id;
+void Repository::set_short_id_scope(std::span<const git_oid> revisions) {
+  scoped_change_ids_.emplace();
+  scoped_commit_ids_.emplace();
+  scoped_change_ids_->reserve(revisions.size());
+  scoped_commit_ids_->reserve(revisions.size());
+  for (const git_oid& revision : revisions) {
+    scoped_commit_ids_->push_back(oid_string(revision));
+    if (const auto id = change_id(revision); id.has_value()) {
+      scoped_change_ids_->push_back(*id);
     }
   }
-  return std::nullopt;
+}
+
+std::optional<std::string> Repository::change_id(const git_oid& oid) const {
+  if (!ref_cache_enabled_) change_ids_by_oid_cache_.reset();
+  if (!change_ids_by_oid_cache_.has_value()) {
+    change_ids_by_oid_cache_.emplace();
+    for (const auto& [id, target] : changes()) {
+      change_ids_by_oid_cache_->emplace(target, id);
+    }
+  }
+  const auto found = change_ids_by_oid_cache_->find(oid);
+  return found == change_ids_by_oid_cache_->end()
+             ? std::nullopt
+             : std::optional<std::string>{found->second};
 }
 
 git_oid Repository::resolve_atom(std::string_view revision) const {

@@ -74,8 +74,9 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
                 "refs/heads/does-not-exist", 1, "test"),
             0);
   git_reference_free(symbolic);
-  set_ref("refs/remotes/origin/main", base);
-  set_ref("refs/gg/remotes/origin/tags/v1", base);
+  repo.apply_refs({{"refs/remotes/origin/main", base},
+                   {"refs/gg/remotes/origin/tags/v1", base}},
+                  {}, "test refs");
   const auto refs = repo.data_refs();
   EXPECT_FALSE(refs.contains("refs/heads/unborn-link"));
   EXPECT_TRUE(refs.contains("refs/gg/remotes/origin/tags/v1"));
@@ -89,14 +90,17 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
     EXPECT_GE(digit, 'k');
     EXPECT_LE(digit, 'z');
   }
-  set_ref(std::string(detail::kChangePrefix) + id, base);
+  repo.apply_refs({{std::string(detail::kChangePrefix) + id, base}}, {},
+                  "test change");
   EXPECT_EQ(repo.short_change_id(id), id.substr(0, 8));
-  set_ref(std::string(detail::kChangePrefix) + "a1", base);
   const git_oid other = raw_commit("other");
-  set_ref(std::string(detail::kChangePrefix) + "a2", other);
+  repo.apply_refs({{std::string(detail::kChangePrefix) + "a1", base},
+                   {std::string(detail::kChangePrefix) + "a2", other}},
+                  {}, "test ambiguous changes");
   EXPECT_THROW(repo.resolve("a"), detail::UserError);
-  set_ref(std::string(detail::kChangePrefix) + "b1", base);
-  set_ref(std::string(detail::kChangePrefix) + "b2", base);
+  repo.apply_refs({{std::string(detail::kChangePrefix) + "b1", base},
+                   {std::string(detail::kChangePrefix) + "b2", base}},
+                  {}, "test matching changes");
   const git_oid matching = repo.resolve("b");
   EXPECT_TRUE(git_oid_equal(&matching, &base) != 0);
   EXPECT_EQ(repo.short_change_id("a"), "a");
@@ -105,9 +109,10 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   std::string second = first;
   first.replace(0, 9, "zzzzzzzzl");
   second.replace(0, 9, "zzzzzzzzm");
-  set_ref(std::string(detail::kChangePrefix) + "zzzz", base);
-  set_ref(std::string(detail::kChangePrefix) + first, base);
-  set_ref(std::string(detail::kChangePrefix) + second, other);
+  repo.apply_refs({{std::string(detail::kChangePrefix) + "zzzz", base},
+                   {std::string(detail::kChangePrefix) + first, base},
+                   {std::string(detail::kChangePrefix) + second, other}},
+                  {}, "test long prefixes");
   EXPECT_EQ(repo.short_change_id(first), first.substr(0, 9));
   EXPECT_EQ(repo.short_change_id(second), second.substr(0, 9));
   const detail::ShortId short_change = repo.short_change_id_parts(first);
@@ -128,6 +133,37 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   repo.pending_status(status);
   EXPECT_TRUE(status.str().empty());
   repo.finish_rewrite();
+}
+
+TEST_F(RepositoryTest, RendersJujutsuStyleGraphRows) {
+  for (std::uint16_t links = 0; links < 128; ++links) {
+    EXPECT_FALSE(detail::graph_link_glyph_for_test(links, false).empty());
+    EXPECT_FALSE(detail::graph_link_glyph_for_test(links, true).empty());
+  }
+
+  const git_oid a = raw_commit("a");
+  const git_oid b = raw_commit("b");
+  const git_oid c = raw_commit("c");
+  const git_oid d = raw_commit("d");
+  const git_oid p = raw_commit("p");
+  const git_oid q = raw_commit("q");
+  const git_oid r = raw_commit("r");
+  const git_oid s = raw_commit("s");
+  const git_oid x = raw_commit("x");
+  const git_oid y = raw_commit("y");
+  detail::GraphRenderer graph;
+  std::ostringstream output;
+  graph.add(output, a, std::vector<git_oid>{p}, "○", "");
+  graph.add(output, b, std::vector<git_oid>{q}, "○", "b\n");
+  graph.add(output, c, std::vector<git_oid>{r}, "○", "c\n");
+  graph.add(output, d, std::vector<git_oid>{s}, "○", "d\n");
+  graph.add(output, p, std::vector<git_oid>{s}, "○", "p\nlink\npad\n");
+  graph.add(output, q, std::vector<git_oid>{s}, "○", "q\n");
+  graph.add(output, x, std::vector<git_oid>{s, r}, "○", "x\n");
+  graph.add(output, y, {}, "", "");
+  EXPECT_NE(output.str().find("──"), std::string::npos);
+  EXPECT_NE(output.str().find("├"), std::string::npos);
+  EXPECT_NE(output.str().find("╯"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, AssignsGgIdsToReachableGitHistory) {
@@ -153,6 +189,47 @@ TEST_F(RepositoryTest, AssignsGgIdsToReachableGitHistory) {
   EXPECT_TRUE(repo.change_id(base).has_value());
   EXPECT_TRUE(repo.change_id(child).has_value());
   EXPECT_TRUE(repo.missing_change_ids().empty());
+  EXPECT_NO_THROW(repo.import_git_history());
+
+  const std::string invalid(32, 'a');
+  set_ref(std::string(detail::kChangePrefix) + invalid, base);
+  EXPECT_TRUE(repo.invalid_change_id_refs().contains(
+      std::string(detail::kChangePrefix) + invalid));
+}
+
+TEST_F(RepositoryTest, ReplacesGitHashChangeIdsWhenReadingARepository) {
+  const git_oid base = ref("HEAD");
+  const git_oid child = raw_commit("child", {base});
+  set_ref("refs/heads/side", child);
+  const std::string legacy =
+      std::string(detail::kChangePrefix) + detail::oid_string(base);
+  set_ref(legacy, base);
+
+  const Result log = invoke({"log", "-r", "ancestors(side)", "--no-graph"});
+  ASSERT_EQ(log.code, 0) << log.error;
+  detail::Repository repo(path_);
+  EXPECT_FALSE(repo.ref_target(legacy).has_value());
+  EXPECT_TRUE(repo.change_id(base).has_value());
+  EXPECT_TRUE(repo.change_id(child).has_value());
+  for (const auto& [id, oid] : repo.changes()) {
+    (void)oid;
+    EXPECT_EQ(id.size(), 32U);
+    EXPECT_EQ(id.find_first_not_of("zyxwvutsrqponmlk"), std::string::npos);
+  }
+  set_ref(legacy, base);
+  ASSERT_EQ(invoke({"log", "-r", "side", "--no-graph"}).code, 0);
+  EXPECT_FALSE(detail::Repository(path_).ref_target(legacy).has_value());
+}
+
+TEST_F(RepositoryTest, AppliesLargeAtomicReferenceUpdates) {
+  detail::Repository repo(path_);
+  const git_oid base = ref("HEAD");
+  std::map<std::string, git_oid> updates;
+  for (int index = 0; index < 1100; ++index) {
+    updates.emplace("refs/heads/large-" + std::to_string(index), base);
+  }
+  EXPECT_NO_THROW(repo.apply_refs(updates, {}, "large update"));
+  EXPECT_TRUE(repo.ref_target("refs/heads/large-1099").has_value());
 }
 
 TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
@@ -243,20 +320,53 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
 
   detail::OperationState state = repo.state();
   state.refs["refs/heads/non-commit"] = tree_oid;
-  EXPECT_NO_THROW(repo.create_operation(state, std::nullopt, "test operation"));
+  const git_oid first_operation =
+      repo.create_operation(state, std::nullopt, "test operation");
+  state.refs["refs/heads/changed"] = child;
+  const git_oid second_operation =
+      repo.create_operation(state, first_operation, "second operation");
+  detail::CommitPtr operation = repo.commit(second_operation);
+  EXPECT_TRUE(std::string_view(git_commit_message(operation.get()))
+                  .starts_with("gg-operation-v3\n"));
+  EXPECT_EQ(git_commit_parentcount(operation.get()), 2U);
+  const auto previous = repo.operation_previous(operation.get());
+  ASSERT_TRUE(previous.has_value());
+  EXPECT_NE(git_oid_equal(&*previous, &first_operation), 0);
+  EXPECT_EQ(repo.operation_description(operation.get()), "second operation");
+  const detail::OperationState restored = repo.parse_operation(operation.get());
+  ASSERT_EQ(restored.refs.size(), state.refs.size());
+  for (const auto& [name, oid] : state.refs) {
+    ASSERT_TRUE(restored.refs.contains(name));
+    EXPECT_NE(git_oid_equal(&restored.refs.at(name), &oid), 0);
+  }
   EXPECT_THROW(repo.create_operation(state, std::nullopt, ""), detail::GitError);
 }
 
-TEST_F(RepositoryTest, ReportsWorkspaceWithoutAStableChangeId) {
+TEST_F(RepositoryTest, AssignsAStableIdWhenReadingAnOrdinaryWorkspace) {
   set_ref(detail::kWorkspaceRef, ref("HEAD"));
   ASSERT_EQ(git_repository_set_head(repository_.get(),
                                     "refs/heads/does-not-exist"),
             0);
   const Result status = invoke({"status"});
   ASSERT_EQ(status.code, 0) << status.error;
-  EXPECT_NE(status.output.find("--------"), std::string::npos);
+  EXPECT_EQ(status.output.find("--------"), std::string::npos);
+  detail::Repository repo(path_);
+  EXPECT_TRUE(repo.change_id(ref(detail::kWorkspaceRef)).has_value());
+  EXPECT_EQ(invoke({"workspace", "list"}).output.find("--------"),
+            std::string::npos);
+
+  std::set<std::string> ids;
+  for (const auto& [id, oid] : repo.changes()) {
+    (void)oid;
+    ids.insert(std::string(detail::kChangePrefix) + id);
+  }
+  repo.apply_refs({}, ids, "remove IDs for fallback rendering");
+  EXPECT_NE(invoke({"status"}).output.find("--------"), std::string::npos);
   EXPECT_NE(invoke({"workspace", "list"}).output.find("--------"),
             std::string::npos);
+  const Result log = invoke({"log"});
+  EXPECT_EQ(log.code, 0) << log.error;
+  EXPECT_NE(log.output.find("@"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, ImportsAWorkspaceWhenHeadIsUnborn) {
@@ -285,6 +395,23 @@ TEST_F(RepositoryTest, RejectsMalformedOperationSnapshots) {
   const git_oid bad_header = raw_commit("bad");
   EXPECT_THROW(repo.parse_operation(bad_header), detail::GitError);
   EXPECT_THROW(repo.parse_operation(raw_commit("")), detail::GitError);
+  EXPECT_THROW(repo.parse_operation(raw_commit("gg-operation-v2-bad")),
+               detail::GitError);
+
+  detail::CommitPtr head = repo.commit(ref("HEAD"));
+  const git_oid state_tree = *git_commit_tree_id(head.get());
+  git_treebuilder* builder = nullptr;
+  ASSERT_EQ(git_treebuilder_new(&builder, repository_.get(), nullptr), 0);
+  ASSERT_EQ(git_treebuilder_insert(nullptr, builder, "state", &state_tree,
+                                   GIT_FILEMODE_TREE),
+            0);
+  git_oid invalid_tree{};
+  ASSERT_EQ(git_treebuilder_write(&invalid_tree, builder), 0);
+  git_treebuilder_free(builder);
+  const git_oid invalid_v3 = repo.create_commit(
+      invalid_tree, {},
+      "gg-operation-v3\nprevious -\ndescription invalid state\n");
+  EXPECT_THROW(repo.parse_operation(invalid_v3), detail::GitError);
 
   const git_oid bad_previous = raw_commit(
       "gg-operation-v2\nwrong -\ndescription test\nhead S refs/heads/main\n");
