@@ -781,13 +781,21 @@ void command_push(Repository& repo,
     }
   }
   const std::string remote_prefix = "refs/remotes/" + name + "/";
+  const std::string remote_tag_prefix =
+      std::string(kRemoteTagPrefix) + name + "/tags/";
   if (options.tracked || options.deleted) {
     for (const auto& [reference, oid] : refs) {
       (void)oid;
-      if (!starts_with(reference, remote_prefix)) continue;
-      const std::string bookmark = reference.substr(remote_prefix.size());
-      if (bookmark == "HEAD") continue;
-      const std::string local = "refs/heads/" + bookmark;
+      std::string local;
+      if (starts_with(reference, remote_prefix)) {
+        const std::string bookmark = reference.substr(remote_prefix.size());
+        if (bookmark == "HEAD") continue;
+        local = "refs/heads/" + bookmark;
+      } else if (starts_with(reference, remote_tag_prefix)) {
+        local = "refs/tags/" + reference.substr(remote_tag_prefix.size());
+      } else {
+        continue;
+      }
       if (options.tracked && repo.ref_target(local).has_value()) {
         updates.emplace(local, local);
       }
@@ -842,15 +850,18 @@ void command_push(Repository& repo,
         "push refs");
   for (const auto& [destination, target] : targets) {
     constexpr std::string_view head_prefix = "refs/heads/";
+    constexpr std::string_view tag_prefix = "refs/tags/";
     if (starts_with(destination, head_prefix)) {
       local_updates.emplace(
           remote_prefix + destination.substr(head_prefix.size()), target);
+    } else {
+      local_updates.emplace(
+          remote_tag_prefix + destination.substr(tag_prefix.size()),
+          *repo.ref_target(destination));
     }
   }
-  if (!local_updates.empty() || !remote_deletes.empty()) {
-    repo.record(std::move(local_updates), std::move(remote_deletes),
-                repo.head_state(), "gg push");
-  }
+  repo.record(std::move(local_updates), std::move(remote_deletes),
+              repo.head_state(), "gg push");
 }
 
 void command_undo(Repository& repo, std::ostream& output) {
@@ -1037,6 +1048,17 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
         repo.set_head({true, "refs/heads/main"});
       }
     }
+    std::map<std::string, git_oid> tracked_tags;
+    for (const auto& [reference, oid] : repo.data_refs()) {
+      constexpr std::string_view tag_prefix = "refs/tags/";
+      if (starts_with(reference, tag_prefix)) {
+        tracked_tags.emplace(std::string(kRemoteTagPrefix) + options.remote +
+                                 "/tags/" +
+                                 reference.substr(tag_prefix.size()),
+                             oid);
+      }
+    }
+    repo.apply_refs(tracked_tags, {}, "track cloned tags");
     command_new(repo, NewCommand{}, output);
   } catch (...) {
     std::error_code error;

@@ -319,13 +319,21 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
       invoke({"push", "-b", "topic", "-b", "second", "-t", "release",
               "--allow-private", "--allow-conflicts"});
   ASSERT_EQ(multi_push.code, 0) << multi_push.error;
+  EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/release"));
+  const Result tracked_tag = invoke({"push", "--tracked", "--dry-run"});
+  EXPECT_NE(tracked_tag.output.find("refs/tags/release"), std::string::npos);
   EXPECT_EQ(invoke({"push", "-t", "release"}).code, 0);
   EXPECT_EQ(invoke({"push", "-b", "topic", "--option", "ci=1"}).code, 1);
   ASSERT_EQ(invoke({"bookmark", "create", "gone"}).code, 0);
   ASSERT_EQ(invoke({"push", "-b", "gone"}).code, 0);
   ASSERT_EQ(invoke({"bookmark", "delete", "gone"}).code, 0);
+  ASSERT_EQ(invoke({"tag", "set", "gone-tag"}).code, 0);
+  ASSERT_EQ(invoke({"push", "-t", "gone-tag"}).code, 0);
+  ASSERT_TRUE(has_ref("refs/gg/remotes/origin/tags/gone-tag"));
+  ASSERT_EQ(invoke({"tag", "delete", "gone-tag"}).code, 0);
   ASSERT_EQ(invoke({"push", "--deleted"}).code, 0);
   EXPECT_FALSE(has_ref("refs/remotes/origin/gone"));
+  EXPECT_FALSE(has_ref("refs/gg/remotes/origin/tags/gone-tag"));
   EXPECT_NE(invoke({"push", "--deleted"}).output.find("No refs to push."),
             std::string::npos);
   const Result dry_run =
@@ -340,6 +348,9 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
             0);
   EXPECT_EQ(git_reference_name_to_id(&pushed, bare_check,
                                      "refs/tags/release"),
+            0);
+  EXPECT_NE(git_reference_name_to_id(&pushed, bare_check,
+                                     "refs/tags/gone-tag"),
             0);
   EXPECT_NE(git_reference_name_to_id(&pushed, bare_check, "refs/heads/dry"),
             0);
@@ -383,7 +394,13 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
     EXPECT_TRUE(cloned_repo.change_id(*workspace).has_value());
     EXPECT_TRUE(cloned_repo.ref_target("refs/heads/topic").has_value());
     EXPECT_TRUE(cloned_repo.ref_target("refs/tags/release").has_value());
+    EXPECT_TRUE(cloned_repo
+                    .ref_target("refs/gg/remotes/upstream/tags/release")
+                    .has_value());
     EXPECT_FALSE(cloned_repo.ref_target("refs/tags/ignored").has_value());
+    EXPECT_FALSE(cloned_repo
+                     .ref_target("refs/gg/remotes/upstream/tags/ignored")
+                     .has_value());
     EXPECT_FALSE(cloned_repo.ref_target("refs/remotes/upstream/named").has_value());
     std::optional<git_oid> cursor =
         cloned_repo.ref_target("refs/remotes/upstream/topic");
@@ -414,6 +431,9 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
     ASSERT_TRUE(tag_workspace.has_value());
     EXPECT_TRUE(tag_repo.parents(*tag_workspace).empty());
     EXPECT_TRUE(tag_repo.ref_target("refs/tags/release").has_value());
+    EXPECT_TRUE(tag_repo
+                    .ref_target("refs/gg/remotes/origin/tags/release")
+                    .has_value());
     EXPECT_FALSE(tag_repo.ref_target("refs/tags/ignored").has_value());
     EXPECT_FALSE(tag_repo.ref_target("refs/heads/topic").has_value());
     EXPECT_FALSE(tag_repo.ref_target("refs/remotes/origin/topic").has_value());

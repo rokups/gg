@@ -687,7 +687,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   push->add_flag("--tracked", push_value.tracked,
                  "Push refs known on the remote");
   push->add_flag("--deleted", push_value.deleted,
-                 "Delete remote bookmarks deleted locally")
+                 "Delete remote bookmarks and tags deleted locally")
       ->excludes(push_bookmarks)
       ->excludes(push_tags)
       ->excludes(push_revisions)
