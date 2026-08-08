@@ -33,8 +33,7 @@ TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
             0);
   EXPECT_TRUE(has_ref("refs/heads/three"));
   EXPECT_EQ(invoke({"bookmark", "delete", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "delete", "topic", "one", "two", "three",
-                    "forward"})
+  EXPECT_EQ(invoke({"bookmark", "delete", "glob:t*", "one", "forward"})
                 .code,
             0);
 }
@@ -63,6 +62,20 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   const Result named = invoke({"bookmark", "list", "alpha"});
   EXPECT_NE(named.output.find("alpha:"), std::string::npos);
   EXPECT_EQ(named.output.find("beta:"), std::string::npos);
+  EXPECT_NE(invoke({"bookmark", "list", "glob:a*"})
+                .output.find("alpha:"),
+            std::string::npos);
+  EXPECT_NE(invoke({"bookmark", "list", "exact:beta"})
+                .output.find("beta:"),
+            std::string::npos);
+  EXPECT_NE(invoke({"bookmark", "list", "substring:lph"})
+                .output.find("alpha:"),
+            std::string::npos);
+  EXPECT_NE(invoke({"bookmark", "list", "regex:^be"})
+                .output.find("beta:"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"bookmark", "list", "regex:["}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "list", "unknown:alpha"}).code, 2);
   const Result revised = invoke({"bookmark", "list", "-r", "alpha"});
   EXPECT_NE(revised.output.find("alpha:"), std::string::npos);
   EXPECT_EQ(revised.output.find("beta:"), std::string::npos);
@@ -83,6 +96,9 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   EXPECT_NE(origin.output.find("alpha@origin:"), std::string::npos);
   EXPECT_EQ(origin.output.find("beta@backup:"), std::string::npos);
   EXPECT_EQ(origin.output.find("alpha:"), std::string::npos);
+  EXPECT_NE(invoke({"bookmark", "list", "--remote", "glob:ori*"})
+                .output.find("alpha@origin:"),
+            std::string::npos);
   const Result remotes = invoke(
       {"bookmark", "list", "--remote", "origin", "--remote", "backup"});
   EXPECT_NE(remotes.output.find("alpha@origin:"), std::string::npos);
@@ -144,7 +160,7 @@ TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
   const git_oid target = ref("refs/heads/occupied");
   set_ref("refs/remotes/origin/occupied", target);
   set_ref("refs/remotes/origin/other", target);
-  ASSERT_EQ(invoke({"bookmark", "forget", "occupied"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "forget", "glob:occup*"}).code, 0);
   EXPECT_FALSE(has_ref("refs/heads/occupied"));
   EXPECT_TRUE(has_ref("refs/remotes/origin/occupied"));
 
@@ -170,7 +186,7 @@ TEST_F(RepositoryTest, MovesBookmarksByNameAndSourceRevision) {
   const git_oid second = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"bookmark", "create", "tip"}).code, 0);
 
-  ASSERT_EQ(invoke({"bookmark", "move", "one", "--to", "@"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "move", "glob:o*", "--to", "@"}).code, 0);
   EXPECT_TRUE(points_to("refs/heads/one", second));
   EXPECT_TRUE(points_to("refs/heads/two", first));
 
@@ -230,7 +246,7 @@ TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
   EXPECT_TRUE(points_to("refs/heads/old", old));
   EXPECT_TRUE(points_to("refs/heads/side", side));
 
-  ASSERT_EQ(invoke({"bookmark", "advance", "old", "--to", "@"}).code,
+  ASSERT_EQ(invoke({"bookmark", "advance", "glob:o*", "--to", "@"}).code,
             0);
   EXPECT_TRUE(points_to("refs/heads/old", target));
   EXPECT_NE(invoke({"bookmark", "advance", "near"})

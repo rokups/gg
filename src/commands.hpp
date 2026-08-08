@@ -34,6 +34,12 @@ enum class OutputStyle {
 
 void set_output_color_mode(std::ostream&, OutputColorMode);
 std::string styled(std::ostream&, std::string_view, OutputStyle);
+bool string_pattern_matches(std::string_view pattern,
+                            std::string_view value,
+                            std::string_view default_kind = "glob");
+bool any_string_pattern_matches(const std::vector<std::string>& patterns,
+                                std::string_view value,
+                                std::string_view default_kind = "glob");
 
 std::vector<git_oid> commit_parents(
     Repository& repo, const std::vector<std::string>& revisions);

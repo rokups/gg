@@ -19,6 +19,9 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
   EXPECT_NE(colored.output.find("<<commit_id::"), std::string::npos);
   EXPECT_NE(invoke({"tag", "list", "v1"}).output.find("v1: "),
             std::string::npos);
+  EXPECT_NE(invoke({"tag", "list", "glob:st*"})
+                .output.find("stable: "),
+            std::string::npos);
   EXPECT_EQ(invoke({"tag", "list", "missing"}).output, "");
   EXPECT_NE(invoke({"tag", "list", "-r", "main"}).output.find("base: "),
             std::string::npos);
@@ -74,6 +77,8 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
   ASSERT_EQ(invoke({"tag", "delete", "v1", "stable"}).code, 0);
   EXPECT_FALSE(has_ref("refs/tags/v1"));
   EXPECT_FALSE(has_ref("refs/tags/stable"));
+  ASSERT_EQ(invoke({"tag", "delete", "glob:b*"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/tags/base"));
 }
 
 TEST_F(RepositoryTest, RestoresTagsThroughOperationHistory) {

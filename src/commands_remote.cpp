@@ -220,15 +220,14 @@ void command_bookmark(Repository& repo,
         name = remote_bookmark.substr(slash + 1);
         if (name == "HEAD") continue;
         if (!options.remotes.empty() &&
-            std::ranges::find(options.remotes, remote) ==
-                options.remotes.end()) {
+            !any_string_pattern_matches(options.remotes, remote)) {
           continue;
         }
         display_name = name + "@" + remote;
       }
       const bool name_matches =
           !options.names.empty() &&
-          std::ranges::find(options.names, name) != options.names.end();
+          any_string_pattern_matches(options.names, name);
       const bool revision_matches =
           !revisions.empty() && revisions.contains(oid);
       if ((!options.names.empty() || !revisions.empty()) && !name_matches &&
@@ -251,13 +250,23 @@ void command_bookmark(Repository& repo,
   if (options.action == BookmarkAction::erase ||
       options.action == BookmarkAction::forget) {
     std::set<std::string> deletes;
-    for (const std::string& name : options.names) {
-      const std::string reference = "refs/heads/" + name;
-      if (!repo.ref_target(reference).has_value()) {
-        throw UserError("bookmark not found: " + name);
+    std::set<std::string> matched_names;
+    for (const std::string& pattern : options.names) {
+      bool matched = false;
+      for (const auto& [reference, oid] : repo.data_refs()) {
+        (void)oid;
+        constexpr std::string_view prefix = "refs/heads/";
+        if (!starts_with(reference, prefix)) continue;
+        const std::string name = reference.substr(prefix.size());
+        if (!string_pattern_matches(pattern, name)) continue;
+        matched = true;
+        matched_names.insert(name);
+        deletes.insert(reference);
       }
-      deletes.insert(reference);
-      if (options.include_remotes) {
+      if (!matched) throw UserError("bookmark not found: " + pattern);
+    }
+    if (options.include_remotes) {
+      for (const std::string& name : matched_names) {
         const std::string suffix = "/" + name;
         for (const auto& [remote, oid] : repo.data_refs()) {
           (void)oid;
@@ -319,7 +328,7 @@ void command_bookmark(Repository& repo,
       if (!starts_with(reference, prefix) || oid == target) continue;
       const std::string name = reference.substr(prefix.size());
       if (!options.names.empty() &&
-          std::ranges::find(options.names, name) == options.names.end()) {
+          !any_string_pattern_matches(options.names, name)) {
         continue;
       }
       if (!sources.empty() && !sources.contains(oid)) continue;
@@ -464,8 +473,7 @@ void command_tag(Repository& repo,
         const std::string remote = remote_tag.substr(0, separator);
         name = remote_tag.substr(separator + marker.size());
         if (!options.remotes.empty() &&
-            std::ranges::find(options.remotes, remote) ==
-                options.remotes.end()) {
+            !any_string_pattern_matches(options.remotes, remote)) {
           continue;
         }
         display_name = name + "@" + remote;
@@ -473,7 +481,7 @@ void command_tag(Repository& repo,
       const std::optional<git_oid> target = tag_target(reference);
       const bool name_matches =
           !options.names.empty() &&
-          std::ranges::find(options.names, name) != options.names.end();
+          any_string_pattern_matches(options.names, name);
       const bool revision_matches =
           !revisions.empty() && revisions.contains(*target);
       if ((!options.names.empty() || !revisions.empty()) && !name_matches &&
@@ -494,12 +502,18 @@ void command_tag(Repository& repo,
 
   if (options.action == TagAction::erase) {
     std::set<std::string> deletes;
-    for (const std::string& name : options.names) {
-      const std::string reference = "refs/tags/" + name;
-      if (!repo.ref_target(reference).has_value()) {
-        throw UserError("tag not found: " + name);
+    for (const std::string& pattern : options.names) {
+      bool matched = false;
+      for (const auto& [reference, oid] : repo.data_refs()) {
+        (void)oid;
+        constexpr std::string_view prefix = "refs/tags/";
+        if (!starts_with(reference, prefix)) continue;
+        const std::string name = reference.substr(prefix.size());
+        if (!string_pattern_matches(pattern, name)) continue;
+        matched = true;
+        deletes.insert(reference);
       }
-      deletes.insert(reference);
+      if (!matched) throw UserError("tag not found: " + pattern);
     }
     repo.record({}, deletes, repo.head_state(), "gg tag delete");
     output << "Deleted " << deletes.size() << " tag(s).\n";

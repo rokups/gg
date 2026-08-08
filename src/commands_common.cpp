@@ -11,10 +11,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <cstdlib>
 #include <array>
+#include <cstdlib>
+#include <fnmatch.h>
 #include <fstream>
 #include <iterator>
+#include <regex>
 #include <utility>
 
 extern char** environ;
@@ -73,6 +75,41 @@ std::string styled(std::ostream& output,
   if (mode == OutputColorMode::debug) result += ">>";
   result += "\x1b[0m";
   return result;
+}
+
+bool string_pattern_matches(std::string_view pattern,
+                            std::string_view value,
+                            std::string_view default_kind) {
+  const std::size_t separator = pattern.find(':');
+  const std::string_view kind = separator == std::string_view::npos
+                                    ? default_kind
+                                    : pattern.substr(0, separator);
+  const std::string_view body = separator == std::string_view::npos
+                                    ? pattern
+                                    : pattern.substr(separator + 1);
+  if (kind == "exact") return value == body;
+  if (kind == "substring") return value.find(body) != std::string_view::npos;
+  if (kind == "glob") {
+    return fnmatch(std::string(body).c_str(), std::string(value).c_str(), 0) ==
+           0;
+  }
+  if (kind == "regex") {
+    try {
+      return std::regex_search(value.begin(), value.end(),
+                               std::regex(std::string(body)));
+    } catch (const std::regex_error&) {  // GG_COV_EXCL_BRANCH
+      throw UserError("invalid regex string pattern: " + std::string(pattern));
+    }
+  }
+  throw UserError("invalid string pattern kind: " + std::string(kind));
+}
+
+bool any_string_pattern_matches(const std::vector<std::string>& patterns,
+                                std::string_view value,
+                                std::string_view default_kind) {
+  return std::ranges::any_of(patterns, [&](const std::string& pattern) {
+    return string_pattern_matches(pattern, value, default_kind);
+  });
 }
 
 std::vector<git_oid> commit_parents(Repository& repo,
