@@ -8,6 +8,8 @@
 
 #include <git2/sys/errors.h>
 
+#include <algorithm>
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
@@ -94,6 +96,76 @@ TEST_F(RepositoryTest, AssignsGgIdsToReachableGitHistory) {
   EXPECT_TRUE(repo.change_id(base).has_value());
   EXPECT_TRUE(repo.change_id(child).has_value());
   EXPECT_TRUE(repo.missing_change_ids().empty());
+}
+
+TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
+  detail::Repository repo(path_);
+  const git_oid base = ref("HEAD");
+  const git_oid left = raw_commit("left", {base});
+  const git_oid right = raw_commit("right", {base});
+  const git_oid merge = raw_commit("merge", {left, right});
+  const git_oid tip = raw_commit("tip", {merge});
+  const git_oid other = raw_commit("other", {base});
+  set_ref("refs/heads/base", base);
+  set_ref("refs/heads/left", left);
+  set_ref("refs/heads/right", right);
+  set_ref("refs/heads/merge", merge);
+  set_ref("refs/heads/tip", tip);
+  set_ref("refs/heads/other", other);
+  set_ref("refs/tags/release", right);
+
+  const auto contains = [](const std::vector<git_oid>& revisions,
+                           const git_oid& oid) {
+    return std::ranges::any_of(revisions, [&](const git_oid& candidate) {
+      return git_oid_equal(&candidate, &oid) != 0;
+    });
+  };
+  const auto expect = [&](std::string_view expression,
+                          std::initializer_list<git_oid> expected) {
+    const std::vector<git_oid> actual = repo.resolve_set(expression);
+    EXPECT_EQ(actual.size(), expected.size()) << expression;
+    for (const git_oid& oid : expected) {
+      EXPECT_TRUE(contains(actual, oid)) << expression;
+    }
+  };
+
+  expect("left | (right | left)", {left, right});
+  expect("left~right", {left});
+  expect("ancestors(left) & ancestors(right)", {base});
+  expect("ancestors(tip) ~ ancestors(left)", {tip, merge, right});
+  expect("left..tip", {tip, merge, right});
+  expect("left::tip", {left, merge, tip});
+  expect("parents(merge)", {left, right});
+  expect("children(base)", {left, right, other});
+  expect("descendants(left)", {left, merge, tip});
+  expect("roots(all())", {base});
+  expect("root()", {base});
+  expect("heads(all())", {tip, other});
+  expect("heads()", {tip, other});
+  expect("bookmarks('glob:l*')", {left});
+  expect("(bookmarks('glob:l*'))", {left});
+  expect("bookmarks(glob:l*)", {left});
+  expect("bookmarks(\"exact:right\")", {right});
+  expect("bookmarks(x)", {});
+  expect("tags()", {right});
+  expect("none()", {});
+  const git_oid resolved_parent = repo.resolve("parents(left)");
+  EXPECT_TRUE(git_oid_equal(&resolved_parent, &base) != 0);
+  const git_oid git_parent = repo.resolve("tip~1");
+  EXPECT_TRUE(git_oid_equal(&git_parent, &merge) != 0);
+  const git_oid git_default_parent = repo.resolve("tip~");
+  EXPECT_TRUE(git_oid_equal(&git_default_parent, &merge) != 0);
+
+  EXPECT_THROW(repo.resolve("left | right"), detail::UserError);
+  EXPECT_THROW(repo.resolve("none()"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set(""), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("all(base)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("none(base)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("root(base)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("unknown(base)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("left ~ /"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("(left"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("(')"), detail::UserError);
 }
 
 TEST_F(RepositoryTest, ExercisesRewriteVariants) {

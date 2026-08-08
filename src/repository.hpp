@@ -41,6 +41,12 @@ class GitError : public std::runtime_error {
 };
 
 void check(int result, std::string_view action);
+bool string_pattern_matches(std::string_view pattern,
+                            std::string_view value,
+                            std::string_view default_kind = "glob");
+bool any_string_pattern_matches(const std::vector<std::string>& patterns,
+                                std::string_view value,
+                                std::string_view default_kind = "glob");
 
 template <typename T, void (*Free)(T*)>
 struct GitDeleter {
@@ -250,6 +256,8 @@ class Repository {
 
   git_oid resolve(std::string_view revision) const;
 
+  std::vector<git_oid> resolve_set(std::string_view revisions) const;
+
   bool sync_workspace() const;
 
   std::vector<std::string> bookmarks(const git_oid& oid) const;
@@ -259,6 +267,8 @@ class Repository {
   const std::vector<std::filesystem::path>& config_files() const;
 
  private:
+  git_oid resolve_atom(std::string_view revision) const;
+
   RepositoryPtr repo_;
   std::vector<std::string> config_values_;
   std::vector<std::filesystem::path> config_files_;
