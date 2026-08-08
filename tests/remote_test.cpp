@@ -346,8 +346,16 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
             0);
   git_repository_free(bare_check);
 
+  const auto shallow_path = clone_path.string() + "-shallow";
+  std::filesystem::remove_all(shallow_path);
+  const Result shallow = run(
+      {"clone", "--depth", "1", remote_path.string(), shallow_path});
+  EXPECT_EQ(shallow.code, 1);
+  EXPECT_NE(shallow.error.find("shallow fetch is not supported"),
+            std::string::npos);
   const Result cloned =
-      run({"clone", remote_path.string(), clone_path.string()});
+      run({"clone", "--remote", "upstream", "--object-hash", "sha1",
+           remote_path.string(), clone_path.string()});
   EXPECT_EQ(cloned.code, 0) << cloned.error;
   EXPECT_TRUE(std::filesystem::exists(clone_path / ".git"));
   {
@@ -357,7 +365,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
     ASSERT_TRUE(workspace.has_value());
     EXPECT_TRUE(cloned_repo.change_id(*workspace).has_value());
     std::optional<git_oid> cursor =
-        cloned_repo.ref_target("refs/remotes/origin/topic");
+        cloned_repo.ref_target("refs/remotes/upstream/topic");
     std::size_t revisions = 0;
     while (cursor.has_value()) {
       const std::optional<std::string> id = cloned_repo.change_id(*cursor);
@@ -373,6 +381,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
     EXPECT_GE(revisions, 2U);
     EXPECT_TRUE(cloned_repo.missing_change_ids().empty());
   }
+  std::filesystem::remove_all(shallow_path);
   std::filesystem::remove_all(clone_path);
   std::filesystem::remove_all(remote_path);
 }

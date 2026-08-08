@@ -506,7 +506,20 @@ std::vector<std::string> replay_arguments(const Command& command) {
             return repository_replay_arguments(value);
           },
           [](const GitCloneCommand& value) {
-            std::vector<std::string> result{"clone", value.url};
+            std::vector<std::string> result{"clone"};
+            if (value.remote != "origin") {
+              result.emplace_back("--remote");
+              result.push_back(value.remote);
+            }
+            if (value.depth != 0) {
+              result.emplace_back("--depth");
+              result.push_back(std::to_string(value.depth));
+            }
+            if (value.object_hash != "sha1") {
+              result.emplace_back("--object-hash");
+              result.push_back(value.object_hash);
+            }
+            result.push_back(value.url);
             if (!value.destination.empty()) {
               result.push_back(value.destination);
             }

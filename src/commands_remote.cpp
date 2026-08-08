@@ -466,6 +466,16 @@ git_remote_callbacks remote_callbacks() {
   return callbacks;
 }
 
+int create_clone_remote(git_remote** output,
+                        git_repository* repository,
+                        const char* default_name,
+                        const char* url,
+                        void* payload) {
+  (void)default_name;
+  const auto* name = static_cast<const std::string*>(payload);
+  return git_remote_create(output, repository, name->c_str(), url);
+}
+
 void command_fetch(Repository& repo,
                    const GitFetchCommand& options,
                    std::ostream& output) {
@@ -789,6 +799,9 @@ void command_operation_restore(Repository& repo,
 }
 
 int clone_command(const GitCloneCommand& options, std::ostream& output) {
+  if (options.object_hash == "sha256") {
+    throw UserError("gg does not support SHA-256 repositories");
+  }
   std::string destination = options.destination;
   if (destination.empty()) {
     destination = std::filesystem::path(options.url).filename().string();
@@ -798,6 +811,11 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
   }
   git_clone_options clone_options = GIT_CLONE_OPTIONS_INIT;
   clone_options.fetch_opts.callbacks = remote_callbacks();
+  clone_options.fetch_opts.depth = options.depth;
+  if (options.depth != 0) clone_options.local = GIT_CLONE_NO_LOCAL;
+  std::string remote = options.remote;
+  clone_options.remote_cb = create_clone_remote;
+  clone_options.remote_cb_payload = &remote;
   git_repository* raw_repository = nullptr;
   check(git_clone(&raw_repository, options.url.c_str(), destination.c_str(),
                   &clone_options),

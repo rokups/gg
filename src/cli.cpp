@@ -618,6 +618,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   clone->add_option("url", clone_value.url, "Repository URL")->required();
   clone->add_option("destination", clone_value.destination, "Destination")
       ->expected(0, 1);
+  clone->add_option("--remote", clone_value.remote, "Remote name");
+  clone->add_option("--depth", clone_value.depth, "Shallow clone depth")
+      ->check(CLI::PositiveNumber);
+  clone->add_option("--object-hash", clone_value.object_hash, "Object hash")
+      ->check(CLI::IsMember({"sha1", "sha256"}));
   GitInitCommand init_value;
   auto* init = app.add_subcommand("init", "Initialize a gg repository");
   init->add_option("destination", init_value.destination, "Destination")

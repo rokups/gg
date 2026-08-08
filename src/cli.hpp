@@ -189,6 +189,9 @@ struct TagCommand {
 struct GitCloneCommand {
   std::string url;
   std::string destination;
+  std::string remote{"origin"};
+  std::string object_hash{"sha1"};
+  int depth{0};
 };
 struct GitInitCommand {
   std::string destination;
