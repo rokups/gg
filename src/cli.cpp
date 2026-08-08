@@ -515,9 +515,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   CLI::Option* diff_to =
       diff->add_option("-t,--to", diff_value.to, "Target revision");
   diff_revisions->excludes(diff_from)->excludes(diff_to);
-  diff->add_option("-T,--template", diff_value.template_value,
-                   "Diff entry template");
-  add_diff_format(diff, diff_value.format);
+  CLI::Option* diff_template = diff->add_option(
+      "-T,--template", diff_value.template_value, "Diff entry template");
+  for (CLI::Option* format : add_diff_format(diff, diff_value.format)) {
+    diff_template->excludes(format);
+  }
 
   ShowCommand show_value;
   auto* show = app.add_subcommand("show", "Show revisions and their changes");

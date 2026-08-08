@@ -118,6 +118,87 @@ std::string display_path(const git_diff_delta& delta) {
                               : "{" + old_path + " => " + new_path + "}";
 }
 
+std::string diff_status(git_delta_t status) {
+  static const std::map<git_delta_t, std::string> names{
+      {GIT_DELTA_UNMODIFIED, "unmodified"},
+      {GIT_DELTA_ADDED, "added"},
+      {GIT_DELTA_DELETED, "deleted"},
+      {GIT_DELTA_MODIFIED, "modified"},
+      {GIT_DELTA_RENAMED, "renamed"},
+      {GIT_DELTA_COPIED, "copied"},
+      {GIT_DELTA_IGNORED, "ignored"},
+      {GIT_DELTA_UNTRACKED, "untracked"},
+      {GIT_DELTA_TYPECHANGE, "type-changed"},
+      {GIT_DELTA_UNREADABLE, "unreadable"},
+      {GIT_DELTA_CONFLICTED, "conflicted"}};  // GG_COV_EXCL_BRANCH
+  return names.at(status);
+}
+
+std::string file_type(std::uint16_t mode) {
+  static const std::map<std::uint16_t, std::string> names{
+      {GIT_FILEMODE_UNREADABLE, ""},
+      {GIT_FILEMODE_TREE, "tree"},
+      {GIT_FILEMODE_BLOB, "file"},
+      {GIT_FILEMODE_BLOB_EXECUTABLE, "file"},
+      {GIT_FILEMODE_LINK, "symlink"},
+      {GIT_FILEMODE_COMMIT, "git-submodule"}};  // GG_COV_EXCL_BRANCH
+  return names.at(mode);
+}
+
+const std::map<std::string, std::string> kEmptyDiffTemplateValues{
+    {"path", ""},            {"display_diff_path", ""},
+    {"status", ""},          {"status_char", ""},
+    {"source", ""},          {"source.path", ""},
+    {"source.id", ""},       {"source.conflict", ""},
+    {"source.conflict_side_count", ""},
+    {"source.file_type", ""},
+    {"source.executable", ""},
+    {"target", ""},
+    {"target.path", ""},
+    {"target.id", ""},
+    {"target.conflict", ""},
+    {"target.conflict_side_count", ""},
+    {"target.file_type", ""},
+    {"target.executable", ""}};  // GG_COV_EXCL_BRANCH
+
+std::map<std::string, std::string> diff_template_values(
+    const git_diff_delta& delta) {
+  const std::string old_path = delta.old_file.path;
+  const std::string new_path = delta.new_file.path;
+  auto values = kEmptyDiffTemplateValues;
+  values["path"] = new_path;
+  values["display_diff_path"] = display_path(delta);
+  values["status"] = diff_status(delta.status);
+  values["status_char"] = git_diff_status_char(delta.status);
+  values["source"] = old_path;
+  values["source.path"] = old_path;
+  values["source.id"] = oid_string(delta.old_file.id);
+  values["source.conflict"] = "false";
+  values["source.conflict_side_count"] = "1";
+  values["source.file_type"] = file_type(delta.old_file.mode);
+  values["source.executable"] =
+      delta.old_file.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false";
+  values["target"] = new_path;
+  values["target.path"] = new_path;
+  values["target.id"] = oid_string(delta.new_file.id);
+  values["target.conflict"] = "false";
+  values["target.conflict_side_count"] = "1";
+  values["target.file_type"] = file_type(delta.new_file.mode);
+  values["target.executable"] =
+      delta.new_file.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false";
+  return values;
+}
+
+void render_diff_template(git_diff* diff,
+                          std::string_view template_value,
+                          std::ostream& output) {
+  (void)render_template(template_value, kEmptyDiffTemplateValues);
+  for (std::size_t index = 0; index < git_diff_num_deltas(diff); ++index) {
+    output << render_template(
+        template_value, diff_template_values(*git_diff_get_delta(diff, index)));
+  }
+}
+
 char mode_type(std::uint16_t mode) {
   return mode == GIT_FILEMODE_UNREADABLE
              ? '-'
@@ -337,9 +418,6 @@ void command_diff(Repository& repo,
                   const DiffCommand& options,
                   std::ostream& output) {
   repo.sync_workspace();
-  if (!options.template_value.empty()) {
-    throw UserError("diff templates are not supported yet");
-  }
   git_oid from_tree{};
   git_oid to_tree{};
   if (!options.from.empty() || !options.to.empty()) {
@@ -357,7 +435,11 @@ void command_diff(Repository& repo,
   }
   DiffPtr diff =
       create_diff(repo, from_tree, to_tree, options.paths, options.format);
-  render_diff(diff.get(), options.format, output);
+  if (options.template_value.empty()) {
+    render_diff(diff.get(), options.format, output);
+  } else {
+    render_diff_template(diff.get(), options.template_value, output);
+  }
 }
 
 void command_show(Repository& repo,

@@ -66,6 +66,19 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
             std::string::npos);
   EXPECT_NE(invoke({"diff", "-r", "main"}).output.find("+base"),
             std::string::npos);
+  const Result templated =
+      invoke({"diff", "-T",
+              "status_char ++ \" \" ++ status ++ \" \" ++ path ++ \" \" "
+              "++ display_diff_path ++ \" \" ++ source.path ++ \" \" ++ "
+              "target.path ++ \" \" ++ source.file_type ++ \" \" ++ "
+              "target.file_type ++ \" \" ++ source.executable ++ \" \" ++ "
+              "target.executable ++ \"\\n\""});
+  ASSERT_EQ(templated.code, 0) << templated.error;
+  EXPECT_NE(templated.output.find("A added added.txt added.txt"),
+            std::string::npos);
+  EXPECT_NE(templated.output.find("A added link link"), std::string::npos);
+  EXPECT_NE(templated.output.find("M modified tracked.txt tracked.txt"),
+            std::string::npos);
 
   write("tracked.txt", "changed suffix\n");
   write("uneven.txt", "one\ntwo\n");
@@ -104,6 +117,10 @@ TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
             "R {tracked.txt => renamed.txt}\n");
   EXPECT_EQ(invoke({"diff", "--types"}).output,
             "FF {tracked.txt => renamed.txt}\n");
+  EXPECT_EQ(invoke({"diff", "-T",
+                    "status ++ \" \" ++ display_diff_path ++ \"\\n\""})
+                .output,
+            "renamed {tracked.txt => renamed.txt}\n");
   EXPECT_NE(invoke({"--color", "always", "diff"})
                 .output.find("\x1b[1mrename from tracked.txt\x1b[0m"),
             std::string::npos);
@@ -111,6 +128,8 @@ TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
   std::filesystem::remove(path_ / "renamed.txt");
   EXPECT_EQ(invoke({"diff", "--summary"}).output, "D tracked.txt\n");
   EXPECT_EQ(invoke({"diff", "--types"}).output, "F- tracked.txt\n");
+  EXPECT_EQ(invoke({"diff", "-T", "status ++ \"\\n\""}).output,
+            "deleted\n");
   EXPECT_NE(invoke({"--color", "always", "diff"})
                 .output.find("\x1b[1mdeleted file mode"),
             std::string::npos);
@@ -122,6 +141,30 @@ TEST_F(RepositoryTest, IgnoresRequestedWhitespaceChanges) {
   EXPECT_EQ(invoke({"diff", "-w"}).output, "");
   write("tracked.txt", "base   \n");
   EXPECT_EQ(invoke({"diff", "-b"}).output, "");
+}
+
+TEST_F(RepositoryTest, TemplatesExecutableModeChanges) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  std::filesystem::permissions(
+      path_ / "tracked.txt", std::filesystem::perms::owner_exec,
+      std::filesystem::perm_options::add);
+  EXPECT_EQ(invoke({"diff", "-T",
+                    "source.executable ++ \" \" ++ target.executable ++ "
+                    "\"\\n\""})
+                .output,
+            "false true\n");
+
+  ASSERT_EQ(invoke({"file", "chmod", "x", "-r", "main", "tracked.txt"})
+                .code,
+            0);
+  std::filesystem::permissions(
+      path_ / "tracked.txt", std::filesystem::perms::owner_exec,
+      std::filesystem::perm_options::remove);
+  EXPECT_EQ(invoke({"diff", "-T",
+                    "source.executable ++ \" \" ++ target.executable ++ "
+                    "\"\\n\""})
+                .output,
+            "true false\n");
 }
 
 TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
@@ -177,7 +220,8 @@ TEST_F(RepositoryTest, ValidatesDiffAndShowRequests) {
   EXPECT_EQ(invoke({"diff", ""}).code, 2);
   EXPECT_EQ(invoke({"diff", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"diff", "../outside"}).code, 2);
-  EXPECT_EQ(invoke({"diff", "-T", "path"}).code, 2);
+  EXPECT_EQ(invoke({"diff", "-T", "unknown"}).code, 2);
+  EXPECT_EQ(invoke({"diff", "-T", "path", "--summary"}).code, 2);
   EXPECT_EQ(invoke({"diff", "--tool", "meld"}).code, 2);
   EXPECT_EQ(invoke({"show", "-T", "unknown", "--no-patch"}).code, 2);
   EXPECT_EQ(invoke({"show", "--no-patch", "--summary"}).code, 2);
