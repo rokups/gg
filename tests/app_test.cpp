@@ -77,6 +77,11 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"operation"}).code, 2);
   EXPECT_EQ(invoke({"operation", "log", "extra"}).code, 2);
   EXPECT_EQ(invoke({"op", "log", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"operation", "restore"}).code, 2);
+  EXPECT_EQ(invoke({"operation", "restore", "--what", "invalid", "@"}).code,
+            2);
+  EXPECT_EQ(invoke({"operation", "restore", ""}).code, 2);
+  EXPECT_EQ(invoke({"operation", "restore", "@", "extra"}).code, 2);
   EXPECT_EQ(invoke({"unknown"}).code, 2);
   EXPECT_EQ(invoke({"continue"}).code, 2);
   EXPECT_EQ(invoke({"abort"}).code, 2);

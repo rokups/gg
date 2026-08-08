@@ -6,6 +6,7 @@
 
 #include <git2.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -206,6 +207,24 @@ void command_operation_log(Repository& repo, std::ostream& output) {
     first = false;
     current = previous;
   }
+}
+
+void command_operation_restore(Repository& repo,
+                               const OperationRestoreCommand& options,
+                               std::ostream& output) {
+  repo.sync_workspace();
+  const git_oid operation = repo.resolve_operation(options.operation);
+  const bool all = options.what.empty();
+  const bool restore_repository =
+      all || std::find(options.what.begin(), options.what.end(), "repo") !=
+                 options.what.end();
+  const bool restore_remote_tracking =
+      all || std::find(options.what.begin(), options.what.end(),
+                       "remote-tracking") != options.what.end();
+  repo.restore_operation(operation,
+                         "restore to operation " + oid_string(operation),
+                         restore_repository, restore_remote_tracking);
+  output << "Restored operation " << oid_string(operation, 8) << ".\n";
 }
 
 int clone_command(const GitCloneCommand& options, std::ostream& output) {

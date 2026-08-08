@@ -74,6 +74,9 @@ int execute(Repository& repository,
             [&](const RedoCommand&) { command_redo(repository, output); },
             [&](const OperationLogCommand&) {
               command_operation_log(repository, output);
+            },
+            [&](const OperationRestoreCommand& value) {
+              command_operation_restore(repository, value, output);
             }},
         command);
     return 0;

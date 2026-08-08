@@ -71,13 +71,17 @@ struct AbortCommand {};
 struct UndoCommand {};
 struct RedoCommand {};
 struct OperationLogCommand {};
+struct OperationRestoreCommand {
+  std::string operation;
+  std::vector<std::string> what;
+};
 
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
                  AbandonCommand, BookmarkCommand, GitFetchCommand,
                  GitPushCommand, UndoCommand, RedoCommand,
-                 OperationLogCommand>;
+                 OperationLogCommand, OperationRestoreCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand,
                              ContinueCommand, AbortCommand>;
 

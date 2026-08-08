@@ -264,4 +264,35 @@ TEST_F(RepositoryTest, RestoresAnUnbornOperationWithoutAWorkspace) {
   EXPECT_FALSE(repo.head_oid().has_value());
 }
 
+TEST_F(RepositoryTest, ResolvesOperationExpressions) {
+  detail::Repository repo(path_);
+  EXPECT_THROW(repo.resolve_operation(""), detail::UserError);
+  EXPECT_THROW(repo.resolve_operation("@"), detail::UserError);
+
+  const detail::OperationState state = repo.state();
+  git_oid current =
+      repo.create_operation(state, std::nullopt, "initial operation");
+  set_ref(detail::kOperationRef, current);
+  EXPECT_THROW(repo.resolve_operation("@-"), detail::UserError);
+
+  std::map<char, git_oid> prefixes;
+  std::optional<char> ambiguous;
+  for (int index = 0; index < 17; ++index) {
+    current = repo.create_operation(
+        state, current, "test operation " + std::to_string(index));
+    const char prefix = git_oid_tostr_s(&current)[0];
+    if (!prefixes.emplace(prefix, current).second) {
+      ambiguous = prefix;
+    }
+  }
+  set_ref(detail::kOperationRef, current);
+  const git_oid resolved = repo.resolve_operation("@");
+  EXPECT_NE(git_oid_equal(&resolved, &current), 0);
+  EXPECT_NO_THROW(repo.resolve_operation("@-"));
+  EXPECT_THROW(repo.resolve_operation("@-x"), detail::UserError);
+  ASSERT_TRUE(ambiguous.has_value());
+  EXPECT_THROW(repo.resolve_operation(std::string(1, *ambiguous)),
+               detail::UserError);
+}
+
 }  // namespace gg::test

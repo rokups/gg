@@ -144,6 +144,44 @@ git_oid Repository::create_operation(const OperationState& state,
 
 std::optional<git_oid> Repository::operation() const { return ref_target(kOperationRef); }
 
+git_oid Repository::resolve_operation(std::string_view expression) const {
+  if (expression.empty()) {
+    throw UserError("operation ID is empty");
+  }
+  auto current = operation();
+  if (!current.has_value()) {
+    throw UserError("no operations");
+  }
+  if (expression == "@" || starts_with(expression, "@-")) {
+    for (std::size_t index = 1; index < expression.size(); ++index) {
+      if (expression[index] != '-') {
+        throw UserError("invalid operation: " + std::string(expression));
+      }
+      current = operation_previous(*current);
+      if (!current.has_value()) {
+        throw UserError("operation has no predecessor: " +
+                        std::string(expression));
+      }
+    }
+    return *current;
+  }
+
+  std::optional<git_oid> match;
+  while (current.has_value()) {
+    if (starts_with(oid_string(*current), expression)) {
+      if (match.has_value()) {
+        throw UserError("ambiguous operation ID: " + std::string(expression));
+      }
+      match = *current;
+    }
+    current = operation_previous(*current);
+  }
+  if (!match.has_value()) {
+    throw UserError("operation not found: " + std::string(expression));
+  }
+  return *match;
+}
+
 git_oid Repository::ensure_operation() const {
   const auto current = operation();
   if (current.has_value()) {
@@ -171,8 +209,30 @@ void Repository::record(std::map<std::string, git_oid> updates,
 }
 
 void Repository::restore_operation(const git_oid& operation_oid,
-                                   std::string_view description) const {
-  const OperationState target = parse_operation(operation_oid);
+                                   std::string_view description,
+                                   bool restore_repository,
+                                   bool restore_remote_tracking) const {
+  const OperationState source = parse_operation(operation_oid);
+  OperationState target = state();
+  if (restore_repository) {
+    target.head = source.head;
+  }
+  for (auto iterator = target.refs.begin(); iterator != target.refs.end();) {
+    const bool remote = starts_with(iterator->first, "refs/remotes/");
+    if ((remote && restore_remote_tracking) ||
+        (!remote && restore_repository)) {
+      iterator = target.refs.erase(iterator);
+    } else {
+      ++iterator;
+    }
+  }
+  for (const auto& [name, oid] : source.refs) {
+    const bool remote = starts_with(name, "refs/remotes/");
+    if ((remote && restore_remote_tracking) ||
+        (!remote && restore_repository)) {
+      target.refs[name] = oid;
+    }
+  }
   const auto current = data_refs();
   std::map<std::string, git_oid> updates = target.refs;
   updates[std::string(kOperationRef)] =
@@ -188,14 +248,16 @@ void Repository::restore_operation(const git_oid& operation_oid,
   }
   apply_refs(updates, deletes,
              description.empty() ? "gg restore operation" : description);
-  set_head(target.head);
-  const auto workspace = ref_target(kWorkspaceRef);
-  if (workspace.has_value()) {
-    checkout(*workspace);
-  } else {
-    const auto head = head_oid();
-    if (head.has_value()) {
-      checkout(*head);
+  if (restore_repository) {
+    set_head(target.head);
+    const auto workspace = ref_target(kWorkspaceRef);
+    if (workspace.has_value()) {
+      checkout(*workspace);
+    } else {
+      const auto head = head_oid();
+      if (head.has_value()) {
+        checkout(*head);
+      }
     }
   }
 }

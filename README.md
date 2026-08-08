@@ -33,6 +33,7 @@ gg abort
 gg undo
 gg redo
 gg operation log
+gg operation restore [--what repo|remote-tracking] OPERATION
 ```
 
 Revisions use JJ names: `@`, `@-`, stable change-ID prefixes, bookmarks, or
@@ -48,7 +49,9 @@ Commands show the shortest unique prefix with a minimum length of eight.
 `gg undo` and `gg redo` behave like editor history: each restoration is itself
 recorded, repeated commands move backward or forward, and a new operation after
 an undo clears the redo path. `gg operation log` (also `gg op log`) shows the
-newest-first operation graph with IDs, timestamps, and descriptions.
+newest-first operation graph with IDs, timestamps, and descriptions. `gg
+operation restore` restores all state from a logged operation by default, or
+only repository or remote-tracking state with repeated `--what` options.
 
 ## Project structure
 

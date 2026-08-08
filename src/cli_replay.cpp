@@ -112,6 +112,15 @@ std::vector<std::string> repository_replay_arguments(
           [](const RedoCommand&) { return std::vector<std::string>{"redo"}; },
           [](const OperationLogCommand&) {
             return std::vector<std::string>{"operation", "log"};
+          },
+          [](const OperationRestoreCommand& value) {
+            std::vector<std::string> result{"operation", "restore"};
+            for (const std::string& what : value.what) {
+              result.emplace_back("--what");
+              result.push_back(what);
+            }
+            result.push_back(value.operation);
+            return result;
           }},
       command);
 }

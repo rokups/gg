@@ -125,6 +125,16 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   operation->require_subcommand(1);
   auto* operation_log =
       operation->add_subcommand("log", "Show the operation log");
+  OperationRestoreCommand operation_restore_value;
+  auto* operation_restore = operation->add_subcommand(
+      "restore", "Restore the repository to an earlier operation");
+  operation_restore
+      ->add_option("operation", operation_restore_value.operation, "Operation ID")
+      ->required();
+  operation_restore
+      ->add_option("--what", operation_restore_value.what,
+                   "State to restore: repo or remote-tracking")
+      ->check(CLI::IsMember({"repo", "remote-tracking"}));
   auto* help = app.add_subcommand("help", "Print help");
   auto* version = app.add_subcommand("version", "Print version");
 
@@ -209,6 +219,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{RedoCommand{}};
   } else if (operation_log->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{OperationLogCommand{}};
+  } else if (operation_restore->parsed()) {  // GG_COV_EXCL_BRANCH
+    command = RepositoryCommand{std::move(operation_restore_value)};
   }
 
   Invocation invocation{repository, std::move(command), {}};

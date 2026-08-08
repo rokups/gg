@@ -190,6 +190,8 @@ class Repository {
 
   std::optional<git_oid> operation() const;
 
+  git_oid resolve_operation(std::string_view expression) const;
+
   std::optional<PendingRewrite> pending() const;
 
   std::string serialize(const PendingRewrite& pending) const;
@@ -215,7 +217,9 @@ class Repository {
                 std::string_view description) const;
 
   void restore_operation(const git_oid& operation_oid,
-                            std::string_view description = {}) const;
+                         std::string_view description = {},
+                         bool restore_repository = true,
+                         bool restore_remote_tracking = true) const;
 
   std::map<std::string, git_oid> changes() const;
 

@@ -161,6 +161,52 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   EXPECT_EQ(invoke({"op", "log"}).output, log.output);
 }
 
+TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  const git_oid first = ref("refs/gg/workspaces/default");
+  set_ref("refs/remotes/origin/main", first);
+  ASSERT_EQ(invoke({"bookmark", "create", "keep"}).code, 0);
+  const git_oid target_operation = ref("refs/gg/operations/current");
+  const std::string target =
+      std::string(git_oid_tostr_s(&target_operation)).substr(0, 8);
+
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  const git_oid second = ref("refs/gg/workspaces/default");
+  set_ref("refs/remotes/origin/main", second);
+  ASSERT_EQ(invoke({"bookmark", "delete", "keep"}).code, 0);
+
+  Result restored = invoke({"operation", "restore", "--what", "repo", target});
+  ASSERT_EQ(restored.code, 0) << restored.error;
+  EXPECT_NE(restored.output.find(target), std::string::npos);
+  EXPECT_TRUE(has_ref("refs/heads/keep"));
+  git_oid actual = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
+  actual = ref("refs/remotes/origin/main");
+  EXPECT_NE(git_oid_equal(&actual, &second), 0);
+
+  restored = invoke(
+      {"op", "restore", "--what", "remote-tracking", target});
+  ASSERT_EQ(restored.code, 0) << restored.error;
+  actual = ref("refs/remotes/origin/main");
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
+
+  ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
+  set_ref("refs/remotes/origin/main", second);
+  ASSERT_EQ(invoke({"operation", "restore", target}).code, 0);
+  actual = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
+  actual = ref("refs/remotes/origin/main");
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
+  EXPECT_EQ(invoke({"operation", "restore", "--what", "repo", "--what",
+                    "remote-tracking", "@"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"operation", "restore", "@-"}).code, 0);
+  EXPECT_EQ(invoke({"operation", "restore", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"operation", "restore", "@x"}).code, 2);
+  EXPECT_EQ(invoke({"operation", "restore", "@-x"}).code, 2);
+}
+
 TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
   EXPECT_NE(invoke({"status"}).output.find("No working-copy"), std::string::npos);
   ASSERT_EQ(git_reference_remove(repository_.get(), "refs/heads/main"), 0);

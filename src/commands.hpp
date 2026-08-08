@@ -39,6 +39,8 @@ void command_push(Repository&, const GitPushCommand&, std::ostream&);
 void command_undo(Repository&, std::ostream&);
 void command_redo(Repository&, std::ostream&);
 void command_operation_log(Repository&, std::ostream&);
+void command_operation_restore(Repository&, const OperationRestoreCommand&,
+                               std::ostream&);
 int clone_command(const GitCloneCommand&, std::ostream&);
 
 }  // namespace gg::detail
