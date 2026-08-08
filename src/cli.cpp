@@ -616,10 +616,29 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->excludes(fetch_remotes);
   GitPushCommand push_value;
   auto* push = app.add_subcommand("push", "Push bookmarks and tags");
-  push->add_option("-b,--bookmark,--branch", push_value.bookmarks,
-                   "Bookmark name");
-  push->add_option("-t,--tag", push_value.tags, "Tag name");
+  CLI::Option* push_bookmarks =
+      push->add_option("-b,--bookmark,--branch", push_value.bookmarks,
+                       "Bookmark name");
+  CLI::Option* push_tags =
+      push->add_option("-t,--tag", push_value.tags, "Tag name");
+  CLI::Option* push_revisions =
+      push->add_option("-r,--revision,--revisions", push_value.revisions,
+                       "Revision containing refs to push");
+  CLI::Option* push_changes =
+      push->add_option("-c,--change", push_value.changes,
+                       "Revision to push under a generated bookmark");
+  CLI::Option* push_named =
+      push->add_option("--named", push_value.named, "Bookmark=revision");
   push->add_flag("--all", push_value.all, "Push all bookmarks and tags");
+  push->add_flag("--tracked", push_value.tracked,
+                 "Push refs known on the remote");
+  push->add_flag("--deleted", push_value.deleted,
+                 "Delete remote bookmarks deleted locally")
+      ->excludes(push_bookmarks)
+      ->excludes(push_tags)
+      ->excludes(push_revisions)
+      ->excludes(push_changes)
+      ->excludes(push_named);
   push->add_option("--remote", push_value.remote, "Remote name");
   push->add_flag("--allow-empty-description",
                  push_value.allow_empty_description,

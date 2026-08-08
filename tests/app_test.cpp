@@ -94,6 +94,18 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"push"}).code, 2);
   EXPECT_EQ(invoke({"push", "-b", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-t", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"push", "-r", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"push", "-c", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--named", "value"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--named", "=@"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--named", "value="}).code, 2);
+  EXPECT_EQ(invoke({"push", "--named", "bad name=@"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--named", "main=@"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--deleted", "-b", "main"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--deleted", "-t", "v1"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--deleted", "-r", "main"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--deleted", "-c", "main"}).code, 2);
+  EXPECT_EQ(invoke({"push", "--deleted", "--named", "new=main"}).code, 2);
   EXPECT_EQ(invoke({"push", "-b", "missing", "extra"}).code, 2);
   EXPECT_EQ(run({"clone"}).code, 2);
   EXPECT_EQ(run({"clone", "one", "two", "three"}).code, 2);

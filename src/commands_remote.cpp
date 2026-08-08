@@ -536,11 +536,28 @@ void command_push(Repository& repo,
                   const GitPushCommand& options,
                   std::ostream& output) {
   repo.sync_workspace();
-  if (!options.all && options.bookmarks.empty() && options.tags.empty()) {
-    throw UserError("push requires --bookmark, --tag, or --all");
+  if (!options.all && !options.tracked && !options.deleted &&
+      options.bookmarks.empty() && options.tags.empty() &&
+      options.revisions.empty() && options.changes.empty() &&
+      options.named.empty()) {
+    throw UserError("push requires a selection option");
   }
   const std::string name = options.remote.empty() ? "origin" : options.remote;
+  const auto refs = repo.data_refs();
   std::map<std::string, std::string> updates;
+  std::map<std::string, git_oid> local_updates;
+  std::set<std::string> remote_deletes;
+  const auto target_of = [&](const std::string& revision) {
+    git_object* raw_object = nullptr;
+    check(git_revparse_single(&raw_object, repo.raw(), revision.c_str()),
+          "resolve push target");
+    ObjectPtr object(raw_object);
+    git_object* raw_commit = nullptr;
+    check(git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT),
+          "resolve push commit");
+    ObjectPtr commit(raw_commit);
+    return *git_object_id(commit.get());
+  };
   const auto add = [&](std::string_view kind, const std::string& ref_name) {
     const std::string reference = "refs/" + std::string(kind) + "/" + ref_name;
     if (!repo.ref_target(reference).has_value()) {
@@ -553,8 +570,51 @@ void command_push(Repository& repo,
     add("heads", bookmark);
   }
   for (const std::string& tag : options.tags) add("tags", tag);
+  std::set<git_oid, OidLess> revisions;
+  for (const std::string& revision : options.revisions) {
+    revisions.insert(repo.resolve(revision));
+  }
+  for (const auto& [reference, oid] : refs) {
+    (void)oid;
+    if ((starts_with(reference, "refs/heads/") ||
+         starts_with(reference, "refs/tags/")) &&
+        revisions.contains(target_of(reference))) {
+      updates.emplace(reference, reference);
+    }
+  }
+  const auto create_bookmark = [&](const std::string& bookmark,
+                                   const git_oid& target) {
+    const std::string reference = "refs/heads/" + bookmark;
+    int valid = 0;
+    check(git_reference_name_is_valid(&valid, reference.c_str()),
+          "validate push bookmark");
+    if (valid == 0) throw UserError("invalid bookmark name: " + bookmark);
+    if (repo.ref_target(reference).has_value()) {
+      throw UserError("bookmark already exists: " + bookmark);
+    }
+    updates.emplace(reference, oid_string(target));
+    local_updates.emplace(reference, target);
+  };
+  for (const std::string& revision : options.changes) {
+    const git_oid target = repo.resolve(revision);
+    std::optional<std::string> id = repo.change_id(target);
+    if (!id.has_value()) {
+      id = repo.new_change_id();
+      local_updates.emplace(std::string(kChangePrefix) + *id, target);
+    }
+    create_bookmark("push-" + repo.short_change_id(*id), target);
+  }
+  for (const std::string& named : options.named) {
+    const std::size_t equals = named.find('=');
+    if (equals == 0 || equals == std::string::npos ||
+        equals + 1 == named.size()) {
+      throw UserError("--named must be BOOKMARK=REVISION");
+    }
+    create_bookmark(named.substr(0, equals),
+                    repo.resolve(named.substr(equals + 1)));
+  }
   if (options.all) {
-    for (const auto& [reference, oid] : repo.data_refs()) {
+    for (const auto& [reference, oid] : refs) {
       (void)oid;
       if (starts_with(reference, "refs/heads/") ||
           starts_with(reference, "refs/tags/")) {
@@ -562,19 +622,32 @@ void command_push(Repository& repo,
       }
     }
   }
-  if (!options.allow_empty_description) {
-    for (const auto& [destination, source] : updates) {
-      (void)destination;
-      git_object* raw_object = nullptr;
-      check(git_revparse_single(&raw_object, repo.raw(), source.c_str()),
-            "resolve push target");
-      ObjectPtr object(raw_object);
-      git_object* raw_commit = nullptr;
-      check(git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT),
-            "resolve push commit");
-      ObjectPtr commit(raw_commit);
-      const auto* value = reinterpret_cast<const git_commit*>(commit.get());
-      if (first_line(git_commit_message(value)).empty()) {
+  const std::string remote_prefix = "refs/remotes/" + name + "/";
+  if (options.tracked || options.deleted) {
+    for (const auto& [reference, oid] : refs) {
+      (void)oid;
+      if (!starts_with(reference, remote_prefix)) continue;
+      const std::string bookmark = reference.substr(remote_prefix.size());
+      if (bookmark == "HEAD") continue;
+      const std::string local = "refs/heads/" + bookmark;
+      if (options.tracked && repo.ref_target(local).has_value()) {
+        updates.emplace(local, local);
+      }
+      if (options.deleted && !repo.ref_target(local).has_value()) {
+        updates.emplace(local, "");
+        remote_deletes.insert(reference);
+      }
+    }
+  }
+
+  std::map<std::string, git_oid> targets;
+  for (const auto& [destination, source] : updates) {
+    if (source.empty()) continue;
+    const git_oid target = target_of(source);
+    targets.emplace(destination, target);
+    if (!options.allow_empty_description) {
+      CommitPtr commit = repo.commit(target);
+      if (first_line(git_commit_message(commit.get())).empty()) {
         throw UserError("refusing to push an empty description: " + source);
       }
     }
@@ -583,6 +656,10 @@ void command_push(Repository& repo,
   git_remote* raw_remote = nullptr;
   check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()), "find remote");
   RemotePtr remote(raw_remote);
+  if (updates.empty()) {
+    output << "No refs to push.\n";
+    return;
+  }
 
   std::vector<std::string> storage;
   for (const auto& [destination, source] : updates) {
@@ -605,6 +682,17 @@ void command_push(Repository& repo,
   push_options.remote_push_options = push_options_array;
   check(git_remote_push(remote.get(), &refspecs, &push_options),
         "push refs");
+  for (const auto& [destination, target] : targets) {
+    constexpr std::string_view head_prefix = "refs/heads/";
+    if (starts_with(destination, head_prefix)) {
+      local_updates.emplace(
+          remote_prefix + destination.substr(head_prefix.size()), target);
+    }
+  }
+  if (!local_updates.empty() || !remote_deletes.empty()) {
+    repo.record(std::move(local_updates), std::move(remote_deletes),
+                repo.head_state(), "gg push");
+  }
 }
 
 void command_undo(Repository& repo, std::ostream& output) {

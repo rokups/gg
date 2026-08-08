@@ -46,7 +46,7 @@ gg tag list [NAME...] [-r REVISION...] [--sort KEY...]
 gg init [DESTINATION]
 gg clone URL [DESTINATION]
 gg fetch [-b BRANCH...] [-t TAG...] [--remote REMOTE... | --all-remotes]
-gg push (-b BOOKMARK... | -t TAG... | --all) [--remote REMOTE] [--dry-run]
+gg push [-b BOOKMARK...] [-t TAG...] [-r REVISION...] [-c REVISION...] [--named NAME=REVISION...] [--all | --tracked | --deleted] [--remote REMOTE] [--dry-run]
 gg continue
 gg abort
 gg undo

@@ -204,9 +204,14 @@ struct GitFetchCommand {
 struct GitPushCommand {
   std::vector<std::string> bookmarks;
   std::vector<std::string> tags;
+  std::vector<std::string> revisions;
+  std::vector<std::string> changes;
+  std::vector<std::string> named;
   std::vector<std::string> options;
   std::string remote;
   bool all{false};
+  bool tracked{false};
+  bool deleted{false};
   bool allow_empty_description{false};
   bool allow_private{false};
   bool allow_conflicts{false};

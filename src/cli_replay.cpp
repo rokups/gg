@@ -372,12 +372,26 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("--tag");
               result.push_back(tag);
             }
+            for (const std::string& revision : value.revisions) {
+              result.emplace_back("--revision");
+              result.push_back(revision);
+            }
+            for (const std::string& change : value.changes) {
+              result.emplace_back("--change");
+              result.push_back(change);
+            }
+            for (const std::string& named : value.named) {
+              result.emplace_back("--named");
+              result.push_back(named);
+            }
             for (const std::string& option : value.options) {
               result.emplace_back("--option");
               result.push_back(option);
             }
             add_option(result, "--remote", value.remote);
             if (value.all) result.emplace_back("--all");
+            if (value.tracked) result.emplace_back("--tracked");
+            if (value.deleted) result.emplace_back("--deleted");
             if (value.allow_empty_description) {
               result.emplace_back("--allow-empty-description");
             }

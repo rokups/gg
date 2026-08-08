@@ -245,6 +245,18 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   ASSERT_EQ(invoke({"status"}).code, 0);
   ASSERT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
   ASSERT_EQ(invoke({"push", "--bookmark", "topic"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/remotes/origin/topic"));
+  const git_oid topic_target = ref("refs/heads/topic");
+  set_ref("refs/remotes/origin/HEAD", topic_target);
+  set_ref("refs/remotes/origin/ghost", topic_target);
+  const Result tracked = invoke({"push", "--tracked", "--dry-run"});
+  EXPECT_NE(tracked.output.find("refs/heads/topic"), std::string::npos);
+  EXPECT_EQ(tracked.output.find("refs/heads/ghost"), std::string::npos);
+  EXPECT_NE(invoke({"push", "--deleted", "--dry-run"})
+                .output.find("refs/heads/ghost"),
+            std::string::npos);
+  const Result revised = invoke({"push", "-r", "@", "--dry-run"});
+  EXPECT_NE(revised.output.find("refs/heads/topic"), std::string::npos);
 
   git_repository* bare_check = nullptr;
   ASSERT_EQ(git_repository_open(&bare_check, remote_path.string().c_str()), 0);
@@ -262,6 +274,25 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   git_reference_iterator_free(iterator);
   EXPECT_EQ(remote_refs, std::vector<std::string>{"refs/heads/topic"});
   git_repository_free(bare_check);
+
+  ASSERT_EQ(invoke({"push", "--named", "named=@"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/heads/named"));
+  EXPECT_TRUE(has_ref("refs/remotes/origin/named"));
+  ASSERT_EQ(invoke({"push", "--change", "main"}).code, 0);
+  ASSERT_EQ(invoke({"push", "--change", "@"}).code, 0);
+  git_reference_iterator* generated_iterator = nullptr;
+  ASSERT_EQ(git_reference_iterator_glob_new(&generated_iterator,
+                                            repository_.get(),
+                                            "refs/heads/push-*"),
+            0);
+  git_reference* generated_reference = nullptr;
+  ASSERT_EQ(git_reference_next(&generated_reference, generated_iterator), 0);
+  const std::string generated_name = git_reference_name(generated_reference);
+  git_reference_free(generated_reference);
+  git_reference_iterator_free(generated_iterator);
+  EXPECT_TRUE(has_ref("refs/remotes/origin/" +
+                      generated_name.substr(std::string("refs/heads/").size())));
+
   EXPECT_EQ(invoke({"fetch"}).code, 0);
   EXPECT_EQ(invoke({"fetch", "--remote", "origin"}).code, 0);
   EXPECT_EQ(invoke({"push", "--bookmark", "topic", "--remote", "origin"})
@@ -274,7 +305,15 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
       invoke({"push", "-b", "topic", "-b", "second", "-t", "release",
               "--allow-private", "--allow-conflicts"});
   ASSERT_EQ(multi_push.code, 0) << multi_push.error;
+  EXPECT_EQ(invoke({"push", "-t", "release"}).code, 0);
   EXPECT_EQ(invoke({"push", "-b", "topic", "--option", "ci=1"}).code, 1);
+  ASSERT_EQ(invoke({"bookmark", "create", "gone"}).code, 0);
+  ASSERT_EQ(invoke({"push", "-b", "gone"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "delete", "gone"}).code, 0);
+  ASSERT_EQ(invoke({"push", "--deleted"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/remotes/origin/gone"));
+  EXPECT_NE(invoke({"push", "--deleted"}).output.find("No refs to push."),
+            std::string::npos);
   const Result dry_run =
       invoke({"push", "-b", "dry", "--dry-run", "--option", "ignored=1"});
   ASSERT_EQ(dry_run.code, 0) << dry_run.error;
