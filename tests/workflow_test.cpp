@@ -54,6 +54,49 @@ TEST_F(RepositoryTest, CreatesSnapshotsAndLogsChanges) {
   EXPECT_NE(log.output.find("second"), std::string::npos);
 }
 
+TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  write("tracked.txt", "first\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const Result second = invoke({"new", "-m", "second"});
+  ASSERT_EQ(second.code, 0) << second.error;
+  const std::string second_id =
+      token_after(second.output, "Working copy now at: ");
+  write("second.txt", "second\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
+
+  const Result limited =
+      invoke({"log", "-r", "@", "--limit", "2", "--reversed",
+              "--no-graph"});
+  ASSERT_EQ(limited.code, 0) << limited.error;
+  EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 2);
+  EXPECT_EQ(limited.output.find("third") > limited.output.find("second"), true);
+  EXPECT_EQ(limited.output.front() == '@' || limited.output.front() == 'o' ||
+                limited.output.front() == '*',
+            false);
+  EXPECT_EQ(invoke({"log", "-r", "@", "--limit", "2", "--count"}).output,
+            "2\n");
+  EXPECT_EQ(invoke({"log", "--limit", "0"}).output, "");
+
+  const Result filtered = invoke({"log", "-r", "@", "tracked.txt"});
+  ASSERT_EQ(filtered.code, 0) << filtered.error;
+  EXPECT_NE(filtered.output.find("first"), std::string::npos);
+  EXPECT_EQ(filtered.output.find("second"), std::string::npos);
+  EXPECT_EQ(filtered.output.find("third"), std::string::npos);
+
+  const Result formatted = invoke(
+      {"log", "-r", second_id, "-n", "1", "--summary", "--stat",
+       "--types", "--name-only", "--git", "--color-words", "--context",
+       "1", "--ignore-all-space", "--ignore-space-change"});
+  ASSERT_EQ(formatted.code, 0) << formatted.error;
+  EXPECT_NE(formatted.output.find("second.txt"), std::string::npos);
+  EXPECT_NE(formatted.output.find("diff --git"), std::string::npos);
+  EXPECT_EQ(invoke({"log", "--patch", "--tool", "meld"}).code, 2);
+  EXPECT_EQ(invoke({"log", "-T", "description"}).code, 2);
+  EXPECT_EQ(invoke({"log", "--limit", "word"}).code, 2);
+}
+
 TEST_F(RepositoryTest, ExplicitlySnapshotsTheWorkingCopy) {
   EXPECT_EQ(invoke({"util", "snapshot"}).output, "Nothing changed.\n");
   ASSERT_EQ(invoke({"new", "main"}).code, 0);

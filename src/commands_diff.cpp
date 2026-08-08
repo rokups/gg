@@ -165,15 +165,6 @@ void render_diff(git_diff* diff,
   }
 }
 
-void render_revision_diff(Repository& repo,
-                          const git_oid& revision,
-                          const DiffFormatOptions& format,
-                          std::ostream& output) {
-  DiffPtr diff = create_diff(repo, parent_tree_id(repo, revision),
-                             tree_id(repo, revision), {}, format);
-  render_diff(diff.get(), format, output);
-}
-
 void render_revision_header(Repository& repo,
                             const git_oid& revision,
                             std::ostream& output) {
@@ -197,6 +188,25 @@ void render_revision_header(Repository& repo,
 }
 
 }  // namespace
+
+bool revision_matches_paths(Repository& repo,
+                            const git_oid& revision,
+                            const std::vector<std::string>& paths,
+                            const DiffFormatOptions& format) {
+  DiffPtr diff = create_diff(repo, parent_tree_id(repo, revision),
+                             tree_id(repo, revision), paths, format);
+  return git_diff_num_deltas(diff.get()) != 0;
+}
+
+void render_revision_diff(Repository& repo,
+                          const git_oid& revision,
+                          const std::vector<std::string>& paths,
+                          const DiffFormatOptions& format,
+                          std::ostream& output) {
+  DiffPtr diff = create_diff(repo, parent_tree_id(repo, revision),
+                             tree_id(repo, revision), paths, format);
+  render_diff(diff.get(), format, output);
+}
 
 void command_diff(Repository& repo,
                   const DiffCommand& options,
@@ -244,7 +254,7 @@ void command_show(Repository& repo,
     if (index != 0) output << '\n';
     render_revision_header(repo, revision, output);
     if (!options.no_patch) {
-      render_revision_diff(repo, revision, options.format, output);
+      render_revision_diff(repo, revision, {}, options.format, output);
     }
   }
 }

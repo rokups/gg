@@ -16,6 +16,12 @@ namespace gg::detail {
 std::vector<git_oid> commit_parents(
     Repository& repo, const std::vector<std::string>& revisions);
 git_oid combined_tree(Repository& repo, const std::vector<git_oid>& parents);
+bool revision_matches_paths(Repository&, const git_oid&,
+                            const std::vector<std::string>&,
+                            const DiffFormatOptions&);
+void render_revision_diff(Repository&, const git_oid&,
+                          const std::vector<std::string>&,
+                          const DiffFormatOptions&, std::ostream&);
 void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,

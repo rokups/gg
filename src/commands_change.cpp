@@ -6,6 +6,7 @@
 
 #include <git2.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <set>
 #include <utility>
@@ -154,6 +155,9 @@ void command_log(Repository& repo,
                  const LogCommand& options,
                  std::ostream& output) {
   repo.sync_workspace();
+  if (!options.template_value.empty()) {
+    throw UserError("log templates are not supported yet");
+  }
   git_revwalk* raw_walk = nullptr;
   check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
   RevwalkPtr walk(raw_walk);
@@ -173,15 +177,46 @@ void command_log(Repository& repo,
     }
   }
   const auto workspace = repo.ref_target(kWorkspaceRef);
+  std::vector<git_oid> revisions;
   git_oid oid{};
-  while (git_revwalk_next(&oid, walk.get()) == 0) {
+  while (revisions.size() < options.limit &&
+         git_revwalk_next(&oid, walk.get()) == 0) {
+    if (!options.paths.empty() &&
+        !revision_matches_paths(repo, oid, options.paths, options.format)) {
+      continue;
+    }
+    revisions.push_back(oid);
+  }
+  if (options.count) {
+    output << revisions.size() << '\n';
+    return;
+  }
+  if (options.reversed) {
+    std::reverse(revisions.begin(), revisions.end());
+  }
+  bool show_diff = options.patch;
+  show_diff |= options.format.summary;
+  show_diff |= options.format.stat;
+  show_diff |= options.format.types;
+  show_diff |= options.format.name_only;
+  show_diff |= options.format.git;
+  show_diff |= options.format.color_words;
+  show_diff |= !options.format.tool.empty();
+  show_diff |= options.format.context != 3;
+  show_diff |= options.format.ignore_all_space;
+  show_diff |= options.format.ignore_space_change;
+  for (const git_oid& revision : revisions) {
+    const git_oid oid = revision;
     CommitPtr value = repo.commit(oid);
     const auto id = repo.change_id(oid);
     const auto bookmarks = repo.bookmarks(oid);
-    output << (workspace.has_value() && *workspace == oid ? '@'
-               : id.has_value()                         ? 'o'
-                                                        : '*')
-           << "  "
+    if (!options.no_graph) {
+      output << (workspace.has_value() && *workspace == oid ? '@'
+                 : id.has_value()                         ? 'o'
+                                                          : '*')
+             << "  ";
+    }
+    output
            << (id.has_value() ? repo.short_change_id(*id) : oid_string(oid, 8))
            << ' ' << oid_string(oid, 8);
     for (const std::string& bookmark : bookmarks) {
@@ -190,6 +225,9 @@ void command_log(Repository& repo,
     const std::string description = first_line(git_commit_message(value.get()));
     output << " " << (description.empty() ? "(no description set)" : description)
            << '\n';
+    if (show_diff) {
+      render_revision_diff(repo, oid, options.paths, options.format, output);
+    }
   }
 }
 

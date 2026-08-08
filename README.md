@@ -13,7 +13,7 @@ existing Git-aware editors continue to see normal working-tree changes.
 
 ```text
 gg status
-gg log [-r REV]
+gg log [-r REV] [-n LIMIT] [--reversed] [--count] [PATH...]
 gg new [-m DESCRIPTION] [PARENT...]
 gg describe [-m DESCRIPTION] [REV]
 gg edit [REV | -r REV]

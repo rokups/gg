@@ -52,6 +52,17 @@ std::vector<std::string> repository_replay_arguments(
           [](const LogCommand& value) {
             std::vector<std::string> result{"log"};
             add_option(result, "-r", value.revision);
+            result.insert(result.end(), value.paths.begin(), value.paths.end());
+            if (value.limit != std::numeric_limits<std::uint64_t>::max()) {
+              result.emplace_back("--limit");
+              result.push_back(std::to_string(value.limit));
+            }
+            if (value.reversed) result.emplace_back("--reversed");
+            if (value.no_graph) result.emplace_back("--no-graph");
+            add_option(result, "--template", value.template_value);
+            if (value.patch) result.emplace_back("--patch");
+            if (value.count) result.emplace_back("--count");
+            add_diff_format(result, value.format);
             return result;
           },
           [](const NewCommand& value) {

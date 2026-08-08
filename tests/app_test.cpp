@@ -38,7 +38,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"log", "-r", "main"}).code, 0);
   EXPECT_EQ(invoke({"status", "extra"}).code, 2);
   EXPECT_EQ(invoke({"st"}).code, 0);
-  EXPECT_EQ(invoke({"log", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"log", "--unknown"}).code, 2);
   EXPECT_EQ(invoke({"edit"}).code, 2);
   EXPECT_EQ(invoke({"edit", "main", "-r", "main"}).code, 2);
   EXPECT_EQ(invoke({"next"}).code, 2);

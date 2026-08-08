@@ -17,8 +17,28 @@
 namespace gg::detail {
 
 struct StatusCommand {};
+struct DiffFormatOptions {
+  bool summary{false};
+  bool stat{false};
+  bool types{false};
+  bool name_only{false};
+  bool git{false};
+  bool color_words{false};
+  bool ignore_all_space{false};
+  bool ignore_space_change{false};
+  std::uint32_t context{3};
+  std::string tool;
+};
 struct LogCommand {
   std::string revision;
+  std::vector<std::string> paths;
+  std::uint64_t limit{std::numeric_limits<std::uint64_t>::max()};
+  std::string template_value;
+  DiffFormatOptions format;
+  bool reversed{false};
+  bool no_graph{false};
+  bool patch{false};
+  bool count{false};
 };
 struct NewCommand {
   std::string message;
@@ -85,18 +105,6 @@ struct FileCommand {
   bool line_number{false};
 };
 
-struct DiffFormatOptions {
-  bool summary{false};
-  bool stat{false};
-  bool types{false};
-  bool name_only{false};
-  bool git{false};
-  bool color_words{false};
-  bool ignore_all_space{false};
-  bool ignore_space_change{false};
-  std::uint32_t context{3};
-  std::string tool;
-};
 struct DiffCommand {
   std::vector<std::string> paths;
   std::string revisions;

@@ -27,7 +27,36 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   LogCommand log_value;
   auto* log = app.add_subcommand("log", "Show revision history");
-  log->add_option("-r,--revisions", log_value.revision, "Starting revision");
+  log->add_option("filesets", log_value.paths, "Repository-relative paths");
+  log->add_option("-r,--revision,--revisions", log_value.revision,
+                  "Starting revision");
+  log->add_option("-n,--limit", log_value.limit, "Maximum number of revisions")
+      ->check(CLI::NonNegativeNumber);
+  log->add_flag("--reversed", log_value.reversed,
+                "Show older revisions first");
+  log->add_flag("-G,--no-graph", log_value.no_graph,
+                "Do not show graph markers");
+  log->add_option("-T,--template", log_value.template_value,
+                  "Revision template");
+  log->add_flag("-p,--patch", log_value.patch, "Show patches");
+  log->add_flag("--count", log_value.count, "Print only the revision count");
+  log->add_flag("-s,--summary", log_value.format.summary,
+                "Show changed paths and statuses");
+  log->add_flag("--stat", log_value.format.stat, "Show a diffstat");
+  log->add_flag("--types", log_value.format.types, "Show file types");
+  log->add_flag("--name-only", log_value.format.name_only,
+                "Show changed paths only");
+  log->add_flag("--git", log_value.format.git, "Show Git patch output");
+  log->add_flag("--color-words", log_value.format.color_words,
+                "Show inline word changes");
+  log->add_option("--tool", log_value.format.tool, "Diff tool");
+  log->add_option("--context", log_value.format.context, "Context lines")
+      ->check(CLI::NonNegativeNumber);
+  log->add_flag("-w,--ignore-all-space", log_value.format.ignore_all_space,
+                "Ignore whitespace when comparing lines");
+  log->add_flag("-b,--ignore-space-change",
+                log_value.format.ignore_space_change,
+                "Ignore changes in whitespace amount");
 
   NewCommand new_value;
   auto* make_new = app.add_subcommand("new", "Create and edit an empty change");
