@@ -412,6 +412,7 @@ std::vector<std::string> repository_replay_arguments(
             }
             if (value.reversed) result.emplace_back("--reversed");
             if (value.no_graph) result.emplace_back("--no-graph");
+            if (value.op_diff) result.emplace_back("--op-diff");
             add_option(result, "--template", value.template_value);
             return result;
           },

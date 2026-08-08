@@ -449,6 +449,10 @@ TEST_F(RepositoryTest, SupportsEditorStyleUndoAndRedo) {
 
 TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "moving"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "set", "moving", "-r", "@"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "delete", "moving"}).code, 0);
   ASSERT_EQ(invoke({"undo"}).code, 0);
   ASSERT_EQ(invoke({"redo"}).code, 0);
 
@@ -463,6 +467,13 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   EXPECT_NE(log.output.find("○ "), std::string::npos);
   EXPECT_NE(log.output.find("│\n"), std::string::npos);
   EXPECT_EQ(invoke({"op", "log"}).output, log.output);
+
+  const Result diff = invoke({"operation", "log", "--op-diff", "--no-graph"});
+  EXPECT_NE(diff.output.find("  + HEAD "), std::string::npos);
+  EXPECT_NE(diff.output.find("  ~ HEAD "), std::string::npos);
+  EXPECT_NE(diff.output.find("  + refs/heads/moving "), std::string::npos);
+  EXPECT_NE(diff.output.find("  ~ refs/heads/moving "), std::string::npos);
+  EXPECT_NE(diff.output.find("  - refs/heads/moving "), std::string::npos);
 
   const Result limited = invoke({"operation", "log", "--limit", "1"});
   EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 1);

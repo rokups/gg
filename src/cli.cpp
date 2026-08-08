@@ -708,6 +708,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                           "Show older operations first");
   operation_log->add_flag("-G,--no-graph", operation_log_value.no_graph,
                           "Do not show the operation graph");
+  operation_log->add_flag("-d,--op-diff", operation_log_value.op_diff,
+                          "Show repository-state changes");
   operation_log->add_option("-T,--template",
                             operation_log_value.template_value,
                             "Operation template");

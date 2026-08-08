@@ -117,6 +117,53 @@ std::string operation_timestamp(const git_commit* operation) {
   return output.str();
 }
 
+std::string head_text(const HeadState& head) {
+  return std::string(head.symbolic ? "symbolic " : "detached ") + head.value;
+}
+
+void render_operation_diff(Repository& repo,
+                           const git_oid& operation,
+                           std::ostream& output) {
+  const OperationState after = repo.parse_operation(operation);
+  const auto previous = repo.operation_previous(operation);
+  const std::optional<OperationState> before =
+      previous.has_value()
+          ? std::optional<OperationState>{repo.parse_operation(*previous)}
+          : std::nullopt;
+  if (!before.has_value()) {
+    output << "  + HEAD " << head_text(after.head) << '\n';
+  } else if (before->head.symbolic != after.head.symbolic ||
+             before->head.value != after.head.value) {
+    output << "  ~ HEAD " << head_text(before->head) << " -> "
+           << head_text(after.head) << '\n';
+  }
+
+  std::set<std::string> names;
+  if (before.has_value()) {
+    for (const auto& [name, oid] : before->refs) {
+      (void)oid;
+      names.insert(name);
+    }
+  }
+  for (const auto& [name, oid] : after.refs) {
+    (void)oid;
+    names.insert(name);
+  }
+  for (const std::string& name : names) {
+    const auto old = before.has_value() ? before->refs.find(name)
+                                        : after.refs.end();
+    const auto current = after.refs.find(name);
+    if (!before.has_value() || old == before->refs.end()) {
+      output << "  + " << name << ' ' << oid_string(current->second, 8) << '\n';
+    } else if (current == after.refs.end()) {
+      output << "  - " << name << ' ' << oid_string(old->second, 8) << '\n';
+    } else if (!(old->second == current->second)) {
+      output << "  ~ " << name << ' ' << oid_string(old->second, 8) << " -> "
+             << oid_string(current->second, 8) << '\n';
+    }
+  }
+}
+
 }  // namespace
 
 void command_bookmark(Repository& repo,
@@ -786,6 +833,7 @@ void command_operation_log(Repository& repo,
     }
     output << oid_string(oid, 8) << ' ' << operation_timestamp(operation.get())
            << ' ' << description << '\n';
+    if (options.op_diff) render_operation_diff(repo, oid, output);
     if (!options.no_graph && index + 1 < operations.size()) {
       output << "│\n";
     }

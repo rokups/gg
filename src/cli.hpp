@@ -230,6 +230,7 @@ struct OperationLogCommand {
   std::uint64_t limit{std::numeric_limits<std::uint64_t>::max()};
   bool reversed{false};
   bool no_graph{false};
+  bool op_diff{false};
   std::string template_value;
 };
 struct OperationRestoreCommand {
