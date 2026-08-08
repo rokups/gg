@@ -5,9 +5,13 @@
 #include "commands.hpp"
 
 #include <git2.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <iterator>
 #include <set>
 #include <utility>
 
@@ -291,15 +295,40 @@ void command_edit(Repository& repo,
 void command_describe(Repository& repo,
                       const DescribeCommand& options,
                       std::ostream& output) {
-  if (options.message.empty()) {
-    throw UserError("gg describe requires -m DESCRIPTION");
-  }
   repo.sync_workspace();
-  const git_oid old =
-      repo.resolve(options.revision.empty() ? "@" : options.revision);
+  std::string revision = "@";
+  if (!options.revision.empty()) revision = options.revision;
+  const git_oid old = repo.resolve(revision);
   CommitPtr value = repo.commit(old);
+  std::string message = options.message;
+  if (options.stdin_value) {
+    message.assign(std::istreambuf_iterator<char>(std::cin),
+                   std::istreambuf_iterator<char>());
+  } else if (!options.message_provided) {
+    std::string pattern =
+        (std::filesystem::temp_directory_path() / "gg-description-XXXXXX")
+            .string();
+    const int descriptor = mkstemp(pattern.data());
+    if (descriptor < 0) throw UserError("cannot create description file");  // GG_COV_EXCL_BRANCH
+    close(descriptor);
+    {
+      std::ofstream temporary(pattern);
+      const char* original = git_commit_message(value.get());
+      temporary << (original == nullptr ? "" : original);  // GG_COV_EXCL_BRANCH
+    }
+    try {
+      edit_file_with_editor(pattern);
+      std::ifstream temporary(pattern);
+      message.assign(std::istreambuf_iterator<char>(temporary),
+                     std::istreambuf_iterator<char>());
+    } catch (...) {
+      std::filesystem::remove(pattern);
+      throw;
+    }
+    std::filesystem::remove(pattern);
+  }
   const git_oid rewritten = repo.rewrite_commit(
-      old, repo.parents(old), *git_commit_tree_id(value.get()), options.message);
+      old, repo.parents(old), *git_commit_tree_id(value.get()), message);
   RewritePlan plan = repo.descendants({{old, rewritten}});
   const auto workspace = repo.ref_target(kWorkspaceRef);
   const git_oid new_workspace =

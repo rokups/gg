@@ -67,8 +67,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   DescribeCommand describe_value;
   auto* describe = app.add_subcommand("describe", "Set a change description");
-  describe->add_option("-m,--message", describe_value.message, "Description")
-      ->required();
+  CLI::Option* describe_message =
+      describe->add_option("-m,--message", describe_value.message, "Description");
+  CLI::Option* describe_stdin = describe->add_flag(
+      "--stdin", describe_value.stdin_value, "Read the description from stdin");
+  CLI::Option* describe_editor = describe->add_flag(
+      "--editor", describe_value.editor, "Edit the description in an editor");
+  describe_message->excludes(describe_stdin)->excludes(describe_editor);
+  describe_stdin->excludes(describe_editor);
   describe->add_option("revision", describe_value.revision, "Revision")
       ->expected(0, 1);
 
@@ -554,6 +560,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   } else if (make_new->parsed()) {
     command = RepositoryCommand{std::move(new_value)};
   } else if (describe->parsed()) {
+    describe_value.message_provided = describe_message->count() != 0;
     command = RepositoryCommand{std::move(describe_value)};
   } else if (edit->parsed()) {
     if (edit_value.revision.empty()) {

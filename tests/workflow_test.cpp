@@ -5,6 +5,8 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 
 namespace gg::test {
 
@@ -216,6 +218,51 @@ TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
   EXPECT_NE(second_log.output.find("second"), std::string::npos);
   const git_oid second_after = ref("refs/heads/feature");
   EXPECT_FALSE(git_oid_equal(&second_before, &second_after) != 0);
+}
+
+TEST_F(RepositoryTest, DescribesFromMessagesStdinAndEditors) {
+  ASSERT_EQ(invoke({"new", "-m", "original", "main"}).code, 0);
+  EXPECT_EQ(invoke({"describe", "-m", ""}).code, 0);
+  EXPECT_NE(invoke({"show", "--no-patch"}).output.find(
+                "Description: (no description set)"),
+            std::string::npos);
+
+  std::istringstream input("from stdin\nsecond line\n");
+  std::streambuf* old_input = std::cin.rdbuf(input.rdbuf());
+  const Result from_stdin = invoke({"describe", "--stdin"});
+  std::cin.rdbuf(old_input);
+  std::cin.clear();
+  ASSERT_EQ(from_stdin.code, 0) << from_stdin.error;
+  EXPECT_NE(invoke({"show", "--no-patch"}).output.find(
+                "Description: from stdin"),
+            std::string::npos);
+
+  const std::filesystem::path editor = path_ / "description-editor";
+  {
+    std::ofstream script(editor);
+    script << "#!/bin/sh\nprintf 'from editor\\n' > \"$1\"\n";
+  }
+  std::filesystem::permissions(
+      editor, std::filesystem::perms::owner_exec |
+                  std::filesystem::perms::owner_read |
+                  std::filesystem::perms::owner_write);
+  const char* old_visual = std::getenv("VISUAL");
+  const std::string saved_visual = old_visual == nullptr ? "" : old_visual;
+  ASSERT_EQ(setenv("VISUAL", editor.string().c_str(), 1), 0);
+  const Result from_editor = invoke({"describe", "--editor"});
+  if (saved_visual.empty()) {
+    unsetenv("VISUAL");
+  } else {
+    setenv("VISUAL", saved_visual.c_str(), 1);
+  }
+  ASSERT_EQ(from_editor.code, 0) << from_editor.error;
+  EXPECT_NE(invoke({"show", "--no-patch"}).output.find(
+                "Description: from editor"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"describe", "-m", "explicit", "@"}).code, 0);
+
+  EXPECT_EQ(invoke({"describe", "-m", "x", "--stdin"}).code, 2);
+  EXPECT_EQ(invoke({"describe", "--stdin", "--editor"}).code, 2);
 }
 
 TEST_F(RepositoryTest, SplitsAndSquashesPathChanges) {

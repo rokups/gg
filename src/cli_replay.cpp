@@ -76,7 +76,13 @@ std::vector<std::string> repository_replay_arguments(
             return result;
           },
           [](const DescribeCommand& value) {
-            std::vector<std::string> result{"describe", "-m", value.message};
+            std::vector<std::string> result{"describe"};
+            if (value.message_provided) {
+              result.emplace_back("--message");
+              result.push_back(value.message);
+            }
+            if (value.stdin_value) result.emplace_back("--stdin");
+            if (value.editor) result.emplace_back("--editor");
             if (!value.revision.empty()) {
               result.push_back(value.revision);
             }

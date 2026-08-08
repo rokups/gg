@@ -6,7 +6,13 @@
 
 #include <git2/sys/errors.h>
 
+#include <spawn.h>
+#include <sys/wait.h>
+
+#include <cstdlib>
 #include <utility>
+
+extern char** environ;
 
 namespace gg::detail {
 
@@ -56,6 +62,30 @@ void finish_workspace(Repository& repo,
   repo.record(std::move(updates), std::move(deletes), head, operation);
   repo.set_head(head);
   repo.checkout(workspace);
+}
+
+void edit_file_with_editor(const std::filesystem::path& path) {
+  const char* raw_editor = std::getenv("VISUAL");
+  if (raw_editor == nullptr) raw_editor = std::getenv("EDITOR");
+  if (raw_editor != nullptr && *raw_editor == '\0') {
+    raw_editor = std::getenv("EDITOR");
+  }
+  if (raw_editor == nullptr || *raw_editor == '\0') {
+    throw UserError("VISUAL or EDITOR must name an editor executable");
+  }
+  std::string editor(raw_editor);
+  std::string file = path.string();
+  char* arguments[] = {editor.data(), file.data(), nullptr};
+  pid_t process = 0;
+  const int spawned =
+      posix_spawnp(&process, editor.c_str(), nullptr, nullptr, arguments, environ);
+  if (spawned != 0) throw UserError("cannot launch editor");
+  int status = 0;
+  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for editor");  // GG_COV_EXCL_BRANCH
+  if (!WIFEXITED(status)) throw UserError("editor exited unsuccessfully");  // GG_COV_EXCL_BRANCH
+  if (WEXITSTATUS(status) != 0) {
+    throw UserError("editor exited unsuccessfully");
+  }
 }
 
 void command_util_snapshot(Repository& repo, std::ostream& output) {

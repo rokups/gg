@@ -49,6 +49,9 @@ struct NewCommand {
 struct DescribeCommand {
   std::string message;
   std::string revision;
+  bool stdin_value{false};
+  bool editor{false};
+  bool message_provided{false};
 };
 struct EditCommand {
   std::string revision;

@@ -4,9 +4,6 @@
 
 #include "commands.hpp"
 
-#include <spawn.h>
-#include <sys/wait.h>
-
 #include <array>
 #include <cctype>
 #include <cstdlib>
@@ -16,8 +13,6 @@
 #include <sstream>
 #include <system_error>
 #include <vector>
-
-extern char** environ;
 
 namespace gg::detail {
 namespace {
@@ -199,35 +194,6 @@ bool name_matches(std::string_view name, std::string_view filter) {
   return name.starts_with(std::string(filter) + ".");
 }
 
-void edit_file(const std::filesystem::path& path) {
-  const char* raw_editor = std::getenv("VISUAL");
-  if (raw_editor == nullptr) raw_editor = std::getenv("EDITOR");
-  if (raw_editor != nullptr && *raw_editor == '\0') {
-    raw_editor = std::getenv("EDITOR");
-  }
-  if (raw_editor == nullptr) {
-    throw UserError("VISUAL or EDITOR must name an editor executable");
-  }
-  if (*raw_editor == '\0') {
-    throw UserError("VISUAL or EDITOR must name an editor executable");
-  }
-  std::filesystem::create_directories(path.parent_path());
-  std::ofstream(path, std::ios::app);
-  std::string editor(raw_editor);
-  std::string file = path.string();
-  char* arguments[] = {editor.data(), file.data(), nullptr};
-  pid_t process = 0;
-  const int spawned =
-      posix_spawnp(&process, editor.c_str(), nullptr, nullptr, arguments, environ);
-  if (spawned != 0) throw UserError("cannot launch editor");
-  int status = 0;
-  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for editor");  // GG_COV_EXCL_BRANCH
-  if (!WIFEXITED(status)) throw UserError("editor exited unsuccessfully");  // GG_COV_EXCL_BRANCH
-  if (WEXITSTATUS(status) != 0) {
-    throw UserError("editor exited unsuccessfully");
-  }
-}
-
 }  // namespace
 
 void command_config(Repository& repo,
@@ -251,7 +217,10 @@ void command_config(Repository& repo,
     return;
   }
   if (options.action == ConfigAction::edit) {
-    edit_file(config_path(repo, *scope));
+    const std::filesystem::path path = config_path(repo, *scope);
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream(path, std::ios::app);
+    edit_file_with_editor(path);
     return;
   }
   if (options.action == ConfigAction::set) {

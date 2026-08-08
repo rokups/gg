@@ -26,6 +26,7 @@ void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation);
+void edit_file_with_editor(const std::filesystem::path&);
 
 int credentials(git_credential** output, const char* url, const char* username,
                 unsigned int allowed, void* payload);
