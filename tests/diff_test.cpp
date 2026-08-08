@@ -143,6 +143,89 @@ TEST_F(RepositoryTest, IgnoresRequestedWhitespaceChanges) {
   EXPECT_EQ(invoke({"diff", "-b"}).output, "");
 }
 
+TEST_F(RepositoryTest, RunsBuiltinAndExternalDiffTools) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("tracked.txt", "changed\n");
+  write("added.txt", "added\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+
+  EXPECT_EQ(invoke({"diff", "--tool", ":summary"}).output,
+            "A added.txt\nM tracked.txt\n");
+  EXPECT_NE(invoke({"diff", "--tool", ":stat"}).output.find(
+                "2 files changed"),
+            std::string::npos);
+  EXPECT_NE(invoke({"diff", "--tool", ":types"}).output.find(
+                "FF tracked.txt"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"diff", "--tool", ":name-only"}).output,
+            "added.txt\ntracked.txt\n");
+  EXPECT_NE(invoke({"diff", "--tool", ":git"}).output.find("diff --git"),
+            std::string::npos);
+  EXPECT_NE(invoke({"diff", "--tool", ":color-words"})
+                .output.find("+changed"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"diff", "--tool", ":missing"}).code, 2);
+
+  const Result echoed = invoke({"diff", "tracked.txt", "--tool", "/bin/echo"});
+  ASSERT_EQ(echoed.code, 0) << echoed.error;
+  std::istringstream echo_words(echoed.output);
+  std::filesystem::path left;
+  std::filesystem::path right;
+  echo_words >> left >> right;
+  EXPECT_FALSE(std::filesystem::exists(left));
+  EXPECT_FALSE(std::filesystem::exists(right));
+
+  const std::vector<std::string> configured{
+      "--config", "merge-tools.named.program=\"/bin/echo\"",
+      "--config",
+      "merge-tools.named.diff-args=[\"L=$left\", \"R=$right\", "
+      "\"W=$width\", \"literal,comma\", \"slash\\\\$left\"]",
+      "diff", "--tool", "named"};
+  const Result named = invoke(configured);
+  ASSERT_EQ(named.code, 0) << named.error;
+  EXPECT_NE(named.output.find("L=/tmp/gg-diff-"), std::string::npos);
+  EXPECT_NE(named.output.find(" R=/tmp/gg-diff-"), std::string::npos);
+  EXPECT_NE(named.output.find(" W=80 literal,comma"), std::string::npos);
+  EXPECT_EQ(invoke({"--config", "merge-tools.named.program=[\"one\",\"two\"]",
+                    "diff", "--tool", "named"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"--config", "merge-tools.false.program=\"/bin/false\"",
+                    "--config",
+                    "merge-tools.false.diff-expected-exit-codes=[1]", "diff",
+                    "--tool", "false"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"--config", "merge-tools.false.program=\"/bin/false\"",
+                    "--config",
+                    "merge-tools.false.diff-expected-exit-codes=[]", "diff",
+                    "--tool", "false"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"--config", "merge-tools.true.program=\"/bin/true\"",
+                    "--config",
+                    "merge-tools.true.diff-expected-exit-codes=[-1,0]", "diff",
+                    "--tool", "true"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"diff", "--tool", "/bin/false"}).code, 2);
+  EXPECT_EQ(invoke({"diff", "--tool", "missing-gg-diff-tool"}).code, 2);
+  EXPECT_NE(invoke({"diff", "tracked.txt", "--tool", "diff"})
+                .output.find("tracked.txt"),
+            std::string::npos);
+
+  EXPECT_NE(invoke({"log", "-r", "@", "--no-graph", "--tool", "/bin/echo"})
+                .output.find("/left /tmp/gg-diff-"),
+            std::string::npos);
+  EXPECT_NE(invoke({"show", "@", "--tool", "/bin/echo"})
+                .output.find("/left /tmp/gg-diff-"),
+            std::string::npos);
+  EXPECT_NE(invoke({"operation", "log", "--limit", "1", "--no-graph",
+                    "--tool", "/bin/echo"})
+                .output.find("/left /tmp/gg-diff-"),
+            std::string::npos);
+}
+
 TEST_F(RepositoryTest, TemplatesExecutableModeChanges) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   std::filesystem::permissions(

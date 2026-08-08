@@ -4,12 +4,108 @@
 
 #include "commands.hpp"
 
+#include <CLI/CLI.hpp>
+
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <sstream>
 #include <utility>
+
+extern char** environ;
 
 namespace gg::detail {
 namespace {
+
+class TemporaryDirectory {
+ public:
+  TemporaryDirectory() {
+    std::string pattern =
+        (std::filesystem::temp_directory_path() / "gg-diff-XXXXXX").string();
+    const char* created = mkdtemp(pattern.data());
+    if (created == nullptr) throw UserError("cannot create diff directory");  // GG_COV_EXCL_BRANCH
+    path_ = created;
+  }
+
+  ~TemporaryDirectory() {
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+  }
+
+  const std::filesystem::path& path() const { return path_; }
+
+ private:
+  std::filesystem::path path_;
+};
+
+std::vector<std::string> configured_arguments(std::string value) {
+  if (value.starts_with('[')) {
+    value = value.substr(1, value.size() - 2);
+    bool quoted = false;
+    bool escaped = false;
+    for (char& character : value) {
+      if (escaped) {
+        escaped = false;
+      } else if (character == '\\') {
+        escaped = true;
+      } else if (character == '"') {
+        quoted = !quoted;
+      } else if (character == ',' && !quoted) {
+        character = ' ';
+      }
+    }
+  }
+  std::vector<std::string> result = CLI::detail::split_up(value);
+  CLI::detail::remove_quotes(result);
+  return result;
+}
+
+std::string configured_program(Repository& repo, std::string_view tool) {
+  const std::string key = "merge-tools." + std::string(tool) + ".program";
+  const auto value = config_value(repo, key);
+  if (!value.has_value()) return std::string(tool);
+  const std::vector<std::string> words = configured_arguments(*value);
+  if (words.size() != 1) throw UserError(key + " must name one executable");
+  return words.front();
+}
+
+std::set<int> expected_exit_codes(Repository& repo, std::string_view tool) {
+  const std::string key =
+      "merge-tools." + std::string(tool) + ".diff-expected-exit-codes";
+  const auto configured = config_value(repo, key);
+  if (!configured.has_value()) {
+    return tool == "diff" ? std::set<int>{0, 1} : std::set<int>{0};
+  }
+  std::string values = *configured;
+  for (char& character : values) {
+    if ((character < '0' || character > '9') && character != '-') {
+      character = ' ';
+    }
+  }
+  std::istringstream input(values);
+  std::set<int> result;
+  int value = 0;
+  while (input >> value) result.insert(value);
+  if (result.empty()) throw UserError(key + " must contain exit codes");
+  return result;
+}
+
+void replace_variable(std::string& value,
+                      std::string_view variable,
+                      std::string_view replacement) {
+  std::size_t offset = 0;
+  while ((offset = value.find(variable, offset)) != std::string::npos) {
+    value.replace(offset, variable.size(), replacement);
+    offset += replacement.size();
+  }
+}
 
 git_oid tree_id(Repository& repo, const git_oid& revision) {
   CommitPtr commit = repo.commit(revision);
@@ -75,6 +171,89 @@ std::vector<std::string> diff_paths(const std::vector<std::string>& values) {
     result.push_back(path == "." ? "*" : path.generic_string());
   }
   return result;
+}
+
+void export_tree(Repository& repo,
+                 const git_oid& tree_oid,
+                 const std::vector<std::string>& path_values,
+                 const std::filesystem::path& destination) {
+  std::filesystem::create_directory(destination);
+  const std::vector<std::string> paths = diff_paths(path_values);
+  std::vector<char*> path_pointers;
+  path_pointers.reserve(paths.size());
+  for (const std::string& path : paths) {
+    path_pointers.push_back(const_cast<char*>(path.c_str()));
+  }
+  TreePtr tree = repo.tree(tree_oid);
+  git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
+  options.checkout_strategy = GIT_CHECKOUT_FORCE |
+                              GIT_CHECKOUT_DONT_UPDATE_INDEX |
+                              GIT_CHECKOUT_DONT_WRITE_INDEX;
+  const std::string target = destination.string();
+  options.target_directory = target.c_str();
+  options.paths = {path_pointers.data(), path_pointers.size()};
+  check(git_checkout_tree(repo.raw(),
+                          reinterpret_cast<const git_object*>(tree.get()),
+                          &options),
+        "export diff tree");
+}
+
+void render_external_diff(Repository& repo,
+                          const git_oid& from_tree,
+                          const git_oid& to_tree,
+                          const std::vector<std::string>& paths,
+                          const DiffFormatOptions& format,
+                          std::ostream& output) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path left = temporary.path() / "left";
+  const std::filesystem::path right = temporary.path() / "right";
+  const std::filesystem::path captured = temporary.path() / "stdout";
+  export_tree(repo, from_tree, paths, left);
+  export_tree(repo, to_tree, paths, right);
+
+  const std::string key =
+      "merge-tools." + format.tool + ".diff-args";
+  const auto configured = config_value(repo, key);
+  std::vector<std::string> arguments =
+      configured.has_value()
+          ? configured_arguments(*configured)
+          : std::vector<std::string>{"$left", "$right"};
+  for (std::string& argument : arguments) {
+    replace_variable(argument, "$left", left.string());
+    replace_variable(argument, "$right", right.string());
+    replace_variable(argument, "$width", "80");
+  }
+  std::string program = configured_program(repo, format.tool);
+  std::vector<std::string> storage{program};
+  storage.insert(storage.end(), arguments.begin(), arguments.end());
+  std::vector<char*> argv;
+  argv.reserve(storage.size() + 1);
+  for (std::string& argument : storage) argv.push_back(argument.data());
+  argv.push_back(nullptr);
+
+  posix_spawn_file_actions_t actions;
+  if (posix_spawn_file_actions_init(&actions) != 0) throw UserError("cannot prepare external diff tool");  // GG_COV_EXCL_BRANCH
+  const int opened = posix_spawn_file_actions_addopen(
+      &actions, STDOUT_FILENO, captured.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+      0600);
+  if (opened != 0) { posix_spawn_file_actions_destroy(&actions); throw UserError("cannot capture external diff output"); }  // GG_COV_EXCL_BRANCH
+  pid_t process = 0;
+  const int spawned = posix_spawnp(&process, program.c_str(), &actions,
+                                   nullptr, argv.data(), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  if (spawned != 0) {
+    throw UserError("cannot execute external diff tool: " + program);
+  }
+  int status = 0;
+  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for external diff tool");  // GG_COV_EXCL_BRANCH
+  if (!WIFEXITED(status)) throw UserError("external diff tool terminated by a signal");  // GG_COV_EXCL_BRANCH
+  const int exit_code = WEXITSTATUS(status);
+  if (!expected_exit_codes(repo, format.tool).contains(exit_code)) {
+    throw UserError("external diff tool exited with status " +
+                    std::to_string(exit_code));
+  }
+  std::ifstream input(captured);
+  output << input.rdbuf();
 }
 
 DiffPtr create_diff(Repository& repo,
@@ -352,16 +531,41 @@ void render_patch(git_diff* diff,
   git_buf_dispose(&buffer);
 }
 
-void render_diff(git_diff* diff,
-                 const DiffFormatOptions& format,
+void render_diff(Repository& repo,
+                 const git_oid& from_tree,
+                 const git_oid& to_tree,
+                 const std::vector<std::string>& paths,
+                 git_diff* diff,
+                 const DiffFormatOptions& requested,
                  std::ostream& output) {
-  if (!format.tool.empty()) {
-    throw UserError("external diff tools are not supported yet");
+  DiffFormatOptions format = requested;
+  if (starts_with(format.tool, ":")) {
+    const std::string builtin = format.tool.substr(1);
+    format.tool.clear();
+    if (builtin == "summary") {
+      format.summary = true;
+    } else if (builtin == "stat") {
+      format.stat = true;
+    } else if (builtin == "types") {
+      format.types = true;
+    } else if (builtin == "name-only") {
+      format.name_only = true;
+    } else if (builtin == "git") {
+      format.git = true;
+    } else if (builtin == "color-words") {
+      format.color_words = true;
+    } else {
+      throw UserError("invalid builtin diff format: " + builtin);
+    }
   }
   if (format.summary) render_summary(diff, output);
   if (format.stat) render_stat(diff, output);
   if (format.types) render_types(diff, output);
   if (format.name_only) render_names(diff, output);
+  if (!format.tool.empty()) {
+    render_external_diff(repo, from_tree, to_tree, paths, format, output);
+    return;
+  }
   const bool has_short_format =
       format.summary || format.stat || format.types || format.name_only;
   if (format.git || format.color_words || !has_short_format) {
@@ -409,9 +613,10 @@ void render_revision_diff(Repository& repo,
                           const std::vector<std::string>& paths,
                           const DiffFormatOptions& format,
                           std::ostream& output) {
-  DiffPtr diff = create_diff(repo, parent_tree_id(repo, revision),
-                             tree_id(repo, revision), paths, format);
-  render_diff(diff.get(), format, output);
+  const git_oid from_tree = parent_tree_id(repo, revision);
+  const git_oid to_tree = tree_id(repo, revision);
+  DiffPtr diff = create_diff(repo, from_tree, to_tree, paths, format);
+  render_diff(repo, from_tree, to_tree, paths, diff.get(), format, output);
 }
 
 void render_tree_diff(Repository& repo,
@@ -421,7 +626,7 @@ void render_tree_diff(Repository& repo,
                       const DiffFormatOptions& format,
                       std::ostream& output) {
   DiffPtr diff = create_diff(repo, from_tree, to_tree, paths, format);
-  render_diff(diff.get(), format, output);
+  render_diff(repo, from_tree, to_tree, paths, diff.get(), format, output);
 }
 
 void command_diff(Repository& repo,
@@ -446,7 +651,8 @@ void command_diff(Repository& repo,
   DiffPtr diff =
       create_diff(repo, from_tree, to_tree, options.paths, options.format);
   if (options.template_value.empty()) {
-    render_diff(diff.get(), options.format, output);
+    render_diff(repo, from_tree, to_tree, options.paths, diff.get(),
+                options.format, output);
   } else {
     render_diff_template(diff.get(), options.template_value, output);
   }
