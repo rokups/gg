@@ -40,6 +40,7 @@ TEST_F(RepositoryTest, PausesConflictingRebaseAndCanAbortOrContinue) {
   ASSERT_EQ(invoke({"abort"}).code, 0);
   EXPECT_FALSE(has_ref("refs/gg/rewrite"));
   EXPECT_EQ(file(), "destination\n");
+  expect_workspace_coherent();
 
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code, 1);
   write("tracked.txt", "resolved\n");
@@ -47,6 +48,7 @@ TEST_F(RepositoryTest, PausesConflictingRebaseAndCanAbortOrContinue) {
   ASSERT_EQ(continued.code, 0) << continued.error;
   EXPECT_FALSE(has_ref("refs/gg/rewrite"));
   EXPECT_EQ(file(), "destination\n");
+  expect_workspace_coherent();
   EXPECT_NE(invoke({"log", "-r", source_id}).output.find("source"),
             std::string::npos);
 }

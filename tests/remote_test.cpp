@@ -557,6 +557,8 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
             2);
   EXPECT_TRUE(std::filesystem::is_empty(missing_tag_path));
 
+  expect_workspace_coherent();
+
   std::filesystem::remove_all(shallow_path);
   std::filesystem::remove_all(tag_clone_path);
   std::filesystem::remove_all(missing_branch_path);

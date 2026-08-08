@@ -99,7 +99,7 @@ TEST_F(RepositoryTest, ReportsConfigPathsAndValidatesRequests) {
 }
 
 TEST_F(RepositoryTest, AppliesInvocationConfigurationLayers) {
-  const std::filesystem::path extra = path_ / "extra.toml";
+  const std::filesystem::path extra = path_ / ".git/extra.toml";
   {
     std::ofstream output(extra);
     output << "ui.color = \"file\"\nui.number = 1\n";

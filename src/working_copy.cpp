@@ -238,9 +238,7 @@ void Repository::checkout(const git_oid& oid) const {
   CommitPtr target = commit(oid);
   git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
   options.checkout_strategy = GIT_CHECKOUT_FORCE |
-                              GIT_CHECKOUT_RECREATE_MISSING |
-                              GIT_CHECKOUT_REMOVE_UNTRACKED |
-                              GIT_CHECKOUT_DONT_UPDATE_INDEX;
+                              GIT_CHECKOUT_RECREATE_MISSING;
   check(git_checkout_tree(repo_.get(),
                           reinterpret_cast<const git_object*>(target.get()),
                           &options),

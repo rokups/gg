@@ -899,6 +899,7 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
                 .code,
             0);
   EXPECT_EQ(invoke({"operation", "restore", "@-"}).code, 0);
+  expect_workspace_coherent();
   EXPECT_EQ(invoke({"operation", "restore", "missing"}).code, 2);
   EXPECT_EQ(invoke({"operation", "restore", "@x"}).code, 2);
   EXPECT_EQ(invoke({"operation", "restore", "@-x"}).code, 2);

@@ -21,6 +21,7 @@ TEST_F(RepositoryTest, RewritesAncestorsWhileEditingDescendants) {
             0);
   ASSERT_EQ(invoke({"squash", "-r", first_id, "-m", "combined"}).code, 0);
   EXPECT_NE(invoke({"log"}).output.find("descendant"), std::string::npos);
+  expect_workspace_coherent();
 }
 
 TEST_F(RepositoryTest, RewritesChangesOutsideTheCurrentLine) {
@@ -80,6 +81,7 @@ TEST_F(RepositoryTest, RebasesWithoutConflicts) {
       invoke({"rebase", "-s", source_id, "-d", destination_id});
   ASSERT_EQ(rebased.code, 0) << rebased.error;
   EXPECT_NE(rebased.output.find("Rebased"), std::string::npos);
+  expect_workspace_coherent();
 }
 
 TEST_F(RepositoryTest, RebasesAnAncestorOfTheWorkingCopy) {
@@ -124,6 +126,7 @@ TEST_F(RepositoryTest, SquashesAndAbandonsCurrentChanges) {
   ASSERT_EQ(invoke({"bookmark", "create", "discarded"}).code, 0);
   ASSERT_EQ(invoke({"abandon"}).code, 0);
   EXPECT_FALSE(has_ref("refs/heads/discarded"));
+  expect_workspace_coherent();
 }
 
 TEST_F(RepositoryTest, RejectsInvalidRewriteShapes) {

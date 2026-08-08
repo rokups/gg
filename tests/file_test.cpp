@@ -171,6 +171,8 @@ TEST_F(RepositoryTest, PersistsFileTrackingOverrides) {
   EXPECT_EQ(invoke({"file", "untrack", "ignored.txt"}).code, 0);
   EXPECT_EQ(invoke({"file", "list"}).output.find("ignored.txt"),
             std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(path_ / "ignored.txt"));
+  expect_workspace_coherent();
   EXPECT_EQ(invoke({"file", "track", "missing"}).code, 2);
   EXPECT_EQ(invoke({"file", "track", std::string(5000, 'x')}).code, 2);
 

@@ -63,6 +63,9 @@ Repository::Repository(const std::filesystem::path& path,
   if (git_repository_is_bare(repo_.get()) != 0) {
     throw UserError("this command requires a working tree");
   }
+  if (git_repository_is_worktree(repo_.get()) != 0) {
+    throw UserError("linked Git worktrees are not supported yet");
+  }
 }
 
 git_repository* Repository::raw() const { return repo_.get(); }

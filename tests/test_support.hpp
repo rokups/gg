@@ -9,6 +9,7 @@
 #include <git2.h>
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -16,6 +17,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -45,7 +48,8 @@ class RepositoryTest : public testing::Test {
     ASSERT_GT(git_libgit2_init(), 0);
     static unsigned long counter = 0;
     path_ = std::filesystem::temp_directory_path() /
-            ("gg-test-" + std::to_string(++counter));
+            ("gg-test-" + std::to_string(getpid()) + "-" +
+             std::to_string(++counter));
     std::filesystem::remove_all(path_);
     git_repository* repository = nullptr;
     ASSERT_EQ(git_repository_init(&repository, path_.string().c_str(), 0), 0);
@@ -98,6 +102,53 @@ class RepositoryTest : public testing::Test {
     arguments.insert(arguments.begin(), path_.string());
     arguments.insert(arguments.begin(), "-R");
     return run(std::move(arguments));
+  }
+
+  Result invoke_git(const std::vector<std::string>& arguments) {
+    static unsigned long counter = 0;
+    const auto output_path =
+        path_ / ".git" / ("gg-test-git-output-" + std::to_string(++counter));
+    const auto error_path = output_path.string() + ".error";
+    std::string command = "git -C " + shell_quote(path_.string());
+    for (const std::string& argument : arguments) {
+      command += " " + shell_quote(argument);
+    }
+    command += " >" + shell_quote(output_path.string()) + " 2>" +
+               shell_quote(error_path);
+    const int raw_code = std::system(command.c_str());
+    const int code = raw_code != -1 && WIFEXITED(raw_code)
+                         ? WEXITSTATUS(raw_code)
+                         : 128;
+    const std::string output = read_path(output_path);
+    const std::string error = read_path(error_path);
+    std::filesystem::remove(output_path);
+    std::filesystem::remove(error_path);
+    return {code, output, error};
+  }
+
+  void expect_workspace_coherent() {
+    ASSERT_TRUE(has_ref("refs/gg/workspaces/default"));
+    const git_oid workspace = ref("refs/gg/workspaces/default");
+    git_commit* commit = nullptr;
+    ASSERT_EQ(git_commit_lookup(&commit, repository_.get(), &workspace), 0);
+    ASSERT_GT(git_commit_parentcount(commit), 0U);
+    const git_oid workspace_tree = *git_commit_tree_id(commit);
+    const git_oid parent = *git_commit_parent_id(commit, 0);
+    git_commit_free(commit);
+
+    const git_oid head = ref("HEAD");
+    EXPECT_NE(git_oid_equal(&head, &parent), 0);
+
+    git_index* index = nullptr;
+    ASSERT_EQ(git_repository_index(&index, repository_.get()), 0);
+    ASSERT_EQ(git_index_read(index, 1), 0);
+    git_oid index_tree{};
+    ASSERT_EQ(git_index_write_tree_to(&index_tree, index, repository_.get()), 0);
+    git_index_free(index);
+    EXPECT_NE(git_oid_equal(&index_tree, &workspace_tree), 0);
+
+    const Result unstaged = invoke_git({"diff", "--quiet"});
+    EXPECT_EQ(unstaged.code, 0) << unstaged.error;
   }
 
   git_oid ref(std::string_view name) {
@@ -219,6 +270,25 @@ class RepositoryTest : public testing::Test {
   std::string file() {
     std::ifstream input(path_ / "tracked.txt");
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  }
+
+  static std::string shell_quote(std::string_view value) {
+    std::string result{"'"};
+    for (const char character : value) {
+      if (character == '\'') {
+        result += "'\\''";
+      } else {
+        result += character;
+      }
+    }
+    result += '\'';
+    return result;
+  }
+
+  static std::string read_path(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()};
   }
 
   struct RepositoryDeleter {
