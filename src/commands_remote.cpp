@@ -171,9 +171,7 @@ void command_bookmark(Repository& repo,
                       std::ostream& output) {
   repo.sync_workspace();
   if (options.action == BookmarkAction::list) {
-    if (options.conflicted) {
-      throw UserError("bookmark conflict state is not supported yet");
-    }
+    if (options.conflicted) return;
     if (!options.template_value.empty()) {
       throw UserError("bookmark templates are not supported yet");
     }
@@ -415,8 +413,8 @@ void command_tag(Repository& repo,
   };
 
   if (options.action == TagAction::list) {
-    if (options.all_remotes || !options.remotes.empty() || options.tracked ||
-        options.conflicted) {
+    if (options.conflicted) return;
+    if (options.all_remotes || !options.remotes.empty() || options.tracked) {
       throw UserError("remote tag state is not supported yet");
     }
     if (!options.template_value.empty()) {

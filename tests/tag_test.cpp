@@ -69,7 +69,9 @@ TEST_F(RepositoryTest, ValidatesTagRequestsAndUnsupportedFilters) {
   EXPECT_EQ(invoke({"tag", "list", "--all-remotes"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "--remote", "origin"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "--tracked"}).code, 2);
-  EXPECT_EQ(invoke({"tag", "list", "--conflicted"}).code, 2);
+  const Result conflicted = invoke({"tag", "list", "--conflicted"});
+  EXPECT_EQ(conflicted.code, 0);
+  EXPECT_TRUE(conflicted.output.empty());
   EXPECT_EQ(invoke({"tag", "list", "-T", "name"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "--sort", "unknown"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "--all-remotes", "--remote", "origin"})
