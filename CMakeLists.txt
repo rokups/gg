@@ -82,6 +82,7 @@ if(GG_BUILD_TESTS)
     tests/file_test.cpp
     tests/rewrite_workflow_test.cpp
     tests/restore_test.cpp
+    tests/simplify_parents_test.cpp
     tests/conflict_test.cpp
     tests/remote_test.cpp
     tests/tag_test.cpp

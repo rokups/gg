@@ -66,6 +66,10 @@ struct RestoreCommand {
   bool interactive{false};
   bool restore_descendants{false};
 };
+struct SimplifyParentsCommand {
+  std::vector<std::string> sources;
+  std::vector<std::string> revisions;
+};
 
 enum class FileAction { list, show, search, chmod };
 struct FileCommand {
@@ -182,8 +186,9 @@ struct MovementCommand {
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
-                 AbandonCommand, CommitCommand, RestoreCommand, FileCommand,
-                 DiffCommand, ShowCommand, BookmarkCommand, TagCommand,
+                 AbandonCommand, CommitCommand, RestoreCommand,
+                 SimplifyParentsCommand, FileCommand, DiffCommand, ShowCommand,
+                 BookmarkCommand, TagCommand,
                  GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilSnapshotCommand, WorkspaceCommand, MovementCommand>;

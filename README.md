@@ -23,6 +23,7 @@ gg abandon [REV]
 gg rebase -s REV -d REV
 gg commit [-m DESCRIPTION] [PATH...]
 gg restore [--from REV] [--into REV] [PATH...]
+gg simplify-parents [-s REV]... [-r REV]...
 gg file list [-r REV] [PATH...]
 gg file show [-r REV] PATH...
 gg file search [-r REV] -p PATTERN [--name-only | --line-number] [PATH...]

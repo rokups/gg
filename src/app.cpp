@@ -67,6 +67,9 @@ int execute(Repository& repository,
             [&](const RestoreCommand& value) {
               command_restore(repository, value, output);
             },
+            [&](const SimplifyParentsCommand& value) {
+              command_simplify_parents(repository, value, output);
+            },
             [&](const FileCommand& value) {
               command_file(repository, value, output);
             },

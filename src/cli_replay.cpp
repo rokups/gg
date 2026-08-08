@@ -121,6 +121,18 @@ std::vector<std::string> repository_replay_arguments(
             }
             return result;
           },
+          [](const SimplifyParentsCommand& value) {
+            std::vector<std::string> result{"simplify-parents"};
+            for (const std::string& source : value.sources) {
+              result.emplace_back("--source");
+              result.push_back(source);
+            }
+            for (const std::string& revision : value.revisions) {
+              result.emplace_back("--revision");
+              result.push_back(revision);
+            }
+            return result;
+          },
           [](const FileCommand& value) {
             std::vector<std::string> result{"file"};
             switch (value.action) {

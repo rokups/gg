@@ -7,6 +7,7 @@
 #include <git2.h>
 
 #include <filesystem>
+#include <set>
 #include <utility>
 
 namespace gg::detail {
@@ -254,6 +255,149 @@ void command_restore(Repository& repo,
   finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                    "gg restore");
   output << "Restored into " << oid_string(rewritten, 8) << ".\n";
+}
+
+void command_simplify_parents(Repository& repo,
+                              const SimplifyParentsCommand& options,
+                              std::ostream& output) {
+  repo.sync_workspace();
+  const auto workspace = repo.ref_target(kWorkspaceRef);
+  if (!workspace.has_value()) {
+    throw UserError("this command requires a working-copy change");
+  }
+
+  std::set<git_oid, OidLess> sources;
+  std::set<git_oid, OidLess> revisions;
+  for (const std::string& source : options.sources) {
+    sources.insert(repo.resolve(source));
+  }
+  for (const std::string& revision : options.revisions) {
+    revisions.insert(repo.resolve(revision));
+  }
+  if (sources.empty() && revisions.empty()) {
+    std::vector<git_oid> pending{*workspace};
+    while (!pending.empty()) {
+      const git_oid oid = pending.back();
+      pending.pop_back();
+      if (revisions.insert(oid).second) {
+        const auto parents = repo.parents(oid);
+        pending.insert(pending.end(), parents.begin(), parents.end());
+      }
+    }
+  }
+
+  const auto refs = repo.rewrite_refs();
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
+  RevwalkPtr walk(raw_walk);
+  git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+  for (const auto& [name, oid] : refs) {
+    (void)name;
+    const int pushed = git_revwalk_push(walk.get(), &oid);
+    if (pushed != GIT_EINVALIDSPEC) {  // GG_COV_EXCL_BRANCH
+      check(pushed, "walk revisions");
+    }
+  }
+  for (const git_oid& oid : sources) {
+    check(git_revwalk_push(walk.get(), &oid), "walk source revisions");
+  }
+  for (const git_oid& oid : revisions) {
+    check(git_revwalk_push(walk.get(), &oid), "walk selected revisions");
+  }
+
+  RewritePlan plan;
+  std::set<git_oid, OidLess> source_descendants;
+  std::size_t selected_count = 0;
+  std::size_t simplified_count = 0;
+  std::size_t removed_edges = 0;
+  std::size_t reparented_count = 0;
+  git_oid oid{};
+  while (git_revwalk_next(&oid, walk.get()) == 0) {
+    const auto old_parents = repo.parents(oid);
+    bool from_source = sources.contains(oid);
+    for (const git_oid& parent : old_parents) {
+      if (source_descendants.contains(parent)) {
+        from_source = true;
+      }
+    }
+    if (from_source) {
+      source_descendants.insert(oid);
+    }
+    const bool selected = from_source || revisions.contains(oid);
+    selected_count += selected ? 1 : 0;
+
+    std::vector<git_oid> new_parents;
+    new_parents.reserve(old_parents.size());
+    for (const git_oid& parent : old_parents) {
+      const auto replacement = plan.commits.find(parent);
+      new_parents.push_back(replacement == plan.commits.end()
+                                ? parent
+                                : replacement->second);
+    }
+    if (selected && new_parents.size() > 1) {
+      std::vector<git_oid> heads;
+      for (std::size_t index = 0; index < new_parents.size(); ++index) {
+        bool redundant = false;
+        for (std::size_t other = 0; other < new_parents.size(); ++other) {
+          if (index == other) {
+            continue;
+          }
+          if (new_parents[index] == new_parents[other]) {
+            redundant = other < index;
+          } else {
+            const int descendant = git_graph_descendant_of(
+                repo.raw(), &new_parents[other], &new_parents[index]);
+            check(descendant, "compare parent ancestry");
+            redundant = descendant != 0;
+          }
+          if (redundant) {
+            break;
+          }
+        }
+        if (!redundant) {
+          heads.push_back(new_parents[index]);
+        }
+      }
+      if (heads.size() < new_parents.size()) {
+        ++simplified_count;
+        removed_edges += new_parents.size() - heads.size();
+        new_parents = std::move(heads);
+      }
+    }
+    bool parents_changed = new_parents.size() != old_parents.size();
+    for (std::size_t index = 0;
+         !parents_changed && index < old_parents.size(); ++index) {
+      parents_changed = !(new_parents[index] == old_parents[index]);
+    }
+    if (parents_changed) {
+      const git_oid tree = *git_commit_tree_id(repo.commit(oid).get());
+      plan.commits.emplace(oid, repo.rewrite_commit(oid, new_parents, tree));
+      if (!selected || new_parents.size() == old_parents.size()) {
+        ++reparented_count;
+      }
+    }
+  }
+
+  if (plan.commits.empty()) {
+    output << "Nothing changed.\n";
+    return;
+  }
+  for (const auto& [name, target] : refs) {
+    const auto replacement = plan.commits.find(target);
+    if (replacement != plan.commits.end()) {
+      plan.updates.emplace(name, replacement->second);
+    }
+  }
+  const git_oid new_workspace = plan.commits.contains(*workspace)
+                                    ? plan.commits.at(*workspace)
+                                    : *workspace;
+  finish_workspace(repo, new_workspace, std::move(plan.updates), {},
+                   "gg simplify-parents");
+  output << "Removed " << removed_edges << " edges from " << simplified_count
+         << " out of " << selected_count << " commits.\n";
+  if (reparented_count > 0) {
+    output << "Rebased " << reparented_count << " descendant commits.\n";
+  }
 }
 
 }  // namespace gg::detail

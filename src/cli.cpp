@@ -115,6 +115,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                     restore_value.restore_descendants,
                     "Preserve descendant contents while restacking");
 
+  SimplifyParentsCommand simplify_value;
+  auto* simplify = app.add_subcommand(
+      "simplify-parents", "Remove redundant parent edges");
+  simplify->add_option("-s,--source", simplify_value.sources,
+                       "Revision and its descendants");
+  simplify->add_option("-r,--revision,--revisions", simplify_value.revisions,
+                       "Revision to simplify");
+
   auto* file = app.add_subcommand("file", "Inspect and modify files");
   file->require_subcommand(1);
   FileCommand file_list_value;
@@ -476,6 +484,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(commit_value)};
   } else if (restore->parsed()) {
     command = RepositoryCommand{std::move(restore_value)};
+  } else if (simplify->parsed()) {
+    command = RepositoryCommand{std::move(simplify_value)};
   } else if (file_list->parsed()) {
     command = RepositoryCommand{std::move(file_list_value)};
   } else if (file_show->parsed()) {
