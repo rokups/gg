@@ -171,4 +171,29 @@ TEST_F(RepositoryTest, ExecutesUtilitiesWithExactArgumentsAndWorkspaceRoot) {
   EXPECT_EQ(run({"-R", "/", "util", "exec", "/bin/true"}).code, 0);
 }
 
+TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
+  const Result markdown = run({"util", "markdown-help"});
+  ASSERT_EQ(markdown.code, 0) << markdown.error;
+  EXPECT_NE(markdown.output.find("# gg command reference"), std::string::npos);
+  EXPECT_NE(markdown.output.find("## `gg bookmark move`"), std::string::npos);
+  EXPECT_NE(markdown.output.find("```text\n"), std::string::npos);
+  EXPECT_EQ(run({"util", "markdown-help"}).output, markdown.output);
+
+  const std::filesystem::path destination = path_ / "manual";
+  const Result installed =
+      run({"util", "install-man-pages", destination.string()});
+  ASSERT_EQ(installed.code, 0) << installed.error;
+  EXPECT_TRUE(std::filesystem::is_regular_file(destination / "man1/gg.1"));
+  const std::filesystem::path move_page =
+      destination / "man1/gg-bookmark-move.1";
+  ASSERT_TRUE(std::filesystem::is_regular_file(move_page));
+  std::ifstream input(move_page);
+  std::ostringstream content;
+  content << input.rdbuf();
+  EXPECT_NE(content.str().find(".TH \"GG-BOOKMARK-MOVE\" \"1\""),
+            std::string::npos);
+  EXPECT_NE(content.str().find(".SH SYNOPSIS"), std::string::npos);
+  EXPECT_EQ(run({"util", "install-man-pages"}).code, 2);
+}
+
 }  // namespace gg::test

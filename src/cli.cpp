@@ -6,10 +6,74 @@
 
 #include <CLI/CLI.hpp>
 
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <ostream>
+#include <sstream>
 #include <utility>
 
 namespace gg::detail {
+namespace {
+
+std::vector<const CLI::App*> schema_children(const CLI::App& command) {
+  return command.get_subcommands(
+      std::function<bool(const CLI::App*)>{});
+}
+
+void write_markdown_command(const CLI::App& command,
+                            const std::string& path,
+                            std::ostream& output) {
+  output << "## `" << path << "`\n\n" << command.get_description()
+         << "\n\n```text\n" << command.help(path) << "```\n\n";
+  for (const CLI::App* child : schema_children(command)) {
+    write_markdown_command(*child, path + " " + child->get_name(), output);
+  }
+}
+
+void write_markdown_help(const CLI::App& app, std::ostream& output) {
+  output << "# gg command reference\n\n";
+  write_markdown_command(app, "gg", output);
+}
+
+std::string man_name(std::string_view path) {
+  std::string result(path);
+  std::ranges::replace(result, ' ', '-');
+  return result;
+}
+
+void write_man_pages(const CLI::App& command,
+                     const std::string& path,
+                     const std::filesystem::path& directory) {
+  const std::string name = man_name(path);
+  std::string title = name;
+  std::ranges::transform(title, title.begin(), [](unsigned char value) {
+    return static_cast<char>(std::toupper(value));
+  });
+  std::ofstream page(directory / (name + ".1"));
+  if (!page) throw std::runtime_error("cannot create man page");  // GG_COV_EXCL_BRANCH
+  page << ".TH \"" << title << "\" \"1\"\n.SH NAME\n" << name
+       << " \\- " << command.get_description()
+       << "\n.SH SYNOPSIS\n.nf\n";
+  std::istringstream help(command.help(path));
+  std::string line;
+  while (std::getline(help, line)) page << "\\&" << line << '\n';
+  page << ".fi\n";
+  for (const CLI::App* child : schema_children(command)) {
+    write_man_pages(*child, path + " " + child->get_name(), directory);
+  }
+}
+
+void install_man_pages(const CLI::App& app,
+                       const std::filesystem::path& destination) {
+  const std::filesystem::path man1 = destination / "man1";
+  std::filesystem::create_directories(man1);
+  write_man_pages(app, "gg", man1);
+}
+
+}  // namespace
 
 ParseResult parse_cli(std::span<const std::string_view> arguments,
                       std::ostream& output,
@@ -455,6 +519,13 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   util_exec->add_option("command", util_exec_value.command, "Command")
       ->required();
   util_exec->add_option("args", util_exec_value.arguments, "Command arguments");
+  std::string util_man_path;
+  auto* util_install_man =
+      util->add_subcommand("install-man-pages", "Install generated man pages");
+  util_install_man->add_option("path", util_man_path, "Installation root")
+      ->required();
+  auto* util_markdown =
+      util->add_subcommand("markdown-help", "Print Markdown command help");
   auto* util_snapshot =
       util->add_subcommand("snapshot", "Snapshot the working copy");
   auto* workspace = app.add_subcommand("workspace", "Inspect workspaces");
@@ -589,6 +660,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     return {2, std::monostate{}};
   }
 
+  if (util_markdown->parsed()) {
+    write_markdown_help(app, output);
+    return {0, std::monostate{}};
+  }
+  if (util_install_man->parsed()) {
+    install_man_pages(app, util_man_path);
+    return {0, std::monostate{}};
+  }
   if (help->parsed()) {
     CLI::App* target = &app;
     std::string parent = "gg";
