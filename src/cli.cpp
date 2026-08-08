@@ -30,33 +30,6 @@ bool lean_mode_enabled() {
   return value == nullptr || std::string_view(value) != "0";
 }
 
-const std::map<std::string, std::string_view> kHelpKeywords{
-    {"bookmarks",
-     "# Bookmarks\n\nBookmarks are local branches. Use `gg bookmark` "
-     "to create, move, list, rename, forget, or delete them.\n"},
-    {"config",
-     "# Configuration\n\n`gg config` reads and writes flat dotted keys in user, "
-     "repository, or workspace layers.\n"},
-    {"filesets",
-     "# Filesets\n\ngg currently accepts literal repository-relative files and "
-     "directories where Jujutsu accepts filesets.\n"},
-    {"glossary",
-     "# Glossary\n\nA change is a commit with a stable gg change ID; a bookmark "
-     "is a branch; `@` is the working-copy change.\n"},
-    {"revsets",
-     "# Revision selection\n\ngg accepts `@`, `@-` chains, stable change-ID "
-     "prefixes, bookmarks, and Git revision expressions. Set-valued revsets are "
-     "not yet supported.\n"},
-    {"templates",
-     "# Templates\n\nTemplates support Jujutsu-shaped `++` concatenation, quoted "
-     "string literals, command-specific keywords, and the string methods "
-     "`.short([length])` and `.first_line()`.\n"},
-    {"tutorial",
-     "# Tutorial\n\nRun `gg new` to start a working change, edit files, inspect them "
-     "with `gg status` and `gg diff`, then use `gg commit` or bookmarks to "
-     "organize and publish the work.\n"},
-};
-
 std::string stable_help(const CLI::App& command, std::string_view path) {
   const std::size_t separator = path.rfind(' ');
   const std::string parent = separator == std::string_view::npos
@@ -962,21 +935,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   config_unset->add_option("name", config_unset_value.name, "Configuration key")
       ->required();
   add_config_scopes(config_unset, config_unset_value);
-  std::vector<std::string> help_commands;
-  std::string help_keyword;
-  auto* help = app.add_subcommand("help", "Print help");
-  CLI::Option* help_command =
-      help->add_option("commands", help_commands, "Command path");
-  help->add_option("-k,--keyword", help_keyword, "Help keyword")
-      ->check(CLI::IsMember({"bookmarks", "config", "filesets", "glossary",
-                            "revsets", "templates", "tutorial"}))
-      ->excludes(help_command);
-  auto* version = app.add_subcommand("version", "Print version");
-
   const bool lean = lean_mode_enabled();
   if (lean) {
     for (CLI::App* command :
-         {status, diff, show, clone, init, workspace, sparse}) {
+         {status, diff, show, tag, clone, init, fetch, push, workspace,
+          sparse}) {
       command->disabled()->group("");
     }
     for (CLI::App* command : {file_list, file_show, file_search, create, set,
@@ -1041,32 +1004,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     install_man_pages(app, path);
     return {0, std::monostate{}};
   }
-  if (help->parsed()) {
-    if (!help_keyword.empty()) {
-      output << kHelpKeywords.at(help_keyword);
-      return {0, std::monostate{}};
-    }
-    CLI::App* target = &app;
-    std::string parent = "gg";
-    for (std::size_t index = 0; index < help_commands.size(); ++index) {
-      const std::string& name = help_commands[index];
-      target = target->get_subcommand_no_throw(name);
-      if (target == nullptr || target->get_disabled()) {
-        error << "error: command not found: " << name << '\n';
-        return {2, std::monostate{}};
-      }
-      if (index + 1 < help_commands.size()) {
-        parent += " " + name;
-      }
-    }
-    output << (help_commands.empty() ? app.help() : target->help(parent));
-    return {0, std::monostate{}};
-  }
-  if (version->parsed()) {
-    output << "gg 0.1.0\n";
-    return {0, std::monostate{}};
-  }
-
   Command command = RepositoryCommand{status_value};
   if (status->parsed()) {
     command = RepositoryCommand{status_value};

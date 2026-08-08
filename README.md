@@ -82,10 +82,11 @@ Change IDs use Jujutsu's 32-character reverse-hex format (`z` through `k`).
 Commands show the shortest unique prefix with a minimum length of eight.
 
 Lean mode is the default. It keeps gg's change-editing, revision graph,
-operation-history, remote-tracking, and configuration workflows while hiding
+operation-history, bookmark tracking, and configuration workflows while hiding
 and rejecting equivalent native commands. Those include status, diff, show,
-file inspection, basic bookmark and tag management, clone/init, workspace and
-sparse-checkout helpers, external command execution, and garbage collection.
+file inspection, basic bookmark management, all tag/fetch/push commands,
+clone/init, workspace and sparse-checkout helpers, external command execution,
+and garbage collection.
 Help, generated manuals, and shell completions expose the same reduced command
 set. Set `GG_LEAN=0` to expose the full command set.
 

@@ -12,41 +12,19 @@ namespace gg::test {
 
 TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_EQ(run({}).code, 0);
-  EXPECT_EQ(run({"help"}).code, 0);
   EXPECT_EQ(run({"-h"}).code, 0);
   EXPECT_EQ(run({"--version"}).code, 0);
   EXPECT_EQ(run({"--help"}).code, 0);
   EXPECT_NE(run({"--help"}).output.find("gg [OPTIONS] SUBCOMMAND"),
             std::string::npos);
+  EXPECT_EQ(run({"--help"}).output.find("  help "), std::string::npos);
+  EXPECT_EQ(run({"--help"}).output.find("  version "), std::string::npos);
   EXPECT_EQ(run({"status", "--help"}).code, 0);
   EXPECT_NE(run({"status", "--help"}).output.find("gg status [OPTIONS]"),
             std::string::npos);
-  EXPECT_NE(run({"help", "status"}).output.find("gg status [OPTIONS]"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "operation", "restore"})
-                .output.find("gg operation restore [OPTIONS]"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "-k", "bookmarks"}).output.find("# Bookmarks"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "--keyword", "config"})
-                .output.find("# Configuration"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "-k", "filesets"}).output.find("# Filesets"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "-k", "glossary"}).output.find("# Glossary"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "-k", "revsets"})
-                .output.find("# Revision selection"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "-k", "templates"}).output.find("# Templates"),
-            std::string::npos);
-  EXPECT_NE(run({"help", "-k", "tutorial"}).output.find("# Tutorial"),
-            std::string::npos);
-  EXPECT_EQ(run({"help", "-k", "missing"}).code, 2);
-  EXPECT_EQ(run({"help", "status", "-k", "tutorial"}).code, 2);
-  EXPECT_EQ(run({"help", "missing"}).code, 2);
-  EXPECT_EQ(run({"version"}).output, "gg 0.1.0\n");
-  EXPECT_EQ(run({"--ignore-immutable", "--no-pager", "version"}).code, 0);
+  EXPECT_EQ(run({"help"}).code, 2);
+  EXPECT_EQ(run({"version"}).code, 2);
+  EXPECT_EQ(run({"--ignore-immutable", "--no-pager", "--version"}).code, 0);
 }
 
 TEST(AppTest, ReportsUserAndGitErrors) {
@@ -67,6 +45,9 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   const Result default_status = run({"status"});
   EXPECT_EQ(setenv("GG_LEAN", "0", 1), 0);
   const Result normal_status = run({"status", "--help"});
+  const Result normal_tag = run({"tag", "--help"});
+  const Result normal_fetch = run({"fetch", "--help"});
+  const Result normal_push = run({"push", "--help"});
   EXPECT_EQ(setenv("GG_LEAN", "1", 1), 0);
   const Result root_help = run({});
   const Result file_help = run({"file", "--help"});
@@ -87,7 +68,8 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   const Result enabled_log = run({"log", "--help"});
   const Result enabled_file = run({"file", "chmod", "--help"});
   const Result enabled_bookmark = run({"bookmark", "advance", "--help"});
-  const Result enabled_tag = run({"tag", "track", "--help"});
+  const Result disabled_fetch = run({"fetch", "--help"});
+  const Result disabled_push = run({"push", "--help"});
 
   if (previous.has_value()) {
     EXPECT_EQ(setenv("GG_LEAN", previous->c_str(), 1), 0);
@@ -96,12 +78,16 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   }
 
   EXPECT_EQ(normal_status.code, 0);
+  EXPECT_EQ(normal_tag.code, 0);
+  EXPECT_EQ(normal_fetch.code, 0);
+  EXPECT_EQ(normal_push.code, 0);
   EXPECT_EQ(default_status.code, 2);
   EXPECT_EQ(default_help.output.find("  status, st "), std::string::npos);
   EXPECT_EQ(root_help.code, 0);
   EXPECT_EQ(root_help.output.find("  status, st "), std::string::npos);
   for (std::string_view command :
-       {"diff", "show", "clone", "init", "workspace", "sparse"}) {
+       {"diff", "show", "tag", "clone", "init", "fetch", "push",
+        "workspace", "sparse"}) {
     EXPECT_EQ(root_help.output.find("  " + std::string(command) + " "),
               std::string::npos)
         << command;
@@ -118,24 +104,27 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   EXPECT_NE(file_help.output.find("  chmod "), std::string::npos);
   EXPECT_EQ(bookmark_help.output.find("  create "), std::string::npos);
   EXPECT_NE(bookmark_help.output.find("  advance "), std::string::npos);
-  EXPECT_EQ(tag_help.output.find("  set "), std::string::npos);
-  EXPECT_NE(tag_help.output.find("  track "), std::string::npos);
+  EXPECT_EQ(tag_help.code, 2);
   EXPECT_EQ(util_help.output.find("  gc "), std::string::npos);
   EXPECT_NE(util_help.output.find("  snapshot "), std::string::npos);
 
   EXPECT_EQ(markdown.output.find("## `gg status`"), std::string::npos);
   EXPECT_EQ(markdown.output.find("## `gg bookmark create`"),
             std::string::npos);
+  EXPECT_EQ(markdown.output.find("## `gg tag"), std::string::npos);
+  EXPECT_EQ(markdown.output.find("## `gg fetch`"), std::string::npos);
+  EXPECT_EQ(markdown.output.find("## `gg push`"), std::string::npos);
   EXPECT_NE(markdown.output.find("## `gg bookmark advance`"),
             std::string::npos);
   for (const Result* disabled :
        {&disabled_status, &disabled_file, &disabled_bookmark,
         &disabled_status_help, &disabled_bare_bookmark, &disabled_tag,
-        &disabled_util, &disabled_workspace, &hidden_help}) {
+        &disabled_fetch, &disabled_push, &disabled_util, &disabled_workspace,
+        &hidden_help}) {
     EXPECT_EQ(disabled->code, 2);
   }
   for (const Result* enabled :
-       {&enabled_log, &enabled_file, &enabled_bookmark, &enabled_tag}) {
+       {&enabled_log, &enabled_file, &enabled_bookmark}) {
     EXPECT_EQ(enabled->code, 0) << enabled->error;
   }
 }
