@@ -157,40 +157,111 @@ void command_abandon(Repository& repo,
                      const AbandonCommand& options,
                      std::ostream& output) {
   repo.sync_workspace();
-  const git_oid old =
-      repo.resolve(options.revision.empty() ? "@" : options.revision);
-  const auto old_parents = repo.parents(old);
-  if (old_parents.size() != 1) {
-    throw UserError("abandon revision must have exactly one parent");
+  std::vector<std::string> revisions = options.revisions;
+  revisions.insert(revisions.end(), options.revision_options.begin(),
+                   options.revision_options.end());
+  if (revisions.empty()) revisions.emplace_back("@");
+  const std::vector<git_oid> selected_values =
+      resolve_revision_arguments(repo, revisions);
+  const std::set<git_oid, OidLess> selected(selected_values.begin(),
+                                            selected_values.end());
+  if (selected.empty()) {
+    output << "Nothing changed.\n";
+    return;
   }
-  const git_oid parent = old_parents.front();
-  RewritePlan plan = repo.descendants({{old, parent}}, {old},
-                                      options.restore_descendants);
+  for (const git_oid& oid : selected) {
+    if (repo.parents(oid).empty()) {
+      throw UserError("cannot abandon a root revision");
+    }
+  }
+
+  const auto refs = repo.rewrite_refs();
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
+  RevwalkPtr walk(raw_walk);
+  git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+  for (const auto& [name, oid] : refs) {
+    (void)name;
+    const int pushed = git_revwalk_push(walk.get(), &oid);
+    if (pushed != GIT_EINVALIDSPEC) {  // GG_COV_EXCL_BRANCH
+      check(pushed, "walk revisions");
+    }
+  }
+  for (const git_oid& oid : selected) {
+    check(git_revwalk_push(walk.get(), &oid), "walk selected revisions");
+  }
+
+  RewritePlan plan;
+  std::map<git_oid, std::vector<git_oid>, OidLess> replacements;
+  git_oid oid{};
+  while (git_revwalk_next(&oid, walk.get()) == 0) {
+    const std::vector<git_oid> old_parents = repo.parents(oid);
+    std::vector<git_oid> new_parents;
+    std::set<git_oid, OidLess> seen;
+    bool parents_changed = false;
+    for (const git_oid& parent : old_parents) {
+      const auto abandoned = replacements.find(parent);
+      if (abandoned != replacements.end()) {
+        parents_changed = true;
+        for (const git_oid& replacement : abandoned->second) {
+          if (seen.insert(replacement).second) {
+            new_parents.push_back(replacement);
+          }
+        }
+      } else {
+        const auto rewritten = plan.commits.find(parent);
+        parents_changed |= rewritten != plan.commits.end();
+        const git_oid next = rewritten == plan.commits.end()
+                                 ? parent
+                                 : rewritten->second;
+        if (seen.insert(next).second) new_parents.push_back(next);
+      }
+    }
+    if (selected.contains(oid)) {
+      replacements.emplace(oid, std::move(new_parents));
+    } else if (parents_changed) {
+      const std::optional<git_oid> tree_override =
+          options.restore_descendants
+              ? std::optional(*git_commit_tree_id(repo.commit(oid).get()))
+              : std::nullopt;
+      plan.commits.emplace(
+          oid, repo.rewrite_commit(oid, new_parents, tree_override));
+    }
+  }
+
   std::set<std::string> deletes;
-  for (const auto& [name, target] : repo.rewrite_refs()) {
-    if (target != old) {
+  for (const auto& [name, target] : refs) {
+    const auto rewritten = plan.commits.find(target);
+    if (rewritten != plan.commits.end()) {
+      plan.updates[name] = rewritten->second;
       continue;
     }
+    if (!selected.contains(target) || name == kWorkspaceRef) continue;
     if (starts_with(name, kChangePrefix) ||
         (!options.retain_bookmarks && starts_with(name, "refs/heads/"))) {
-      plan.updates.erase(name);
       deletes.insert(name);
+    } else {
+      plan.updates[name] = replacements.at(target).front();
     }
   }
   const auto workspace = repo.ref_target(kWorkspaceRef);
-  git_oid new_workspace = *workspace;
-  if (*workspace == old) {
-    CommitPtr parent_commit = repo.commit(parent);
-    new_workspace = repo.create_commit(*git_commit_tree_id(parent_commit.get()),
-                                       {parent}, "");
-    const std::string id = repo.new_change_id();
-    plan.updates[std::string(kChangePrefix) + id] = new_workspace;
-  } else if (plan.commits.contains(*workspace)) {
-    new_workspace = plan.commits.at(*workspace);
+  if (workspace.has_value()) {
+    git_oid new_workspace = *workspace;
+    if (selected.contains(*workspace)) {
+      const std::vector<git_oid>& parents = replacements.at(*workspace);
+      new_workspace = repo.create_commit(combined_tree(repo, parents), parents, "");
+      plan.updates[std::string(kChangePrefix) + repo.new_change_id()] =
+          new_workspace;
+    } else if (plan.commits.contains(*workspace)) {
+      new_workspace = plan.commits.at(*workspace);
+    }
+    finish_workspace(repo, new_workspace, std::move(plan.updates),
+                     std::move(deletes), "gg abandon");
+  } else {
+    repo.record(std::move(plan.updates), std::move(deletes), repo.head_state(),
+                "gg abandon");
   }
-  finish_workspace(repo, new_workspace, std::move(plan.updates), std::move(deletes),
-                   "gg abandon");
-  output << "Abandoned " << oid_string(old, 8) << '\n';
+  output << "Abandoned " << selected.size() << " revision(s).\n";
 }
 
 void command_restore(Repository& repo,

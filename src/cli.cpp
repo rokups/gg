@@ -281,12 +281,12 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       describe->add_option("-m,--message", describe_value.message, "Description");
   CLI::Option* describe_stdin = describe->add_flag(
       "--stdin", describe_value.stdin_value, "Read the description from stdin");
-  CLI::Option* describe_editor = describe->add_flag(
-      "--editor", describe_value.editor, "Edit the description in an editor");
-  describe_message->excludes(describe_stdin)->excludes(describe_editor);
-  describe_stdin->excludes(describe_editor);
-  describe->add_option("revision", describe_value.revision, "Revision")
-      ->expected(0, 1);
+  describe->add_flag("--editor", describe_value.editor,
+                     "Edit the description in an editor");
+  describe_message->excludes(describe_stdin);
+  describe->add_option("revisions", describe_value.revisions, "Revisions");
+  describe->add_option("-r,--revision", describe_value.revision_options,
+                       "Revisions");
 
   EditCommand edit_value;
   std::string edit_positional;
@@ -354,8 +354,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   AbandonCommand abandon_value;
   auto* abandon = app.add_subcommand("abandon", "Abandon a change");
-  abandon->add_option("revision", abandon_value.revision, "Revision")
-      ->expected(0, 1);
+  abandon->add_option("revisions", abandon_value.revisions, "Revisions");
+  abandon->add_option("-r,--revision", abandon_value.revision_options,
+                      "Revisions");
   abandon->add_flag("--retain-bookmarks", abandon_value.retain_bookmarks,
                     "Move bookmarks to the abandoned revision's parent");
   abandon->add_flag("--restore-descendants",

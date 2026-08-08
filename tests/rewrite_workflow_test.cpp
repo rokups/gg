@@ -4,6 +4,8 @@
 
 #include "test_support.hpp"
 
+#include "repository.hpp"
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, RewritesAncestorsWhileEditingDescendants) {
@@ -184,6 +186,48 @@ TEST_F(RepositoryTest, AbandonCanRetainBookmarksAndDescendantContents) {
   EXPECT_TRUE(has_ref("refs/heads/kept"));
   EXPECT_EQ(invoke({"file", "show", "parent.txt"}).output, "parent\n");
   EXPECT_EQ(invoke({"file", "show", "child.txt"}).output, "child\n");
+}
+
+TEST_F(RepositoryTest, AbandonsRevisionSetsAndMergeChanges) {
+  const git_oid base = ref("HEAD");
+  const git_oid left = raw_commit("left", {base});
+  const git_oid right = raw_commit("right", {base});
+  const git_oid merge = raw_commit("merge", {left, right});
+  const git_oid child = raw_commit("child", {merge});
+  const git_oid grandchild = raw_commit("grandchild", {child});
+  const git_oid duplicate = raw_commit("duplicate", {base, base});
+  set_ref("refs/heads/side", grandchild);
+  set_ref("refs/heads/duplicate", duplicate);
+  set_ref("refs/heads/merge-bookmark", merge);
+  set_ref("refs/tags/merge-tag", merge);
+
+  const std::string merge_text = git_oid_tostr_s(&merge);
+  const std::string left_text = git_oid_tostr_s(&left);
+  const std::string right_text = git_oid_tostr_s(&right);
+  const Result abandoned =
+      invoke({"abandon", "-r", merge_text + " | " + left_text + " | " +
+                             right_text});
+  ASSERT_EQ(abandoned.code, 0) << abandoned.error;
+  EXPECT_NE(abandoned.output.find("Abandoned 3 revision(s)."),
+            std::string::npos) << abandoned.output;
+  EXPECT_FALSE(has_ref("refs/heads/merge-bookmark"));
+  const git_oid moved_tag = ref("refs/tags/merge-tag");
+  EXPECT_NE(git_oid_equal(&moved_tag, &base), 0)
+      << git_oid_tostr_s(&moved_tag) << " != " << git_oid_tostr_s(&base);
+  const git_oid rewritten_grandchild = ref("refs/heads/side");
+  detail::Repository repo(path_);
+  const std::vector<git_oid> grandchild_parents =
+      repo.parents(rewritten_grandchild);
+  ASSERT_EQ(grandchild_parents.size(), 1U);
+  EXPECT_EQ(repo.parents(grandchild_parents.front()).size(), 1U);
+
+  ASSERT_EQ(invoke({"new", "-m", "work", "main",
+                    git_oid_tostr_s(&right)})
+                .code,
+            0);
+  ASSERT_EQ(invoke({"abandon", "@"}).code, 0);
+  EXPECT_EQ(repo.parents(ref("refs/gg/workspaces/default")).size(), 2U);
+  EXPECT_EQ(invoke({"abandon", "none()"}).output, "Nothing changed.\n");
 }
 
 

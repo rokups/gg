@@ -685,26 +685,104 @@ void command_describe(Repository& repo,
                       const DescribeCommand& options,
                       std::ostream& output) {
   repo.sync_workspace();
-  std::string revision = "@";
-  if (!options.revision.empty()) revision = options.revision;
-  const git_oid old = repo.resolve(revision);
-  CommitPtr value = repo.commit(old);
-  std::string message = options.message;
+  std::vector<std::string> revisions = options.revisions;
+  revisions.insert(revisions.end(), options.revision_options.begin(),
+                   options.revision_options.end());
+  if (revisions.empty()) revisions.emplace_back("@");
+  const std::vector<git_oid> selected_values =
+      resolve_revision_arguments(repo, revisions);
+  const std::set<git_oid, OidLess> selected(selected_values.begin(),
+                                            selected_values.end());
+  std::optional<std::string> common_message;
   if (options.stdin_value) {
-    message.assign(std::istreambuf_iterator<char>(std::cin),
-                   std::istreambuf_iterator<char>());
-  } else if (!options.message_provided) {
-    const char* original = git_commit_message(value.get());
-    message = edit_text(original == nullptr ? "" : original);  // GG_COV_EXCL_BRANCH
+    common_message.emplace(std::istreambuf_iterator<char>(std::cin),
+                           std::istreambuf_iterator<char>());
+  } else if (options.message_provided) {
+    common_message = options.message;
   }
-  const git_oid rewritten = repo.rewrite_commit(
-      old, repo.parents(old), *git_commit_tree_id(value.get()), message);
-  RewritePlan plan = repo.descendants({{old, rewritten}});
+  if (options.editor && common_message.has_value()) {
+    common_message = edit_text(*common_message);
+  }
+
+  std::map<git_oid, std::string, OidLess> messages;
+  for (const git_oid& oid : selected_values) {
+    if (common_message.has_value()) {
+      messages.emplace(oid, *common_message);
+    } else {
+      CommitPtr value = repo.commit(oid);
+      const char* original = git_commit_message(value.get());
+      messages.emplace(
+          oid, edit_text(original == nullptr ? "" : original));  // GG_COV_EXCL_BRANCH
+    }
+  }
+
+  const auto refs = repo.rewrite_refs();
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
+  RevwalkPtr walk(raw_walk);
+  git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+  for (const auto& [name, oid] : refs) {
+    (void)name;
+    const int pushed = git_revwalk_push(walk.get(), &oid);
+    if (pushed != GIT_EINVALIDSPEC) {  // GG_COV_EXCL_BRANCH
+      check(pushed, "walk revisions");
+    }
+  }
+  for (const git_oid& oid : selected) {
+    check(git_revwalk_push(walk.get(), &oid), "walk selected revisions");
+  }
+
+  RewritePlan plan;
+  std::size_t modified = 0;
+  git_oid oid{};
+  while (git_revwalk_next(&oid, walk.get()) == 0) {
+    const std::vector<git_oid> old_parents = repo.parents(oid);
+    std::vector<git_oid> new_parents;
+    bool parents_changed = false;
+    for (const git_oid& parent : old_parents) {
+      const auto replacement = plan.commits.find(parent);
+      const git_oid next = replacement == plan.commits.end()
+                               ? parent
+                               : replacement->second;
+      parents_changed |= !(next == parent);
+      new_parents.push_back(next);
+    }
+    const bool is_selected = selected.contains(oid);
+    if (!is_selected && !parents_changed) continue;
+
+    CommitPtr value = repo.commit(oid);
+    const char* original = git_commit_message(value.get());
+    const std::string_view old_message =
+        original == nullptr ? "" : original;  // GG_COV_EXCL_BRANCH
+    const std::string_view message =
+        is_selected ? std::string_view(messages.at(oid)) : old_message;
+    if (!parents_changed && message == old_message) continue;
+    const git_oid rewritten =
+        repo.rewrite_commit(oid, new_parents, std::nullopt, message);
+    plan.commits.emplace(oid, rewritten);
+    if (is_selected) ++modified;
+  }
+
+  if (plan.commits.empty()) {
+    output << "Nothing changed.\n";
+    return;
+  }
+  for (const auto& [name, target] : refs) {
+    const auto replacement = plan.commits.find(target);
+    if (replacement != plan.commits.end()) {
+      plan.updates.emplace(name, replacement->second);
+    }
+  }
   const auto workspace = repo.ref_target(kWorkspaceRef);
-  const git_oid new_workspace =
-      plan.commits.contains(*workspace) ? plan.commits.at(*workspace) : *workspace;
-  finish_workspace(repo, new_workspace, std::move(plan.updates), {}, "gg describe");
-  output << "Rewrote change as " << oid_string(rewritten, 8) << '\n';
+  if (workspace.has_value()) {
+    const git_oid next = plan.commits.contains(*workspace)
+                             ? plan.commits.at(*workspace)
+                             : *workspace;
+    finish_workspace(repo, next, std::move(plan.updates), {}, "gg describe");
+  } else {
+    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg describe");
+  }
+  output << "Rewrote " << modified << " revision(s).\n";
 }
 
 void command_move(Repository& repo,

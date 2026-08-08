@@ -51,7 +51,8 @@ struct NewCommand {
 };
 struct DescribeCommand {
   std::string message;
-  std::string revision;
+  std::vector<std::string> revisions;
+  std::vector<std::string> revision_options;
   bool stdin_value{false};
   bool editor{false};
   bool message_provided{false};
@@ -89,7 +90,8 @@ struct SquashCommand {
   std::string message;
 };
 struct AbandonCommand {
-  std::string revision;
+  std::vector<std::string> revisions;
+  std::vector<std::string> revision_options;
   bool retain_bookmarks{false};
   bool restore_descendants{false};
 };

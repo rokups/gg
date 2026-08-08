@@ -386,19 +386,40 @@ TEST_F(RepositoryTest, DescribesFromMessagesStdinAndEditors) {
   const std::string saved_visual = old_visual == nullptr ? "" : old_visual;
   ASSERT_EQ(setenv("VISUAL", editor.string().c_str(), 1), 0);
   const Result from_editor = invoke({"describe", "--editor"});
+  const Result forced_editor =
+      invoke({"describe", "-m", "seed", "--editor"});
   if (saved_visual.empty()) {
     unsetenv("VISUAL");
   } else {
     setenv("VISUAL", saved_visual.c_str(), 1);
   }
   ASSERT_EQ(from_editor.code, 0) << from_editor.error;
+  ASSERT_EQ(forced_editor.code, 0) << forced_editor.error;
   EXPECT_NE(invoke({"show", "--no-patch"}).output.find(
                 "Description: from editor"),
             std::string::npos);
   EXPECT_EQ(invoke({"describe", "-m", "explicit", "@"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
+  const Result multiple =
+      invoke({"describe", "-m", "bulk", "-r", "@ | @-"});
+  ASSERT_EQ(multiple.code, 0) << multiple.error;
+  EXPECT_NE(multiple.output.find("Rewrote 2 revision(s)."),
+            std::string::npos);
+  const std::string shown = invoke({"show", "@ | @-", "--no-patch"}).output;
+  const std::size_t first_bulk = shown.find("Description: bulk");
+  ASSERT_NE(first_bulk, std::string::npos);
+  EXPECT_NE(shown.find("Description: bulk", first_bulk + 1),
+            std::string::npos);
 
   EXPECT_EQ(invoke({"describe", "-m", "x", "--stdin"}).code, 2);
-  EXPECT_EQ(invoke({"describe", "--stdin", "--editor"}).code, 2);
+}
+
+TEST_F(RepositoryTest, DescribesRawGitHistoryWithoutAWorkspace) {
+  const Result described = invoke({"describe", "-m", "raw", "main"});
+  ASSERT_EQ(described.code, 0) << described.error;
+  EXPECT_NE(invoke({"show", "main", "--no-patch"})
+                .output.find("Description: raw"),
+            std::string::npos);
 }
 
 TEST_F(RepositoryTest, SplitsAndSquashesPathChanges) {

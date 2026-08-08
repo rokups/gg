@@ -86,9 +86,10 @@ std::vector<std::string> repository_replay_arguments(
             }
             if (value.stdin_value) result.emplace_back("--stdin");
             if (value.editor) result.emplace_back("--editor");
-            if (!value.revision.empty()) {
-              result.push_back(value.revision);
-            }
+            result.insert(result.end(), value.revisions.begin(),
+                          value.revisions.end());
+            result.insert(result.end(), value.revision_options.begin(),
+                          value.revision_options.end());
             return result;
           },
           [](const EditCommand& value) {
@@ -145,9 +146,10 @@ std::vector<std::string> repository_replay_arguments(
           },
           [](const AbandonCommand& value) {
             std::vector<std::string> result{"abandon"};
-            if (!value.revision.empty()) {
-              result.push_back(value.revision);
-            }
+            result.insert(result.end(), value.revisions.begin(),
+                          value.revisions.end());
+            result.insert(result.end(), value.revision_options.begin(),
+                          value.revision_options.end());
             if (value.retain_bookmarks) {
               result.emplace_back("--retain-bookmarks");
             }
