@@ -541,6 +541,7 @@ void command_fetch(Repository& repo,
     git_strarray refspecs{values.data(), values.size()};
     git_fetch_options fetch_options = GIT_FETCH_OPTIONS_INIT;
     fetch_options.callbacks = remote_callbacks();
+    fetch_options.prune = GIT_FETCH_PRUNE;
     if (!storage.empty()) {
       fetch_options.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE;
     }

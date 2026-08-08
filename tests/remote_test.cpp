@@ -530,8 +530,14 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   EXPECT_TRUE(has_ref("refs/tags/release"));
   EXPECT_TRUE(has_ref("refs/tags/stable"));
 
+  git_repository* backup = nullptr;
+  ASSERT_EQ(git_repository_open(&backup, backup_path.string().c_str()), 0);
+  ASSERT_EQ(git_reference_remove(backup, "refs/heads/two"), 0);
+  git_repository_free(backup);
+  ASSERT_EQ(invoke({"fetch", "--remote", "backup"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/remotes/backup/two"));
+
   remove_ref("refs/remotes/backup/one");
-  remove_ref("refs/remotes/backup/two");
   const Result no_tracked =
       invoke({"fetch", "--tracked", "--remote", "backup"});
   EXPECT_NE(no_tracked.output.find("No tracked refs to fetch"),
