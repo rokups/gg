@@ -31,7 +31,7 @@ int credentials(git_credential** output, const char* url, const char* username,
                 unsigned int allowed, void* payload);
 
 void command_new(Repository&, const NewCommand&, std::ostream&);
-void command_status(Repository&, std::ostream&);
+void command_status(Repository&, const StatusCommand&, std::ostream&);
 void command_log(Repository&, const LogCommand&, std::ostream&);
 void command_edit(Repository&, const EditCommand&, std::ostream&);
 void command_describe(Repository&, const DescribeCommand&, std::ostream&);

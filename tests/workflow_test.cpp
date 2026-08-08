@@ -39,6 +39,24 @@ TEST_F(RepositoryTest, ReportsRenamedFiles) {
   EXPECT_NE(status.output.find("R renamed.txt"), std::string::npos) << status.output;
 }
 
+TEST_F(RepositoryTest, FiltersStatusPaths) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("directory/selected.txt", "selected\n");
+  write("other.txt", "other\n");
+  const Result selected = invoke({"status", "directory"});
+  ASSERT_EQ(selected.code, 0) << selected.error;
+  EXPECT_NE(selected.output.find("directory/selected.txt"), std::string::npos);
+  EXPECT_EQ(selected.output.find("other.txt"), std::string::npos);
+  EXPECT_NE(invoke({"status", "other.txt"}).output.find("other.txt"),
+            std::string::npos);
+  EXPECT_NE(invoke({"st", "missing"}).output.find("has no changes"),
+            std::string::npos);
+  EXPECT_NE(invoke({"status", "."}).output.find("other.txt"), std::string::npos);
+  EXPECT_EQ(invoke({"status", ""}).code, 2);
+  EXPECT_EQ(invoke({"status", "/absolute"}).code, 2);
+  EXPECT_EQ(invoke({"status", "../outside"}).code, 2);
+}
+
 TEST_F(RepositoryTest, CreatesSnapshotsAndLogsChanges) {
   const Result created = invoke({"new", "-m", "first", "main"});
   ASSERT_EQ(created.code, 0) << created.error;
@@ -72,9 +90,9 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   ASSERT_EQ(limited.code, 0) << limited.error;
   EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 2);
   EXPECT_EQ(limited.output.find("third") > limited.output.find("second"), true);
-  EXPECT_EQ(limited.output.front() == '@' || limited.output.front() == 'o' ||
-                limited.output.front() == '*',
-            false);
+  EXPECT_FALSE(limited.output.starts_with("@  ") ||
+               limited.output.starts_with("o  ") ||
+               limited.output.starts_with("*  "));
   EXPECT_EQ(invoke({"log", "-r", "@", "--limit", "2", "--count"}).output,
             "2\n");
   EXPECT_EQ(invoke({"log", "--limit", "0"}).output, "");

@@ -36,7 +36,9 @@ int execute(Repository& repository,
   try {
     std::visit(
         Overloaded{
-            [&](const StatusCommand&) { command_status(repository, output); },
+            [&](const StatusCommand& value) {
+              command_status(repository, value, output);
+            },
             [&](const LogCommand& value) {
               command_log(repository, value, output);
             },

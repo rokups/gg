@@ -48,7 +48,11 @@ std::vector<std::string> repository_replay_arguments(
     const RepositoryCommand& command) {
   return std::visit(
       Overloaded{
-          [](const StatusCommand&) { return std::vector<std::string>{"status"}; },
+          [](const StatusCommand& value) {
+            std::vector<std::string> result{"status"};
+            result.insert(result.end(), value.paths.begin(), value.paths.end());
+            return result;
+          },
           [](const LogCommand& value) {
             std::vector<std::string> result{"log"};
             add_option(result, "-r", value.revision);

@@ -101,8 +101,26 @@ void command_commit(Repository& repo,
          << oid_string(new_workspace, 8) << '\n';
 }
 
-void command_status(Repository& repo, std::ostream& output) {
+void command_status(Repository& repo,
+                    const StatusCommand& options,
+                    std::ostream& output) {
   repo.sync_workspace();
+  std::vector<std::string> paths;
+  for (const std::string& value : options.paths) {
+    const std::filesystem::path path(value);
+    if (value.empty() || path.is_absolute()) {
+      throw UserError("status paths must be repository-relative");
+    }
+    for (const auto& component : path) {
+      if (component == "..") {
+        throw UserError("status paths must not contain '..'");
+      }
+    }
+    const std::string normalized = path.lexically_normal().generic_string();
+    if (normalized != ".") {
+      paths.push_back(normalized);
+    }
+  }
   const auto workspace = repo.ref_target(kWorkspaceRef);
   if (!workspace.has_value()) {
     output << "No working-copy change. Run `gg new` to create one.\n";
@@ -136,12 +154,35 @@ void command_status(Repository& repo, std::ostream& output) {
   DiffPtr diff(raw_diff);
   git_diff_find_options find_options = GIT_DIFF_FIND_OPTIONS_INIT;
   check(git_diff_find_similar(diff.get(), &find_options), "find renamed files");
-  if (git_diff_num_deltas(diff.get()) == 0) {
+  std::vector<const git_diff_delta*> deltas;
+  for (std::size_t index = 0; index < git_diff_num_deltas(diff.get()); ++index) {
+    const git_diff_delta* delta = git_diff_get_delta(diff.get(), index);
+    const auto selected = [&](const char* raw_path) {
+      const std::string_view path = raw_path;
+      if (paths.empty()) {
+        return true;
+      }
+      for (const std::string& prefix : paths) {
+        if (path == prefix) {
+          return true;
+        }
+        if (path.starts_with(prefix + "/")) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const bool old_selected = selected(delta->old_file.path);
+    const bool new_selected = selected(delta->new_file.path);
+    if (old_selected | new_selected) {
+      deltas.push_back(delta);
+    }
+  }
+  if (deltas.empty()) {
     output << "The working copy has no changes.\n";
   } else {
     output << "Working copy changes:\n";
-    for (std::size_t index = 0; index < git_diff_num_deltas(diff.get()); ++index) {
-      const git_diff_delta* delta = git_diff_get_delta(diff.get(), index);
+    for (const git_diff_delta* delta : deltas) {
       const char status = delta->status == GIT_DELTA_ADDED      ? 'A'
                           : delta->status == GIT_DELTA_DELETED  ? 'D'
                           : delta->status == GIT_DELTA_RENAMED  ? 'R'

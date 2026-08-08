@@ -16,7 +16,9 @@
 
 namespace gg::detail {
 
-struct StatusCommand {};
+struct StatusCommand {
+  std::vector<std::string> paths;
+};
 struct DiffFormatOptions {
   bool summary{false};
   bool stat{false};

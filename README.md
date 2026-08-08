@@ -12,7 +12,7 @@ existing Git-aware editors continue to see normal working-tree changes.
 ## MVP commands
 
 ```text
-gg status
+gg status [PATH...]
 gg log [-r REV] [-n LIMIT] [--reversed] [--count] [PATH...]
 gg new [-m DESCRIPTION] [PARENT...]
 gg describe [-m DESCRIPTION] [REV]

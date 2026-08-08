@@ -67,7 +67,7 @@ TEST_F(RepositoryTest, ReportsDeleteModifyConflicts) {
 
   EXPECT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code, 1);
   EXPECT_TRUE(has_ref("refs/gg/rewrite"));
-  EXPECT_EQ(invoke({"status", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"status", "extra"}).code, 0);
   EXPECT_EQ(invoke({"abort", "extra"}).code, 2);
   EXPECT_EQ(invoke({"continue", "extra"}).code, 2);
   EXPECT_EQ(invoke({"abort"}).code, 0);

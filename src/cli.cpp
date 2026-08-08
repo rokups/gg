@@ -24,6 +24,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   StatusCommand status_value;
   auto* status = app.add_subcommand("status", "Show the working-copy change");
   status->alias("st");
+  status->add_option("filesets", status_value.paths,
+                     "Repository-relative paths");
 
   LogCommand log_value;
   auto* log = app.add_subcommand("log", "Show revision history");

@@ -36,7 +36,7 @@ TEST(AppTest, ReportsUserAndGitErrors) {
 TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"log"}).code, 0);
   EXPECT_EQ(invoke({"log", "-r", "main"}).code, 0);
-  EXPECT_EQ(invoke({"status", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"status", "extra"}).code, 0);
   EXPECT_EQ(invoke({"st"}).code, 0);
   EXPECT_EQ(invoke({"log", "--unknown"}).code, 2);
   EXPECT_EQ(invoke({"edit"}).code, 2);
