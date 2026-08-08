@@ -363,9 +363,29 @@ std::vector<std::string> repository_replay_arguments(
             return result;
           },
           [](const GitPushCommand& value) {
-            std::vector<std::string> result{"push", "--bookmark",
-                                            value.bookmark};
+            std::vector<std::string> result{"push"};
+            for (const std::string& bookmark : value.bookmarks) {
+              result.emplace_back("--bookmark");
+              result.push_back(bookmark);
+            }
+            for (const std::string& tag : value.tags) {
+              result.emplace_back("--tag");
+              result.push_back(tag);
+            }
+            for (const std::string& option : value.options) {
+              result.emplace_back("--option");
+              result.push_back(option);
+            }
             add_option(result, "--remote", value.remote);
+            if (value.all) result.emplace_back("--all");
+            if (value.allow_empty_description) {
+              result.emplace_back("--allow-empty-description");
+            }
+            if (value.allow_private) result.emplace_back("--allow-private");
+            if (value.allow_conflicts) {
+              result.emplace_back("--allow-conflicts");
+            }
+            if (value.dry_run) result.emplace_back("--dry-run");
             return result;
           },
           [](const UndoCommand&) { return std::vector<std::string>{"undo"}; },

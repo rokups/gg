@@ -268,6 +268,41 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
                 .code,
             0);
 
+  ASSERT_EQ(invoke({"bookmark", "create", "second", "dry"}).code, 0);
+  ASSERT_EQ(invoke({"tag", "set", "release"}).code, 0);
+  const Result multi_push =
+      invoke({"push", "-b", "topic", "-b", "second", "-t", "release",
+              "--allow-private", "--allow-conflicts"});
+  ASSERT_EQ(multi_push.code, 0) << multi_push.error;
+  EXPECT_EQ(invoke({"push", "-b", "topic", "--option", "ci=1"}).code, 1);
+  const Result dry_run =
+      invoke({"push", "-b", "dry", "--dry-run", "--option", "ignored=1"});
+  ASSERT_EQ(dry_run.code, 0) << dry_run.error;
+  EXPECT_NE(dry_run.output.find("Would push refs/heads/dry"),
+            std::string::npos);
+  ASSERT_EQ(git_repository_open(&bare_check, remote_path.string().c_str()), 0);
+  git_oid pushed{};
+  EXPECT_EQ(git_reference_name_to_id(&pushed, bare_check,
+                                     "refs/heads/second"),
+            0);
+  EXPECT_EQ(git_reference_name_to_id(&pushed, bare_check,
+                                     "refs/tags/release"),
+            0);
+  EXPECT_NE(git_reference_name_to_id(&pushed, bare_check, "refs/heads/dry"),
+            0);
+  git_repository_free(bare_check);
+
+  ASSERT_EQ(invoke({"new", "-m", ""}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "empty"}).code, 0);
+  EXPECT_EQ(invoke({"push", "-b", "empty"}).code, 2);
+  ASSERT_EQ(invoke({"push", "--all", "--allow-empty-description"}).code, 0);
+  ASSERT_EQ(git_repository_open(&bare_check, remote_path.string().c_str()), 0);
+  EXPECT_EQ(git_reference_name_to_id(&pushed, bare_check, "refs/heads/dry"),
+            0);
+  EXPECT_EQ(git_reference_name_to_id(&pushed, bare_check, "refs/heads/empty"),
+            0);
+  git_repository_free(bare_check);
+
   const Result cloned =
       run({"clone", remote_path.string(), clone_path.string()});
   EXPECT_EQ(cloned.code, 0) << cloned.error;

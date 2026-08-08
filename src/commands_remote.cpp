@@ -536,22 +536,75 @@ void command_push(Repository& repo,
                   const GitPushCommand& options,
                   std::ostream& output) {
   repo.sync_workspace();
-  const std::string reference = "refs/heads/" + options.bookmark;
-  if (!repo.ref_target(reference).has_value()) {
-    throw UserError("bookmark not found: " + options.bookmark);
+  if (!options.all && options.bookmarks.empty() && options.tags.empty()) {
+    throw UserError("push requires --bookmark, --tag, or --all");
   }
   const std::string name = options.remote.empty() ? "origin" : options.remote;
+  std::map<std::string, std::string> updates;
+  const auto add = [&](std::string_view kind, const std::string& ref_name) {
+    const std::string reference = "refs/" + std::string(kind) + "/" + ref_name;
+    if (!repo.ref_target(reference).has_value()) {
+      throw UserError(std::string(kind == "heads" ? "bookmark" : "tag") +
+                      " not found: " + ref_name);
+    }
+    updates.emplace(reference, reference);
+  };
+  for (const std::string& bookmark : options.bookmarks) {
+    add("heads", bookmark);
+  }
+  for (const std::string& tag : options.tags) add("tags", tag);
+  if (options.all) {
+    for (const auto& [reference, oid] : repo.data_refs()) {
+      (void)oid;
+      if (starts_with(reference, "refs/heads/") ||
+          starts_with(reference, "refs/tags/")) {
+        updates.emplace(reference, reference);
+      }
+    }
+  }
+  if (!options.allow_empty_description) {
+    for (const auto& [destination, source] : updates) {
+      (void)destination;
+      git_object* raw_object = nullptr;
+      check(git_revparse_single(&raw_object, repo.raw(), source.c_str()),
+            "resolve push target");
+      ObjectPtr object(raw_object);
+      git_object* raw_commit = nullptr;
+      check(git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT),
+            "resolve push commit");
+      ObjectPtr commit(raw_commit);
+      const auto* value = reinterpret_cast<const git_commit*>(commit.get());
+      if (first_line(git_commit_message(value)).empty()) {
+        throw UserError("refusing to push an empty description: " + source);
+      }
+    }
+  }
+
   git_remote* raw_remote = nullptr;
   check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()), "find remote");
   RemotePtr remote(raw_remote);
-  const std::string refspec = reference + ":" + reference;
-  char* value = const_cast<char*>(refspec.c_str());
-  git_strarray refspecs{&value, 1};
+
+  std::vector<std::string> storage;
+  for (const auto& [destination, source] : updates) {
+    storage.push_back(source + ":" + destination);
+    output << (options.dry_run ? "Would push " : "Pushing ") << destination
+           << " to " << name << '\n';
+  }
+  if (options.dry_run) return;
+  std::vector<char*> values;
+  for (std::string& refspec : storage) values.push_back(refspec.data());
+  git_strarray refspecs{values.data(), values.size()};
+  std::vector<char*> push_option_values;
+  for (const std::string& option : options.options) {
+    push_option_values.push_back(const_cast<char*>(option.c_str()));
+  }
+  git_strarray push_options_array{push_option_values.data(),
+                                  push_option_values.size()};
   git_push_options push_options = GIT_PUSH_OPTIONS_INIT;
   push_options.callbacks = remote_callbacks();
+  push_options.remote_push_options = push_options_array;
   check(git_remote_push(remote.get(), &refspecs, &push_options),
-        "push bookmark");
-  output << "Pushed bookmark " << options.bookmark << " to " << name << '\n';
+        "push refs");
 }
 
 void command_undo(Repository& repo, std::ostream& output) {

@@ -93,6 +93,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"fetch", "--remote", "missing"}).code, 1);
   EXPECT_EQ(invoke({"push"}).code, 2);
   EXPECT_EQ(invoke({"push", "-b", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"push", "-t", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-b", "missing", "extra"}).code, 2);
   EXPECT_EQ(run({"clone"}).code, 2);
   EXPECT_EQ(run({"clone", "one", "two", "three"}).code, 2);

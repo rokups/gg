@@ -615,10 +615,22 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                   "Fetch every remote")
       ->excludes(fetch_remotes);
   GitPushCommand push_value;
-  auto* push = app.add_subcommand("push", "Push a bookmark");
-  push->add_option("-b,--bookmark", push_value.bookmark, "Bookmark name")
-      ->required();
+  auto* push = app.add_subcommand("push", "Push bookmarks and tags");
+  push->add_option("-b,--bookmark,--branch", push_value.bookmarks,
+                   "Bookmark name");
+  push->add_option("-t,--tag", push_value.tags, "Tag name");
+  push->add_flag("--all", push_value.all, "Push all bookmarks and tags");
   push->add_option("--remote", push_value.remote, "Remote name");
+  push->add_flag("--allow-empty-description",
+                 push_value.allow_empty_description,
+                 "Allow empty commit descriptions");
+  push->add_flag("--allow-private", push_value.allow_private,
+                 "Allow private commits");
+  push->add_flag("--allow-conflicts", push_value.allow_conflicts,
+                 "Allow conflicted commits");
+  push->add_flag("--dry-run", push_value.dry_run,
+                 "Show updates without pushing");
+  push->add_option("-o,--option", push_value.options, "Git push option");
 
   auto* continue_rewrite =
       app.add_subcommand("continue", "Continue a paused rewrite");

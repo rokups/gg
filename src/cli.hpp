@@ -202,8 +202,15 @@ struct GitFetchCommand {
   bool all_remotes{false};
 };
 struct GitPushCommand {
-  std::string bookmark;
+  std::vector<std::string> bookmarks;
+  std::vector<std::string> tags;
+  std::vector<std::string> options;
   std::string remote;
+  bool all{false};
+  bool allow_empty_description{false};
+  bool allow_private{false};
+  bool allow_conflicts{false};
+  bool dry_run{false};
 };
 struct ContinueCommand {};
 struct AbortCommand {};
