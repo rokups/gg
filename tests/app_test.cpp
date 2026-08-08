@@ -17,6 +17,12 @@ TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_EQ(run({"status", "--help"}).code, 0);
   EXPECT_NE(run({"status", "--help"}).output.find("gg status [OPTIONS]"),
             std::string::npos);
+  EXPECT_NE(run({"help", "status"}).output.find("gg status [OPTIONS]"),
+            std::string::npos);
+  EXPECT_NE(run({"help", "operation", "restore"})
+                .output.find("gg operation restore [OPTIONS]"),
+            std::string::npos);
+  EXPECT_EQ(run({"help", "missing"}).code, 2);
   EXPECT_EQ(run({"version"}).output, "gg 0.1.0\n");
 }
 
@@ -34,6 +40,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"st"}).code, 0);
   EXPECT_EQ(invoke({"log", "extra"}).code, 2);
   EXPECT_EQ(invoke({"edit"}).code, 2);
+  EXPECT_EQ(invoke({"edit", "main", "-r", "main"}).code, 2);
   EXPECT_EQ(invoke({"describe"}).code, 2);
   EXPECT_EQ(invoke({"describe", "-m", ""}).code, 2);
   EXPECT_EQ(invoke({"describe", "-m", "x", "main", "other"}).code, 2);
@@ -82,6 +89,8 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
             2);
   EXPECT_EQ(invoke({"operation", "restore", ""}).code, 2);
   EXPECT_EQ(invoke({"operation", "restore", "@", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"util"}).code, 2);
+  EXPECT_EQ(invoke({"util", "snapshot", "extra"}).code, 2);
   EXPECT_EQ(invoke({"unknown"}).code, 2);
   EXPECT_EQ(invoke({"continue"}).code, 2);
   EXPECT_EQ(invoke({"abort"}).code, 2);

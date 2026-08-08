@@ -42,8 +42,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->expected(0, 1);
 
   EditCommand edit_value;
+  std::string edit_positional;
   auto* edit = app.add_subcommand("edit", "Edit an existing change");
-  edit->add_option("revision", edit_value.revision, "Revision")->required();
+  CLI::Option* edit_revision =
+      edit->add_option("target", edit_positional, "Revision")->expected(0, 1);
+  CLI::Option* edit_revision_option =
+      edit->add_option("-r,--revision", edit_value.revision, "Revision");
+  edit_revision->excludes(edit_revision_option);
+  edit->require_option(1);
 
   RebaseCommand rebase_value;
   auto* rebase = app.add_subcommand("rebase", "Move a change and descendants");
@@ -82,17 +88,15 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   BookmarkCommand bookmark_create;
   bookmark_create.action = BookmarkAction::create;
   auto* create = bookmark->add_subcommand("create", "Create a bookmark");
-  create->add_option("name", bookmark_create.names, "Bookmark name")
-      ->required()
-      ->expected(1);
-  create->add_option("-r,--revision", bookmark_create.revision, "Revision");
+  create->add_option("names", bookmark_create.names, "Bookmark names")
+      ->required();
+  create->add_option("-r,--revision,--to", bookmark_create.revision,
+                     "Revision");
   BookmarkCommand bookmark_set;
   bookmark_set.action = BookmarkAction::set;
   auto* set = bookmark->add_subcommand("set", "Set a bookmark");
-  set->add_option("name", bookmark_set.names, "Bookmark name")
-      ->required()
-      ->expected(1);
-  set->add_option("-r,--revision", bookmark_set.revision, "Revision");
+  set->add_option("names", bookmark_set.names, "Bookmark names")->required();
+  set->add_option("-r,--revision,--to", bookmark_set.revision, "Revision");
   BookmarkCommand bookmark_delete;
   bookmark_delete.action = BookmarkAction::erase;
   auto* erase = bookmark->add_subcommand("delete", "Delete bookmarks");
@@ -135,7 +139,13 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->add_option("--what", operation_restore_value.what,
                    "State to restore: repo or remote-tracking")
       ->check(CLI::IsMember({"repo", "remote-tracking"}));
+  auto* util = app.add_subcommand("util", "Utility commands");
+  util->require_subcommand(1);
+  auto* util_snapshot =
+      util->add_subcommand("snapshot", "Snapshot the working copy");
+  std::vector<std::string> help_commands;
   auto* help = app.add_subcommand("help", "Print help");
+  help->add_option("commands", help_commands, "Command path");
   auto* version = app.add_subcommand("version", "Print version");
 
   if (arguments.empty()) {
@@ -168,7 +178,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   }
 
   if (help->parsed()) {
-    output << app.help();
+    CLI::App* target = &app;
+    std::string parent = "gg";
+    for (std::size_t index = 0; index < help_commands.size(); ++index) {
+      const std::string& name = help_commands[index];
+      target = target->get_subcommand_no_throw(name);
+      if (target == nullptr) {
+        error << "error: command not found: " << name << '\n';
+        return {2, std::monostate{}};
+      }
+      if (index + 1 < help_commands.size()) {
+        parent += " " + name;
+      }
+    }
+    output << (help_commands.empty() ? app.help() : target->help(parent));
     return {0, std::monostate{}};
   }
   if (version->parsed()) {
@@ -186,6 +209,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   } else if (describe->parsed()) {
     command = RepositoryCommand{std::move(describe_value)};
   } else if (edit->parsed()) {
+    if (edit_value.revision.empty()) {
+      edit_value.revision = std::move(edit_positional);
+    }
     command = RepositoryCommand{std::move(edit_value)};
   } else if (rebase->parsed()) {
     command = RepositoryCommand{std::move(rebase_value)};
@@ -221,6 +247,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{OperationLogCommand{}};
   } else if (operation_restore->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{std::move(operation_restore_value)};
+  } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
+    command = RepositoryCommand{UtilSnapshotCommand{}};
   }
 
   Invocation invocation{repository, std::move(command), {}};

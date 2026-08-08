@@ -9,13 +9,25 @@ namespace gg::test {
 TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   EXPECT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "create", "one", "two", "--to", "main"})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref("refs/heads/one"));
+  EXPECT_TRUE(has_ref("refs/heads/two"));
   EXPECT_NE(invoke({"bookmark", "list"}).output.find("topic:"),
             std::string::npos);
   EXPECT_EQ(invoke({"bookmark", "create", "topic"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "create", "bad name"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "set", "topic", "-r", "main"}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "create", "valid", "bad name"}).code, 2);
+  EXPECT_FALSE(has_ref("refs/heads/valid"));
+  EXPECT_EQ(invoke({"bookmark", "set", "topic", "three", "-r", "main"})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref("refs/heads/three"));
   EXPECT_EQ(invoke({"bookmark", "delete", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "delete", "topic"}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "delete", "topic", "one", "two", "three"})
+                .code,
+            0);
 }
 
 TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {

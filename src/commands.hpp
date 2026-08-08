@@ -41,6 +41,7 @@ void command_redo(Repository&, std::ostream&);
 void command_operation_log(Repository&, std::ostream&);
 void command_operation_restore(Repository&, const OperationRestoreCommand&,
                                std::ostream&);
+void command_util_snapshot(Repository&, std::ostream&);
 int clone_command(const GitCloneCommand&, std::ostream&);
 
 }  // namespace gg::detail

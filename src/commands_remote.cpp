@@ -69,23 +69,28 @@ void command_bookmark(Repository& repo,
     output << "Deleted " << deletes.size() << " bookmark(s).\n";
     return;
   }
-  const std::string& name = options.names.front();
-  const std::string reference = "refs/heads/" + name;
-  int valid = 0;
-  check(git_reference_name_is_valid(&valid, reference.c_str()),
-        "validate bookmark name");
-  if (valid == 0) {
-    throw UserError("invalid bookmark name: " + name);
-  }
-  if (options.action == BookmarkAction::create &&
-      repo.ref_target(reference).has_value()) {
-    throw UserError("bookmark already exists: " + name);
-  }
   const git_oid target =
       repo.resolve(options.revision.empty() ? "@" : options.revision);
-  repo.record({{reference, target}}, {}, repo.head_state(), "gg bookmark");
-  output << (options.action == BookmarkAction::create ? "Created " : "Moved ")
-         << name << " at " << oid_string(target, 8) << '\n';
+  std::map<std::string, git_oid> updates;
+  for (const std::string& name : options.names) {
+    const std::string reference = "refs/heads/" + name;
+    int valid = 0;
+    check(git_reference_name_is_valid(&valid, reference.c_str()),
+          "validate bookmark name");
+    if (valid == 0) {
+      throw UserError("invalid bookmark name: " + name);
+    }
+    if (options.action == BookmarkAction::create &&
+        repo.ref_target(reference).has_value()) {
+      throw UserError("bookmark already exists: " + name);
+    }
+    updates.emplace(reference, target);
+  }
+  repo.record(std::move(updates), {}, repo.head_state(), "gg bookmark");
+  for (const std::string& name : options.names) {
+    output << (options.action == BookmarkAction::create ? "Created " : "Moved ")
+           << name << " at " << oid_string(target, 8) << '\n';
+  }
 }
 
 int credentials(git_credential** output,

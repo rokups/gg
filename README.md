@@ -16,13 +16,13 @@ gg status
 gg log [-r REV]
 gg new [-m DESCRIPTION] [PARENT...]
 gg describe [-m DESCRIPTION] [REV]
-gg edit REV
+gg edit [REV | -r REV]
 gg squash [-r REV | --from REV --into REV]
 gg split [-r REV] [-m DESCRIPTION] PATH...
 gg abandon [REV]
 gg rebase -s REV -d REV
-gg bookmark create NAME [-r REV]
-gg bookmark set NAME [-r REV]
+gg bookmark create NAME... [-r REV]
+gg bookmark set NAME... [-r REV]
 gg bookmark delete NAME...
 gg bookmark list
 gg clone URL [DESTINATION]
@@ -34,6 +34,7 @@ gg undo
 gg redo
 gg operation log
 gg operation restore [--what repo|remote-tracking] OPERATION
+gg util snapshot
 ```
 
 Revisions use JJ names: `@`, `@-`, stable change-ID prefixes, bookmarks, or

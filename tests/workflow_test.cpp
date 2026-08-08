@@ -36,6 +36,16 @@ TEST_F(RepositoryTest, CreatesSnapshotsAndLogsChanges) {
   EXPECT_NE(log.output.find("second"), std::string::npos);
 }
 
+TEST_F(RepositoryTest, ExplicitlySnapshotsTheWorkingCopy) {
+  EXPECT_EQ(invoke({"util", "snapshot"}).output, "Nothing changed.\n");
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("tracked.txt", "snapshot\n");
+  EXPECT_EQ(invoke({"util", "snapshot"}).output,
+            "Created working-copy snapshot.\n");
+  EXPECT_EQ(invoke({"util", "snapshot"}).output, "Nothing changed.\n");
+  EXPECT_NE(invoke({"status"}).output.find("M tracked.txt"), std::string::npos);
+}
+
 TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
   const Result first = invoke({"new", "-m", "first", "main"});
   ASSERT_EQ(first.code, 0) << first.error;
@@ -52,7 +62,7 @@ TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
   ASSERT_EQ(invoke({"bookmark", "create", "feature"}).code, 0);
   const git_oid second_before = ref("refs/heads/feature");
 
-  ASSERT_EQ(invoke({"edit", first_id}).code, 0);
+  ASSERT_EQ(invoke({"edit", "-r", first_id}).code, 0);
   ASSERT_EQ(invoke({"describe", "-m", "first rewritten"}).code, 0);
   write("tracked.txt", "first rewritten\n");
   ASSERT_EQ(invoke({"status"}).code, 0);

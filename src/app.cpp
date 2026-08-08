@@ -77,6 +77,9 @@ int execute(Repository& repository,
             },
             [&](const OperationRestoreCommand& value) {
               command_operation_restore(repository, value, output);
+            },
+            [&](const UtilSnapshotCommand&) {
+              command_util_snapshot(repository, output);
             }},
         command);
     return 0;

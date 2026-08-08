@@ -121,6 +121,9 @@ std::vector<std::string> repository_replay_arguments(
             }
             result.push_back(value.operation);
             return result;
+          },
+          [](const UtilSnapshotCommand&) {
+            return std::vector<std::string>{"util", "snapshot"};
           }},
       command);
 }

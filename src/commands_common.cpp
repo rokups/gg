@@ -58,4 +58,9 @@ void finish_workspace(Repository& repo,
   repo.checkout(workspace);
 }
 
+void command_util_snapshot(Repository& repo, std::ostream& output) {
+  output << (repo.sync_workspace() ? "Created working-copy snapshot.\n"
+                                   : "Nothing changed.\n");
+}
+
 }  // namespace gg::detail
