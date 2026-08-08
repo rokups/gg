@@ -139,6 +139,10 @@ int dispatch(std::span<const std::string_view> arguments,
   if (const auto* init = std::get_if<GitInitCommand>(&invocation.command)) {
     return init_command(*init, output);
   }
+  if (const auto* util_exec =
+          std::get_if<UtilExecCommand>(&invocation.command)) {
+    return command_util_exec(*util_exec, invocation.repository);
+  }
 
   Repository repository(invocation.repository);
   if (repository.pending().has_value()) {

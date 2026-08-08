@@ -52,6 +52,7 @@ gg undo
 gg redo
 gg operation log
 gg operation restore [--what repo|remote-tracking] OPERATION
+gg util exec -- COMMAND [ARG...]
 gg util snapshot
 gg workspace list
 gg workspace root [--name default]

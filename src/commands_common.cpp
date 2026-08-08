@@ -111,6 +111,62 @@ std::string edit_text(std::string_view initial) {
   }
 }
 
+int command_util_exec(const UtilExecCommand& options,
+                      const std::filesystem::path& repository) {
+  std::vector<std::string> argument_storage{options.command};
+  argument_storage.insert(argument_storage.end(), options.arguments.begin(),
+                          options.arguments.end());
+  std::vector<char*> arguments;
+  arguments.reserve(argument_storage.size() + 1);
+  for (std::string& argument : argument_storage) {
+    arguments.push_back(argument.data());
+  }
+  arguments.push_back(nullptr);
+
+  std::vector<std::string> environment_storage;
+  std::vector<char*> environment;
+  char** child_environment = environ;
+  git_repository* raw_repository = nullptr;
+  const std::string repository_path = repository.string();
+  if (git_repository_open_ext(&raw_repository, repository_path.c_str(), 0,
+                              nullptr) == 0) {
+    RepositoryPtr discovered(raw_repository);
+    if (git_repository_is_bare(discovered.get()) == 0) {
+      constexpr std::string_view prefix = "GG_WORKSPACE_ROOT=";
+      for (char** entry = environ; *entry != nullptr; ++entry) {
+        if (!starts_with(*entry, prefix)) {
+          environment_storage.emplace_back(*entry);
+        }
+      }
+      environment_storage.push_back(
+          std::string(prefix) +
+          std::filesystem::weakly_canonical(
+              git_repository_workdir(discovered.get()))
+              .string());
+      environment.reserve(environment_storage.size() + 1);
+      for (std::string& entry : environment_storage) {
+        environment.push_back(entry.data());
+      }
+      environment.push_back(nullptr);
+      child_environment = environment.data();
+    }
+  } else {
+    git_error_clear();
+  }
+
+  pid_t process = 0;
+  const int spawned = posix_spawnp(&process, options.command.c_str(), nullptr,
+                                   nullptr, arguments.data(),
+                                   child_environment);
+  if (spawned != 0) {
+    throw UserError("cannot execute external command: " + options.command);
+  }
+  int status = 0;
+  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for external command");  // GG_COV_EXCL_BRANCH
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  throw UserError("external command terminated by a signal");
+}
+
 void command_util_snapshot(Repository& repo, std::ostream& output) {
   output << (repo.sync_workspace() ? "Created working-copy snapshot.\n"
                                    : "Nothing changed.\n");

@@ -4,6 +4,9 @@
 
 #include "test_support.hpp"
 
+#include <cstdlib>
+#include <optional>
+
 namespace gg::test {
 
 TEST(AppTest, PrintsHelpAndVersion) {
@@ -120,6 +123,52 @@ TEST_F(RepositoryTest, ReportsBareRepositoriesAndEmptyUndoHistory) {
   EXPECT_EQ(invoke({"redo"}).code, 2);
   EXPECT_EQ(invoke({"operation", "log"}).output, "No operations.\n");
   std::filesystem::remove_all(bare_path);
+}
+
+TEST_F(RepositoryTest, ExecutesUtilitiesWithExactArgumentsAndWorkspaceRoot) {
+  const std::filesystem::path result_path = path_ / "exec-result";
+  const char* previous_raw = std::getenv("GG_WORKSPACE_ROOT");
+  const std::optional<std::string> previous =
+      previous_raw == nullptr ? std::nullopt
+                              : std::optional<std::string>(previous_raw);
+  ASSERT_EQ(setenv("GG_WORKSPACE_ROOT", "wrong", 1), 0);
+  const Result result = invoke(
+      {"util", "exec", "--", "/bin/sh", "-c",
+       "printf '%s\\n' \"$GG_WORKSPACE_ROOT\" \"$1\" \"$2\" > \"$3\"; "
+       "exit \"$4\"",
+       "gg-script", "a b", "", result_path.string(), "7"});
+  if (previous.has_value()) {
+    ASSERT_EQ(setenv("GG_WORKSPACE_ROOT", previous->c_str(), 1), 0);
+  } else {
+    ASSERT_EQ(unsetenv("GG_WORKSPACE_ROOT"), 0);
+  }
+  EXPECT_EQ(result.code, 7) << result.error;
+  std::ifstream input(result_path);
+  std::ostringstream contents;
+  contents << input.rdbuf();
+  EXPECT_EQ(contents.str(),
+            std::filesystem::weakly_canonical(path_).string() +
+                "\na b\n\n");
+
+  EXPECT_EQ(invoke({"util", "exec", "definitely-not-a-gg-test-command"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"util", "exec", "--", "/bin/sh", "-c",
+                    "kill -TERM $$"})
+                .code,
+            2);
+
+  const auto bare_path =
+      path_.parent_path() / (path_.filename().string() + "-exec-bare");
+  std::filesystem::remove_all(bare_path);
+  git_repository* bare = nullptr;
+  ASSERT_EQ(git_repository_init(&bare, bare_path.string().c_str(), 1), 0);
+  git_repository_free(bare);
+  EXPECT_EQ(run({"-R", bare_path.string(), "util", "exec", "/bin/true"})
+                .code,
+            0);
+  std::filesystem::remove_all(bare_path);
+  EXPECT_EQ(run({"-R", "/", "util", "exec", "/bin/true"}).code, 0);
 }
 
 }  // namespace gg::test

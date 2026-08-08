@@ -415,6 +415,13 @@ std::vector<std::string> replay_arguments(const Command& command) {
             }
             return result;
           },
+          [](const UtilExecCommand& value) {
+            std::vector<std::string> result{"util", "exec", "--",
+                                            value.command};
+            result.insert(result.end(), value.arguments.begin(),
+                          value.arguments.end());
+            return result;
+          },
           [](const ContinueCommand&) {
             return std::vector<std::string>{"continue"};
           },

@@ -193,6 +193,10 @@ struct OperationRestoreCommand {
   std::string operation;
   std::vector<std::string> what;
 };
+struct UtilExecCommand {
+  std::string command;
+  std::vector<std::string> arguments;
+};
 struct UtilSnapshotCommand {};
 
 enum class WorkspaceAction { list, root };
@@ -235,7 +239,7 @@ using RepositoryCommand =
                  UtilSnapshotCommand, WorkspaceCommand, MovementCommand,
                  ConfigCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,
-                             ContinueCommand, AbortCommand>;
+                             UtilExecCommand, ContinueCommand, AbortCommand>;
 
 struct Invocation {
   std::filesystem::path repository{"."};

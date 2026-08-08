@@ -422,6 +422,12 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->check(CLI::IsMember({"repo", "remote-tracking"}));
   auto* util = app.add_subcommand("util", "Utility commands");
   util->require_subcommand(1);
+  UtilExecCommand util_exec_value;
+  auto* util_exec =
+      util->add_subcommand("exec", "Execute an external command");
+  util_exec->add_option("command", util_exec_value.command, "Command")
+      ->required();
+  util_exec->add_option("args", util_exec_value.arguments, "Command arguments");
   auto* util_snapshot =
       util->add_subcommand("snapshot", "Snapshot the working copy");
   auto* workspace = app.add_subcommand("workspace", "Inspect workspaces");
@@ -662,6 +668,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(operation_log_value)};
   } else if (operation_restore->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{std::move(operation_restore_value)};
+  } else if (util_exec->parsed()) {
+    command = std::move(util_exec_value);
   } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UtilSnapshotCommand{}};
   } else if (workspace_list->parsed()) {
