@@ -201,6 +201,17 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
   EXPECT_EQ(invoke({"workspace", "list"}).code, 2);
 }
 
+TEST_F(RepositoryTest, ListsAndResetsFullWorkingCopyPatterns) {
+  EXPECT_EQ(invoke({"sparse", "list"}).code, 2);
+  EXPECT_EQ(invoke({"sparse", "reset"}).code, 2);
+
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  EXPECT_EQ(invoke({"sparse", "list"}).output, ".\n");
+  EXPECT_EQ(invoke({"sparse", "reset"}).output, "");
+  EXPECT_EQ(invoke({"--at-op", "@", "sparse", "list"}).output, ".\n");
+  EXPECT_EQ(invoke({"--at-op", "@", "sparse", "reset"}).code, 2);
+}
+
 TEST_F(RepositoryTest, ReportsRenamedFiles) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   std::filesystem::rename(path_ / "tracked.txt", path_ / "renamed.txt");

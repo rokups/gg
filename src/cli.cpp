@@ -857,6 +857,15 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   workspace_rename
       ->add_option("name", workspace_rename_value.name, "New workspace name")
       ->required();
+  auto* sparse = app.add_subcommand("sparse", "Manage sparse working copies");
+  sparse->require_subcommand(1);
+  SparseCommand sparse_list_value;
+  auto* sparse_list =
+      sparse->add_subcommand("list", "List working-copy patterns");
+  SparseCommand sparse_reset_value;
+  sparse_reset_value.action = SparseAction::reset;
+  auto* sparse_reset =
+      sparse->add_subcommand("reset", "Include all working-copy files");
   MovementCommand next_value;
   auto* next = app.add_subcommand("next", "Move to a child revision");
   CLI::Option* next_offset =
@@ -1143,6 +1152,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(workspace_forget_value)};
   } else if (workspace_rename->parsed()) {
     command = RepositoryCommand{std::move(workspace_rename_value)};
+  } else if (sparse_list->parsed()) {
+    command = RepositoryCommand{sparse_list_value};
+  } else if (sparse_reset->parsed()) {
+    command = RepositoryCommand{sparse_reset_value};
   } else if (next->parsed()) {
     command = RepositoryCommand{next_value};
   } else if (previous->parsed()) {  // GG_COV_EXCL_BRANCH

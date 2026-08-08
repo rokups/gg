@@ -545,4 +545,14 @@ void command_workspace(Repository& repo,
   }
 }
 
+void command_sparse(Repository& repo,
+                    const SparseCommand& options,
+                    std::ostream& output) {
+  repo.sync_workspace();
+  if (!repo.workspace().has_value()) {
+    throw UserError("this command requires a working-copy change");
+  }
+  if (options.action == SparseAction::list) output << ".\n";
+}
+
 }  // namespace gg::detail

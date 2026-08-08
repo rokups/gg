@@ -476,6 +476,11 @@ std::vector<std::string> repository_replay_arguments(
             }
             return result;
           },
+          [](const SparseCommand& value) {
+            return std::vector<std::string>{
+                "sparse",
+                value.action == SparseAction::list ? "list" : "reset"};
+          },
           [](const MovementCommand& value) {
             std::vector<std::string> result{
                 value.direction == MovementDirection::next ? "next" : "prev"};

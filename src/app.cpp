@@ -69,6 +69,9 @@ bool has_primary_output(const Command& command) {
                   return repository_value.action == WorkspaceAction::list ||
                          repository_value.action == WorkspaceAction::root;
                 } else if constexpr (std::is_same_v<RepositoryValue,
+                                                    SparseCommand>) {
+                  return repository_value.action == SparseAction::list;
+                } else if constexpr (std::is_same_v<RepositoryValue,
                                                     FileCommand>) {
                   return repository_value.action == FileAction::list ||
                          repository_value.action == FileAction::show ||
@@ -185,6 +188,9 @@ int execute(Repository& repository,
             },
             [&](const WorkspaceCommand& value) {
               command_workspace(repository, value, output);
+            },
+            [&](const SparseCommand& value) {
+              command_sparse(repository, value, output);
             },
             [&](const MovementCommand& value) {
               command_move(repository, value, output);

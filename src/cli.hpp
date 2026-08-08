@@ -259,6 +259,11 @@ struct WorkspaceCommand {
   std::string template_value;
 };
 
+enum class SparseAction { list, reset };
+struct SparseCommand {
+  SparseAction action{SparseAction::list};
+};
+
 enum class MovementDirection { next, previous };
 struct MovementCommand {
   MovementDirection direction{MovementDirection::next};
@@ -291,6 +296,7 @@ using RepositoryCommand =
                  GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilGcCommand, UtilSnapshotCommand, WorkspaceCommand,
+                 SparseCommand,
                  MovementCommand,
                  ConfigCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,

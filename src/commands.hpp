@@ -93,6 +93,7 @@ int command_util_exec(const UtilExecCommand&, const std::filesystem::path&);
 void command_util_gc(Repository&, const UtilGcCommand&, std::ostream&);
 void command_util_snapshot(Repository&, std::ostream&);
 void command_workspace(Repository&, const WorkspaceCommand&, std::ostream&);
+void command_sparse(Repository&, const SparseCommand&, std::ostream&);
 void command_move(Repository&, const MovementCommand&, std::ostream&);
 void command_config(Repository&, const ConfigCommand&, std::ostream&);
 std::optional<std::string> config_value(Repository&, std::string_view);
