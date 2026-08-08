@@ -67,15 +67,34 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
   EXPECT_NE(invoke({"diff", "-r", "main"}).output.find("+base"),
             std::string::npos);
 
+  write("tracked.txt", "changed suffix\n");
+  write("uneven.txt", "one\ntwo\n");
+  write("more.txt", "old\n");
+  write("empty.txt", "\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
   ASSERT_EQ(invoke({"new"}).code, 0);
+  write("tracked.txt", "changed middle suffix\n");
+  write("uneven.txt", "replacement\n");
+  write("more.txt", "first\nsecond\n");
+  write("empty.txt", "filled\n");
   write("second.txt", "second\n");
   ASSERT_EQ(invoke({"status"}).code, 0);
+  const Result words =
+      invoke({"--color", "always", "diff", "--color-words"});
+  EXPECT_NE(words.output.find(
+                "+changed \x1b[38;5;2mmiddle \x1b[0msuffix"),
+            std::string::npos)
+      << words.output;
   const Result range = invoke({"diff", "-r", "@-::@", "--summary"});
   ASSERT_EQ(range.code, 0) << range.error;
   EXPECT_NE(range.output.find("A added.txt"), std::string::npos);
   EXPECT_NE(range.output.find("A second.txt"), std::string::npos);
   EXPECT_EQ(invoke({"diff", "-r", "main | @"}).code, 2);
   EXPECT_EQ(invoke({"diff", "-r", "none()"}).output, "");
+  std::filesystem::remove(path_ / "uneven.txt");
+  const Result deleted_words =
+      invoke({"--color", "always", "diff", "--color-words"});
+  EXPECT_NE(deleted_words.output.find("-one"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {

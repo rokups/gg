@@ -171,16 +171,83 @@ void render_stat(git_diff* diff, std::ostream& output) {
   git_buf_dispose(&buffer);
 }
 
-void render_patch(git_diff* diff, std::ostream& output) {
+void render_word_line(std::string_view line,
+                      std::string_view other,
+                      OutputStyle style,
+                      std::ostream& output) {
+  const std::string_view value = line.substr(1);
+  const std::string_view compared = other.substr(1);
+  const std::size_t limit = std::min(value.size(), compared.size());
+  std::size_t prefix = 0;
+  while (prefix < limit && value[prefix] == compared[prefix]) ++prefix;
+  std::size_t suffix = 0;
+  while (suffix < limit - prefix &&
+         value[value.size() - suffix - 1] ==
+             compared[compared.size() - suffix - 1]) {
+    ++suffix;
+  }
+  output << line.front() << value.substr(0, prefix);
+  const std::string_view changed =
+      value.substr(prefix, value.size() - prefix - suffix);
+  if (!changed.empty()) output << styled(output, changed, style);
+  if (suffix != 0) output << value.substr(value.size() - suffix);
+}
+
+void render_patch(git_diff* diff,
+                  bool color_words,
+                  std::ostream& output) {
   git_buf buffer = GIT_BUF_INIT;
   check(git_diff_to_buf(&buffer, diff, GIT_DIFF_FORMAT_PATCH),
         "format Git patch");
   if (buffer.size != 0) {
     const std::string_view patch(buffer.ptr, buffer.size);
+    std::vector<std::string_view> lines;
     std::size_t begin = 0;
     while (begin < patch.size()) {
       const std::size_t end = patch.find('\n', begin);
-      const std::string_view line = patch.substr(begin, end - begin);
+      lines.push_back(patch.substr(begin, end - begin));
+      if (end == std::string_view::npos) break;  // GG_COV_EXCL_BRANCH
+      begin = end + 1;
+    }
+    for (std::size_t index = 0; index < lines.size();) {
+      const std::string_view line = lines[index];
+      if (color_words && starts_with(line, "-") &&
+          !starts_with(line, "--- ")) {
+        std::size_t added = index;
+        while (added < lines.size() && starts_with(lines[added], "-")) {
+          ++added;
+        }
+        std::size_t end = added;
+        while (end < lines.size() && starts_with(lines[end], "+")) {
+          ++end;
+        }
+        if (end != added) {
+          const std::size_t removed_count = added - index;
+          const std::size_t added_count = end - added;
+          for (std::size_t offset = 0; offset < removed_count; ++offset) {
+            if (offset < added_count) {
+              render_word_line(lines[index + offset], lines[added + offset],
+                               OutputStyle::removed, output);
+            } else {
+              output << styled(output, lines[index + offset],
+                               OutputStyle::removed);
+            }
+            output << '\n';
+          }
+          for (std::size_t offset = 0; offset < added_count; ++offset) {
+            if (offset < removed_count) {
+              render_word_line(lines[added + offset], lines[index + offset],
+                               OutputStyle::added, output);
+            } else {
+              output << styled(output, lines[added + offset],
+                               OutputStyle::added);
+            }
+            output << '\n';
+          }
+          index = end;
+          continue;
+        }
+      }
       if (starts_with(line, "diff --git") || starts_with(line, "index ") ||
           starts_with(line, "--- ") || starts_with(line, "+++ ") ||
           starts_with(line, "new file mode ") ||
@@ -197,9 +264,8 @@ void render_patch(git_diff* diff, std::ostream& output) {
       } else {
         output << line;
       }
-      if (end == std::string_view::npos) break;  // GG_COV_EXCL_BRANCH
       output << '\n';
-      begin = end + 1;
+      ++index;
     }
   }
   git_buf_dispose(&buffer);
@@ -218,7 +284,7 @@ void render_diff(git_diff* diff,
   const bool has_short_format =
       format.summary || format.stat || format.types || format.name_only;
   if (format.git || format.color_words || !has_short_format) {
-    render_patch(diff, output);
+    render_patch(diff, format.color_words, output);
   }
 }
 
