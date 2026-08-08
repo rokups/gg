@@ -10,6 +10,22 @@
 #include <random>
 
 namespace gg::detail {
+namespace {
+
+std::string random_change_id() {
+  constexpr std::string_view alphabet = "zyxwvutsrqponmlk";
+  std::random_device random;
+  std::string result;
+  result.reserve(32);
+  for (int index = 0; index < 16; ++index) {
+    const unsigned int byte = random() & 0xffU;
+    result.push_back(alphabet[byte >> 4U]);
+    result.push_back(alphabet[byte & 0xfU]);
+  }
+  return result;
+}
+
+}  // namespace
 
 std::map<std::string, git_oid> Repository::changes() const {
   std::map<std::string, git_oid> result;
@@ -22,19 +38,60 @@ std::map<std::string, git_oid> Repository::changes() const {
 }
 
 std::string Repository::new_change_id() const {
-  constexpr std::string_view alphabet = "zyxwvutsrqponmlk";
-  std::random_device random;
   std::string result;
-  result.reserve(32);
   do {
-    result.clear();
-    for (int index = 0; index < 16; ++index) {
-      const unsigned int byte = random() & 0xffU;
-      result.push_back(alphabet[byte >> 4U]);
-      result.push_back(alphabet[byte & 0xfU]);
-    }
+    result = random_change_id();
   } while (changes().contains(result));  // GG_COV_EXCL_BRANCH
   return result;
+}
+
+std::map<std::string, git_oid> Repository::missing_change_ids() const {
+  std::set<std::string> ids;
+  std::set<git_oid, OidLess> assigned;
+  for (const auto& [id, oid] : changes()) {
+    ids.insert(id);
+    assigned.insert(oid);
+  }
+
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo_.get()), "create change ID walk");
+  RevwalkPtr walk(raw_walk);
+  const auto push = [&](const git_oid& oid) {
+    git_object* raw_object = nullptr;
+    check(git_object_lookup(&raw_object, repo_.get(), &oid, GIT_OBJECT_ANY),
+          "read change ID root");
+    ObjectPtr object(raw_object);
+    git_object* raw_commit = nullptr;
+    if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
+      git_error_clear();
+      return;
+    }
+    ObjectPtr commit(raw_commit);
+    check(git_revwalk_push(walk.get(), git_object_id(commit.get())),
+          "walk change ID roots");
+  };
+  for (const auto& [reference, oid] : data_refs()) {
+    (void)reference;
+    push(oid);
+  }
+  if (const auto head = head_oid(); head.has_value()) push(*head);
+
+  std::map<std::string, git_oid> updates;
+  while (true) {
+    git_oid oid{};
+    const int result = git_revwalk_next(&oid, walk.get());
+    if (result == GIT_ITEROVER) break;
+    check(result, "walk commits for change IDs");
+    if (assigned.contains(oid)) continue;
+    std::string id;
+    do {
+      id = random_change_id();
+    } while (ids.contains(id));  // GG_COV_EXCL_BRANCH
+    ids.insert(id);
+    assigned.insert(oid);
+    updates.emplace(std::string(kChangePrefix) + id, oid);
+  }
+  return updates;
 }
 
 std::string Repository::short_change_id(std::string_view id) const {

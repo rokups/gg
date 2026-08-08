@@ -231,6 +231,8 @@ class Repository {
 
   std::map<std::string, git_oid> changes() const;
 
+  std::map<std::string, git_oid> missing_change_ids() const;
+
   std::string new_change_id() const;
 
   std::string short_change_id(std::string_view id) const;

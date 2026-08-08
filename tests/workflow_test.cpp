@@ -4,6 +4,8 @@
 
 #include "test_support.hpp"
 
+#include "repository.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -72,6 +74,15 @@ TEST_F(RepositoryTest, InsertsNewChangesBeforeAndAfterRevisions) {
                     "main"})
                 .code,
             2);
+}
+
+TEST_F(RepositoryTest, AssignsImportedIdsThroughAnInitialInsertion) {
+  const Result inserted =
+      invoke({"new", "-m", "inserted", "--insert-before", "main"});
+  ASSERT_EQ(inserted.code, 0) << inserted.error;
+  detail::Repository repo(path_);
+  const git_oid rewritten_main = ref("refs/heads/main");
+  EXPECT_TRUE(repo.change_id(rewritten_main).has_value());
 }
 
 TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
@@ -244,6 +255,10 @@ TEST_F(RepositoryTest, NavigationAssignsChangeIdsToRawGitCommits) {
   const git_oid actual = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&actual, &child), 0);
   EXPECT_FALSE(current_id().empty());
+
+  const git_oid unreferenced = raw_commit("unreferenced", {child});
+  const Result edited = invoke({"edit", git_oid_tostr_s(&unreferenced)});
+  ASSERT_EQ(edited.code, 0) << edited.error;
 }
 
 TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
@@ -527,6 +542,9 @@ TEST_F(RepositoryTest, ImportsRawGitHeadChangesAndResolvesObjectIds) {
   const Result imported = invoke({"status"});
   ASSERT_EQ(imported.code, 0) << imported.error;
   EXPECT_NE(imported.output.find("Working copy (@)"), std::string::npos);
+  detail::Repository repo(path_);
+  EXPECT_TRUE(repo.change_id(base).has_value());
+  EXPECT_TRUE(repo.change_id(external).has_value());
 
   const Result edit = invoke({"edit", std::string(git_oid_tostr_s(&base))});
   EXPECT_EQ(edit.code, 0) << edit.error;

@@ -529,7 +529,7 @@ void command_fetch(Repository& repo,
           "fetch remote");
     output << "Fetched " << name << '\n';
   }
-  repo.record({}, {}, repo.head_state(), "gg fetch");
+  repo.record(repo.missing_change_ids(), {}, repo.head_state(), "gg fetch");
 }
 
 void command_push(Repository& repo,
@@ -803,6 +803,9 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
                   &clone_options),
         "clone repository");
   RepositoryPtr repository(raw_repository);
+  repository.reset();
+  Repository repo(destination);
+  command_new(repo, NewCommand{}, output);
   output << "Cloned into " << destination << '\n';
   return 0;
 }

@@ -145,10 +145,15 @@ bool Repository::sync_workspace() const {
     const std::vector<git_oid> parent_oids =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
     const git_oid imported = create_commit(tree_oid, parent_oids, "");
-    const std::string id = new_change_id();
+    auto missing_ids = missing_change_ids();
+    std::string id;
+    do {
+      id = new_change_id();
+    } while (missing_ids.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
     std::map<std::string, git_oid> updates{
         {std::string(kWorkspaceRef), imported},
         {std::string(kChangePrefix) + id, imported}};
+    updates.merge(missing_ids);
     record(updates, {}, head_for_workspace(imported), "gg import Git state");
     return true;
   }

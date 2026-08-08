@@ -4,6 +4,8 @@
 
 #include "test_support.hpp"
 
+#include "repository.hpp"
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
@@ -280,6 +282,8 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   EXPECT_TRUE(has_ref("refs/remotes/origin/named"));
   ASSERT_EQ(invoke({"push", "--change", "main"}).code, 0);
   ASSERT_EQ(invoke({"push", "--change", "@"}).code, 0);
+  const git_oid raw_push = raw_commit("raw push", {ref("refs/heads/main")});
+  ASSERT_EQ(invoke({"push", "--change", git_oid_tostr_s(&raw_push)}).code, 0);
   git_reference_iterator* generated_iterator = nullptr;
   ASSERT_EQ(git_reference_iterator_glob_new(&generated_iterator,
                                             repository_.get(),
@@ -346,6 +350,29 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
       run({"clone", remote_path.string(), clone_path.string()});
   EXPECT_EQ(cloned.code, 0) << cloned.error;
   EXPECT_TRUE(std::filesystem::exists(clone_path / ".git"));
+  {
+    detail::Repository cloned_repo(clone_path);
+    const std::optional<git_oid> workspace =
+        cloned_repo.ref_target(detail::kWorkspaceRef);
+    ASSERT_TRUE(workspace.has_value());
+    EXPECT_TRUE(cloned_repo.change_id(*workspace).has_value());
+    std::optional<git_oid> cursor =
+        cloned_repo.ref_target("refs/remotes/origin/topic");
+    std::size_t revisions = 0;
+    while (cursor.has_value()) {
+      const std::optional<std::string> id = cloned_repo.change_id(*cursor);
+      ASSERT_TRUE(id.has_value());
+      EXPECT_EQ(id->size(), 32U);
+      EXPECT_EQ(id->find_first_not_of("zyxwvutsrqponmlk"), std::string::npos);
+      EXPECT_NE(*id, detail::oid_string(*cursor));
+      const std::vector<git_oid> parents = cloned_repo.parents(*cursor);
+      cursor = parents.empty() ? std::nullopt
+                               : std::optional<git_oid>{parents.front()};
+      ++revisions;
+    }
+    EXPECT_GE(revisions, 2U);
+    EXPECT_TRUE(cloned_repo.missing_change_ids().empty());
+  }
   std::filesystem::remove_all(clone_path);
   std::filesystem::remove_all(remote_path);
 }

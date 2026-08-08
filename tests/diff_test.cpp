@@ -110,6 +110,12 @@ TEST_F(RepositoryTest, ValidatesDiffAndShowRequests) {
   EXPECT_EQ(invoke({"show", "-T", "description"}).code, 2);
   EXPECT_EQ(invoke({"show", "--no-patch", "--summary"}).code, 2);
 
+  const git_oid untracked = raw_commit("untracked");
+  const Result raw_show =
+      invoke({"show", git_oid_tostr_s(&untracked), "--no-patch"});
+  EXPECT_EQ(raw_show.code, 0);
+  EXPECT_EQ(raw_show.output.find("Change ID:"), std::string::npos);
+
   const git_oid side = raw_commit("side");
   set_ref("refs/heads/side", side);
   ASSERT_EQ(invoke({"new", "main", "side"}).code, 0);

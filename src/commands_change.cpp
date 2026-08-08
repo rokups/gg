@@ -142,7 +142,15 @@ void command_new(Repository& repo,
     change =
         repo.create_commit(combined_tree(repo, parents), parents, options.message);
   }
-  const std::string id = repo.new_change_id();
+  auto missing_ids = repo.missing_change_ids();
+  std::string id;
+  do {
+    id = repo.new_change_id();
+  } while (missing_ids.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
+  for (auto& [reference, oid] : missing_ids) {
+    if (plan.commits.contains(oid)) oid = plan.commits.at(oid);
+    plan.updates.emplace(reference, oid);
+  }
   plan.updates[std::string(kChangePrefix) + id] = change;
   if (!options.no_edit) {
     finish_workspace(repo, change, std::move(plan.updates), {}, "gg new");

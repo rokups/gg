@@ -67,6 +67,31 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   repo.finish_rewrite();
 }
 
+TEST_F(RepositoryTest, AssignsGgIdsToReachableGitHistory) {
+  detail::Repository repo(path_);
+  const git_oid base = ref("HEAD");
+  const git_oid child = raw_commit("child", {base});
+  set_ref("refs/heads/side", child);
+  git_oid blob{};
+  ASSERT_EQ(git_blob_create_from_buffer(&blob, repository_.get(), "blob", 4),
+            0);
+  set_ref("refs/tags/blob", blob);
+
+  const auto updates = repo.missing_change_ids();
+  ASSERT_EQ(updates.size(), 2U);
+  for (const auto& [reference, oid] : updates) {
+    (void)oid;
+    ASSERT_TRUE(detail::starts_with(reference, detail::kChangePrefix));
+    const std::string id = reference.substr(detail::kChangePrefix.size());
+    EXPECT_EQ(id.size(), 32U);
+    EXPECT_EQ(id.find_first_not_of("zyxwvutsrqponmlk"), std::string::npos);
+  }
+  repo.apply_refs(updates, {}, "assign change IDs");
+  EXPECT_TRUE(repo.change_id(base).has_value());
+  EXPECT_TRUE(repo.change_id(child).has_value());
+  EXPECT_TRUE(repo.missing_change_ids().empty());
+}
+
 TEST_F(RepositoryTest, ExercisesRewriteVariants) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
