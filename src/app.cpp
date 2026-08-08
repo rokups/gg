@@ -93,6 +93,9 @@ int execute(Repository& repository,
             [&](const UtilSnapshotCommand&) {
               command_util_snapshot(repository, output);
             },
+            [&](const WorkspaceCommand& value) {
+              command_workspace(repository, value, output);
+            },
             [&](const MovementCommand& value) {
               command_move(repository, value, output);
             }},

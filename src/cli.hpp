@@ -140,6 +140,13 @@ struct OperationRestoreCommand {
 };
 struct UtilSnapshotCommand {};
 
+enum class WorkspaceAction { list, root };
+struct WorkspaceCommand {
+  WorkspaceAction action{WorkspaceAction::list};
+  std::string name;
+  std::string template_value;
+};
+
 enum class MovementDirection { next, previous };
 struct MovementCommand {
   MovementDirection direction{MovementDirection::next};
@@ -156,7 +163,7 @@ using RepositoryCommand =
                  ShowCommand, BookmarkCommand, GitFetchCommand, GitPushCommand,
                  UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
-                 UtilSnapshotCommand, MovementCommand>;
+                 UtilSnapshotCommand, WorkspaceCommand, MovementCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,
                              ContinueCommand, AbortCommand>;
 

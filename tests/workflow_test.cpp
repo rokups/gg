@@ -15,6 +15,22 @@ TEST_F(RepositoryTest, StartsFromGitHeadWithoutAnExplicitParent) {
   EXPECT_NE(invoke({"status"}).output.find("Parent commit"), std::string::npos);
 }
 
+TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
+  const std::string root = std::filesystem::weakly_canonical(path_).string();
+  EXPECT_EQ(invoke({"workspace", "root"}).output, root + "\n");
+  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+  EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).code, 2);
+
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).output,
+            root + "\n");
+  const Result listed = invoke({"workspace", "list"});
+  EXPECT_NE(listed.output.find("default: "), std::string::npos);
+  EXPECT_NE(listed.output.find(root), std::string::npos);
+  EXPECT_EQ(invoke({"workspace", "root", "--name", "other"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "list", "-T", "name"}).code, 2);
+}
+
 TEST_F(RepositoryTest, ReportsRenamedFiles) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   std::filesystem::rename(path_ / "tracked.txt", path_ / "renamed.txt");

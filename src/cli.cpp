@@ -300,6 +300,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   util->require_subcommand(1);
   auto* util_snapshot =
       util->add_subcommand("snapshot", "Snapshot the working copy");
+  auto* workspace = app.add_subcommand("workspace", "Inspect workspaces");
+  workspace->require_subcommand(1);
+  WorkspaceCommand workspace_list_value;
+  auto* workspace_list =
+      workspace->add_subcommand("list", "List known workspaces");
+  workspace_list->add_option("-T,--template",
+                             workspace_list_value.template_value,
+                             "Workspace template");
+  WorkspaceCommand workspace_root_value;
+  workspace_root_value.action = WorkspaceAction::root;
+  auto* workspace_root =
+      workspace->add_subcommand("root", "Show the workspace root");
+  workspace_root->add_option("--name", workspace_root_value.name,
+                             "Workspace name");
   MovementCommand next_value;
   auto* next = app.add_subcommand("next", "Move to a child revision");
   CLI::Option* next_offset =
@@ -458,6 +472,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(operation_restore_value)};
   } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UtilSnapshotCommand{}};
+  } else if (workspace_list->parsed()) {
+    command = RepositoryCommand{std::move(workspace_list_value)};
+  } else if (workspace_root->parsed()) {
+    command = RepositoryCommand{std::move(workspace_root_value)};
   } else if (next->parsed()) {
     command = RepositoryCommand{next_value};
   } else if (previous->parsed()) {  // GG_COV_EXCL_BRANCH

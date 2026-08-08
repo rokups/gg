@@ -63,4 +63,33 @@ void command_util_snapshot(Repository& repo, std::ostream& output) {
                                    : "Nothing changed.\n");
 }
 
+void command_workspace(Repository& repo,
+                       const WorkspaceCommand& options,
+                       std::ostream& output) {
+  const std::filesystem::path root =
+      std::filesystem::weakly_canonical(git_repository_workdir(repo.raw()));
+  const auto workspace = repo.ref_target(kWorkspaceRef);
+  if (options.action == WorkspaceAction::root) {
+    if (!options.name.empty() && options.name != "default") {
+      throw UserError("workspace not found: " + options.name);
+    }
+    if (!options.name.empty() && !workspace.has_value()) {
+      throw UserError("workspace not found: " + options.name);
+    }
+    output << root.string() << '\n';
+    return;
+  }
+  if (!options.template_value.empty()) {
+    throw UserError("workspace templates are not supported yet");
+  }
+  if (!workspace.has_value()) {
+    output << "No workspaces.\n";
+    return;
+  }
+  const auto id = repo.change_id(*workspace);
+  output << "default: "
+         << (id.has_value() ? repo.short_change_id(*id) : "--------") << ' '
+         << oid_string(*workspace, 8) << ' ' << root.string() << '\n';
+}
+
 }  // namespace gg::detail

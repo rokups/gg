@@ -234,6 +234,17 @@ std::vector<std::string> repository_replay_arguments(
           [](const UtilSnapshotCommand&) {
             return std::vector<std::string>{"util", "snapshot"};
           },
+          [](const WorkspaceCommand& value) {
+            std::vector<std::string> result{"workspace"};
+            if (value.action == WorkspaceAction::list) {
+              result.emplace_back("list");
+              add_option(result, "--template", value.template_value);
+            } else {
+              result.emplace_back("root");
+              add_option(result, "--name", value.name);
+            }
+            return result;
+          },
           [](const MovementCommand& value) {
             std::vector<std::string> result{
                 value.direction == MovementDirection::next ? "next" : "prev"};

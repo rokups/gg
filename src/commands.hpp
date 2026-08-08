@@ -47,6 +47,7 @@ void command_operation_log(Repository&, const OperationLogCommand&,
 void command_operation_restore(Repository&, const OperationRestoreCommand&,
                                std::ostream&);
 void command_util_snapshot(Repository&, std::ostream&);
+void command_workspace(Repository&, const WorkspaceCommand&, std::ostream&);
 void command_move(Repository&, const MovementCommand&, std::ostream&);
 int clone_command(const GitCloneCommand&, std::ostream&);
 int init_command(const GitInitCommand&, std::ostream&);

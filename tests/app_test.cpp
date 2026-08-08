@@ -97,6 +97,9 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"operation", "restore", "@", "extra"}).code, 2);
   EXPECT_EQ(invoke({"util"}).code, 2);
   EXPECT_EQ(invoke({"util", "snapshot", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"workspace"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "list", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "root", "extra"}).code, 2);
   EXPECT_EQ(invoke({"next", "0"}).code, 2);
   EXPECT_EQ(invoke({"prev", "word"}).code, 2);
   EXPECT_EQ(invoke({"next", "--edit", "--no-edit"}).code, 2);

@@ -97,6 +97,8 @@ TEST_F(RepositoryTest, ReportsWorkspaceWithoutAStableChangeId) {
   const Result status = invoke({"status"});
   ASSERT_EQ(status.code, 0) << status.error;
   EXPECT_NE(status.output.find("--------"), std::string::npos);
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("--------"),
+            std::string::npos);
 }
 
 TEST_F(RepositoryTest, ImportsAWorkspaceWhenHeadIsUnborn) {
