@@ -61,6 +61,35 @@ struct FileCommand {
   bool line_number{false};
 };
 
+struct DiffFormatOptions {
+  bool summary{false};
+  bool stat{false};
+  bool types{false};
+  bool name_only{false};
+  bool git{false};
+  bool color_words{false};
+  bool ignore_all_space{false};
+  bool ignore_space_change{false};
+  std::uint32_t context{3};
+  std::string tool;
+};
+struct DiffCommand {
+  std::vector<std::string> paths;
+  std::string revisions;
+  std::string from;
+  std::string to;
+  std::string template_value;
+  DiffFormatOptions format;
+};
+struct ShowCommand {
+  std::vector<std::string> revisions;
+  std::vector<std::string> revision_options;
+  std::string template_value;
+  DiffFormatOptions format;
+  bool reversed{false};
+  bool no_patch{false};
+};
+
 enum class BookmarkAction { list, create, set, erase, forget, rename };
 struct BookmarkCommand {
   BookmarkAction action{BookmarkAction::list};
@@ -109,8 +138,9 @@ struct MovementCommand {
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
-                 AbandonCommand, FileCommand, BookmarkCommand, GitFetchCommand,
-                 GitPushCommand, UndoCommand, RedoCommand,
+                 AbandonCommand, FileCommand, DiffCommand, ShowCommand,
+                 BookmarkCommand, GitFetchCommand, GitPushCommand, UndoCommand,
+                 RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilSnapshotCommand, MovementCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,

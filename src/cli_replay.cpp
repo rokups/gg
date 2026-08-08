@@ -18,6 +18,25 @@ void add_option(std::vector<std::string>& arguments,
   }
 }
 
+void add_diff_format(std::vector<std::string>& arguments,
+                     const DiffFormatOptions& value) {
+  if (value.summary) arguments.emplace_back("--summary");
+  if (value.stat) arguments.emplace_back("--stat");
+  if (value.types) arguments.emplace_back("--types");
+  if (value.name_only) arguments.emplace_back("--name-only");
+  if (value.git) arguments.emplace_back("--git");
+  if (value.color_words) arguments.emplace_back("--color-words");
+  add_option(arguments, "--tool", value.tool);
+  if (value.context != 3) {
+    arguments.emplace_back("--context");
+    arguments.push_back(std::to_string(value.context));
+  }
+  if (value.ignore_all_space) arguments.emplace_back("--ignore-all-space");
+  if (value.ignore_space_change) {
+    arguments.emplace_back("--ignore-space-change");
+  }
+}
+
 template <typename... Values>
 struct Overloaded : Values... {
   using Values::operator()...;
@@ -106,6 +125,30 @@ std::vector<std::string> repository_replay_arguments(
             if (value.line_number) {
               result.emplace_back("--line-number");
             }
+            return result;
+          },
+          [](const DiffCommand& value) {
+            std::vector<std::string> result{"diff"};
+            result.insert(result.end(), value.paths.begin(), value.paths.end());
+            add_option(result, "--revisions", value.revisions);
+            add_option(result, "--from", value.from);
+            add_option(result, "--to", value.to);
+            add_option(result, "--template", value.template_value);
+            add_diff_format(result, value.format);
+            return result;
+          },
+          [](const ShowCommand& value) {
+            std::vector<std::string> result{"show"};
+            result.insert(result.end(), value.revisions.begin(),
+                          value.revisions.end());
+            for (const std::string& revision : value.revision_options) {
+              result.emplace_back("-r");
+              result.push_back(revision);
+            }
+            if (value.reversed) result.emplace_back("--reversed");
+            add_option(result, "--template", value.template_value);
+            add_diff_format(result, value.format);
+            if (value.no_patch) result.emplace_back("--no-patch");
             return result;
           },
           [](const BookmarkCommand& value) {

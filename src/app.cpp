@@ -64,6 +64,12 @@ int execute(Repository& repository,
             [&](const FileCommand& value) {
               command_file(repository, value, output);
             },
+            [&](const DiffCommand& value) {
+              command_diff(repository, value, output);
+            },
+            [&](const ShowCommand& value) {
+              command_show(repository, value, output);
+            },
             [&](const BookmarkCommand& value) {
               command_bookmark(repository, value, output);
             },

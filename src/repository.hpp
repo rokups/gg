@@ -58,6 +58,7 @@ using ConflictIteratorPtr = GitPtr<git_index_conflict_iterator, git_index_confli
 using ObjectPtr = GitPtr<git_object, git_object_free>;
 using RevwalkPtr = GitPtr<git_revwalk, git_revwalk_free>;
 using DiffPtr = GitPtr<git_diff, git_diff_free>;
+using DiffStatsPtr = GitPtr<git_diff_stats, git_diff_stats_free>;
 using SignaturePtr = GitPtr<git_signature, git_signature_free>;
 using TransactionPtr = GitPtr<git_transaction, git_transaction_free>;
 using RemotePtr = GitPtr<git_remote, git_remote_free>;

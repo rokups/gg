@@ -132,6 +132,65 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   file_chmod
       ->add_option("-r,--revision", file_chmod_value.revision, "Revision");
 
+  auto add_diff_format = [](CLI::App* command, DiffFormatOptions& value) {
+    std::vector<CLI::Option*> options;
+    options.push_back(command->add_flag("-s,--summary", value.summary,
+                                        "Show changed paths and statuses"));
+    options.push_back(
+        command->add_flag("--stat", value.stat, "Show a diffstat"));
+    options.push_back(
+        command->add_flag("--types", value.types, "Show file types"));
+    options.push_back(command->add_flag("--name-only", value.name_only,
+                                        "Show changed paths only"));
+    options.push_back(
+        command->add_flag("--git", value.git, "Show Git patch output"));
+    options.push_back(command->add_flag(
+        "--color-words", value.color_words, "Show inline word changes"));
+    options.push_back(command->add_option("--tool", value.tool, "Diff tool"));
+    options.push_back(
+        command
+            ->add_option("--context", value.context, "Context lines")
+            ->check(CLI::NonNegativeNumber));
+    options.push_back(command->add_flag(
+        "-w,--ignore-all-space", value.ignore_all_space,
+        "Ignore whitespace when comparing lines"));
+    options.push_back(command->add_flag(
+        "-b,--ignore-space-change", value.ignore_space_change,
+        "Ignore changes in whitespace amount"));
+    return options;
+  };
+
+  DiffCommand diff_value;
+  auto* diff = app.add_subcommand("diff", "Compare revision contents");
+  diff->add_option("filesets", diff_value.paths, "Repository-relative paths");
+  CLI::Option* diff_revisions =
+      diff->add_option("-r,--revisions,--revision", diff_value.revisions,
+                       "Revision to compare with its parents");
+  CLI::Option* diff_from =
+      diff->add_option("-f,--from", diff_value.from, "Source revision");
+  CLI::Option* diff_to =
+      diff->add_option("-t,--to", diff_value.to, "Target revision");
+  diff_revisions->excludes(diff_from)->excludes(diff_to);
+  diff->add_option("-T,--template", diff_value.template_value,
+                   "Diff entry template");
+  add_diff_format(diff, diff_value.format);
+
+  ShowCommand show_value;
+  auto* show = app.add_subcommand("show", "Show revisions and their changes");
+  show->add_option("revisions", show_value.revisions, "Revisions");
+  show->add_option("-r", show_value.revision_options, "Revisions");
+  show->add_flag("--reversed", show_value.reversed,
+                 "Show revisions in reverse order");
+  show->add_option("-T,--template", show_value.template_value,
+                   "Revision template");
+  const std::vector<CLI::Option*> show_formats =
+      add_diff_format(show, show_value.format);
+  CLI::Option* show_no_patch =
+      show->add_flag("--no-patch", show_value.no_patch, "Do not show patches");
+  for (CLI::Option* option : show_formats) {
+    show_no_patch->excludes(option);
+  }
+
   auto* bookmark = app.add_subcommand("bookmark", "Manage Git-backed bookmarks");
   bookmark->require_subcommand(0, 1);
   BookmarkCommand bookmark_create;
@@ -332,6 +391,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(file_search_value)};
   } else if (file_chmod->parsed()) {
     command = RepositoryCommand{std::move(file_chmod_value)};
+  } else if (diff->parsed()) {
+    command = RepositoryCommand{std::move(diff_value)};
+  } else if (show->parsed()) {
+    command = RepositoryCommand{std::move(show_value)};
   } else if (create->parsed()) {
     command = RepositoryCommand{std::move(bookmark_create)};
   } else if (set->parsed()) {

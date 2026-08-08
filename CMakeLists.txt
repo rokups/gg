@@ -45,6 +45,7 @@ add_library(
   src/conflicts.cpp
   src/commands_common.cpp
   src/commands_change.cpp
+  src/commands_diff.cpp
   src/commands_file.cpp
   src/commands_rewrite.cpp
   src/commands_remote.cpp
@@ -76,6 +77,7 @@ if(GG_BUILD_TESTS)
     gg_tests
     tests/app_test.cpp
     tests/workflow_test.cpp
+    tests/diff_test.cpp
     tests/file_test.cpp
     tests/rewrite_workflow_test.cpp
     tests/conflict_test.cpp
