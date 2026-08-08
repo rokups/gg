@@ -9,7 +9,9 @@
 
 #include <ostream>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -46,10 +48,60 @@ OutputColorMode output_color_mode(std::string_view requested,
   return OutputColorMode::plain;
 }
 
+bool has_primary_output(const Command& command) {
+  return std::visit(
+      [](const auto& value) {
+        using Value = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Value, RepositoryCommand>) {
+          return std::visit(
+              [](const auto& repository_value) {
+                using RepositoryValue =
+                    std::decay_t<decltype(repository_value)>;
+                if constexpr (std::is_same_v<RepositoryValue, StatusCommand> ||
+                              std::is_same_v<RepositoryValue, LogCommand> ||
+                              std::is_same_v<RepositoryValue, DiffCommand> ||
+                              std::is_same_v<RepositoryValue, ShowCommand> ||
+                              std::is_same_v<RepositoryValue,
+                                             OperationLogCommand> ||
+                              std::is_same_v<RepositoryValue,
+                                             WorkspaceCommand>) {
+                  return true;
+                } else if constexpr (std::is_same_v<RepositoryValue,
+                                                    FileCommand>) {
+                  return repository_value.action != FileAction::chmod;
+                } else if constexpr (std::is_same_v<RepositoryValue,
+                                                    BookmarkCommand>) {
+                  return repository_value.action == BookmarkAction::list;
+                } else if constexpr (std::is_same_v<RepositoryValue,
+                                                    TagCommand>) {
+                  return repository_value.action == TagAction::list;
+                } else if constexpr (std::is_same_v<RepositoryValue,
+                                                    ConfigCommand>) {
+                  return repository_value.action == ConfigAction::get ||
+                         repository_value.action == ConfigAction::list ||
+                         repository_value.action == ConfigAction::path;
+                } else if constexpr (std::is_same_v<RepositoryValue,
+                                                    GitPushCommand>) {
+                  return repository_value.dry_run;
+                } else {
+                  return false;
+                }
+              },
+              value);
+        } else if constexpr (std::is_same_v<Value, UtilExecCommand>) {
+          return true;
+        } else {
+          return false;
+        }
+      },
+      command);
+}
+
 int execute(Repository& repository,
             const RepositoryCommand& command,
             const std::vector<std::string>& replay,
-            std::ostream& output) {
+            std::ostream& output,
+            std::ostream& status_output) {
   try {
     std::visit(
         Overloaded{
@@ -141,8 +193,8 @@ int execute(Repository& repository,
   } catch (MergeConflict& conflict) {
     const std::vector<std::string_view> replay_views = views(replay);
     repository.pause(replay_views, conflict);
-    output << "Rewrite stopped because of conflicts.\n";
-    repository.pending_status(output);
+    status_output << "Rewrite stopped because of conflicts.\n";
+    repository.pending_status(status_output);
     return 1;
   }
 }
@@ -159,11 +211,25 @@ int dispatch(std::span<const std::string_view> arguments,
   const OutputColorMode color = output_color_mode(invocation.color, output);
   set_output_color_mode(output, color);
   set_output_color_mode(error, color);
+  if (invocation.debug) {
+    error << "debug: repository " << invocation.repository.string() << '\n';
+    error << "debug: command";
+    for (const std::string& argument : invocation.replay_arguments) {
+      error << ' ' << argument;
+    }
+    error << '\n';
+  }
+  std::ostringstream discarded;
+  const bool primary_output = has_primary_output(invocation.command);
+  std::ostream& command_output =
+      invocation.quiet && !primary_output
+          ? static_cast<std::ostream&>(discarded)
+          : output;
   if (const auto* clone = std::get_if<GitCloneCommand>(&invocation.command)) {
-    return clone_command(*clone, output);
+    return clone_command(*clone, command_output);
   }
   if (const auto* init = std::get_if<GitInitCommand>(&invocation.command)) {
-    return init_command(*init, output);
+    return init_command(*init, command_output);
   }
   if (const auto* util_exec =
           std::get_if<UtilExecCommand>(&invocation.command)) {
@@ -183,7 +249,7 @@ int dispatch(std::span<const std::string_view> arguments,
     }
     if (std::holds_alternative<AbortCommand>(invocation.command)) {
       repository.abort_rewrite();
-      output << "Aborted rewrite.\n";
+      command_output << "Aborted rewrite.\n";
       return 0;
     }
     if (std::holds_alternative<ContinueCommand>(invocation.command)) {
@@ -195,7 +261,7 @@ int dispatch(std::span<const std::string_view> arguments,
       const int result = execute(
           repository,
           std::get<RepositoryCommand>(resumed_invocation.command), stored,
-          output);
+          command_output, output);
       if (result == 0) {
         repository.finish_rewrite();
       }
@@ -208,7 +274,7 @@ int dispatch(std::span<const std::string_view> arguments,
     throw UserError("no rewrite is in progress");
   }
   return execute(repository, std::get<RepositoryCommand>(invocation.command),
-                 invocation.replay_arguments, output);
+                 invocation.replay_arguments, command_output, output);
 }
 
 }  // namespace

@@ -302,6 +302,8 @@ struct Invocation {
   std::vector<std::filesystem::path> config_files;
   std::string color{"auto"};
   bool ignore_working_copy{false};
+  bool debug{false};
+  bool quiet{false};
 };
 
 struct ParseResult {

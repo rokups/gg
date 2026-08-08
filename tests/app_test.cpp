@@ -163,6 +163,20 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"abort"}).code, 2);
 }
 
+TEST_F(RepositoryTest, SupportsQuietAndDebugOutputModes) {
+  const Result debug = invoke({"--debug", "status"});
+  EXPECT_FALSE(debug.output.empty());
+  EXPECT_NE(debug.error.find("debug: repository " + path_.string()),
+            std::string::npos);
+  EXPECT_NE(debug.error.find("debug: command status"), std::string::npos);
+
+  const Result quiet_status = invoke({"--quiet", "status"});
+  EXPECT_FALSE(quiet_status.output.empty());
+  const Result quiet_new = invoke({"--quiet", "new", "main"});
+  EXPECT_EQ(quiet_new.code, 0) << quiet_new.error;
+  EXPECT_TRUE(quiet_new.output.empty());
+}
+
 TEST_F(RepositoryTest, ReportsBareRepositoriesAndEmptyUndoHistory) {
   const auto bare_path = path_.parent_path() / (path_.filename().string() + "-bare");
   std::filesystem::remove_all(bare_path);
