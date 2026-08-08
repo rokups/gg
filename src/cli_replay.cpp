@@ -94,6 +94,12 @@ std::vector<std::string> repository_replay_arguments(
             if (!value.revision.empty()) {
               result.push_back(value.revision);
             }
+            if (value.retain_bookmarks) {
+              result.emplace_back("--retain-bookmarks");
+            }
+            if (value.restore_descendants) {
+              result.emplace_back("--restore-descendants");
+            }
             return result;
           },
           [](const CommitCommand& value) {

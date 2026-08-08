@@ -166,5 +166,25 @@ TEST_F(RepositoryTest, SquashesAndAbandonsUnrelatedChanges) {
   ASSERT_EQ(invoke({"abandon", discarded_id}).code, 0);
 }
 
+TEST_F(RepositoryTest, AbandonCanRetainBookmarksAndDescendantContents) {
+  const Result parent = invoke({"new", "-m", "parent", "main"});
+  ASSERT_EQ(parent.code, 0) << parent.error;
+  const std::string parent_id = token_after(parent.output, "Working copy now at: ");
+  write("parent.txt", "parent\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "kept"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
+  write("child.txt", "child\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+
+  ASSERT_EQ(invoke({"abandon", "--retain-bookmarks",
+                    "--restore-descendants", parent_id})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref("refs/heads/kept"));
+  EXPECT_EQ(invoke({"file", "show", "parent.txt"}).output, "parent\n");
+  EXPECT_EQ(invoke({"file", "show", "child.txt"}).output, "child\n");
+}
+
 
 }  // namespace gg::test

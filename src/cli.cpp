@@ -82,6 +82,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* abandon = app.add_subcommand("abandon", "Abandon a change");
   abandon->add_option("revision", abandon_value.revision, "Revision")
       ->expected(0, 1);
+  abandon->add_flag("--retain-bookmarks", abandon_value.retain_bookmarks,
+                    "Move bookmarks to the abandoned revision's parent");
+  abandon->add_flag("--restore-descendants",
+                    abandon_value.restore_descendants,
+                    "Preserve descendant contents while restacking");
 
   CommitCommand commit_value;
   auto* commit = app.add_subcommand(

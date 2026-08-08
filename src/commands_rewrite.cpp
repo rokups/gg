@@ -164,13 +164,15 @@ void command_abandon(Repository& repo,
     throw UserError("abandon revision must have exactly one parent");
   }
   const git_oid parent = old_parents.front();
-  RewritePlan plan = repo.descendants({{old, parent}}, {old});
+  RewritePlan plan = repo.descendants({{old, parent}}, {old},
+                                      options.restore_descendants);
   std::set<std::string> deletes;
   for (const auto& [name, target] : repo.rewrite_refs()) {
     if (target != old) {
       continue;
     }
-    if (starts_with(name, kChangePrefix) || starts_with(name, "refs/heads/")) {
+    if (starts_with(name, kChangePrefix) ||
+        (!options.retain_bookmarks && starts_with(name, "refs/heads/"))) {
       plan.updates.erase(name);
       deletes.insert(name);
     }

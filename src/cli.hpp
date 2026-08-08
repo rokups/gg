@@ -48,6 +48,8 @@ struct SquashCommand {
 };
 struct AbandonCommand {
   std::string revision;
+  bool retain_bookmarks{false};
+  bool restore_descendants{false};
 };
 struct CommitCommand {
   std::vector<std::string> paths;
