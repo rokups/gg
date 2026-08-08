@@ -148,6 +148,21 @@ void write_completion(const CLI::App& app,
   }
 }
 
+void write_config_schema(std::ostream& output) {
+  output << R"JSON({
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gg-vcs.dev/schema/config.json",
+  "title": "gg configuration",
+  "description": "Flat dotted gg-native configuration assignments",
+  "type": "object",
+  "patternProperties": {
+    "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$": {}
+  },
+  "additionalProperties": false
+}
+)JSON";
+}
+
 }  // namespace
 
 ParseResult parse_cli(std::span<const std::string_view> arguments,
@@ -602,6 +617,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required()
       ->check(CLI::IsMember({"bash", "elvish", "fish", "nushell",
                              "power-shell", "powershell", "zsh"}));
+  auto* util_config_schema =
+      util->add_subcommand("config-schema", "Print the configuration schema");
   std::string util_man_path;
   auto* util_install_man =
       util->add_subcommand("install-man-pages", "Install generated man pages");
@@ -747,6 +764,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     const std::string shell = util_completion_shell;
     app.clear();
     write_completion(app, shell, output);
+    return {0, std::monostate{}};
+  }
+  if (util_config_schema->parsed()) {
+    write_config_schema(output);
     return {0, std::monostate{}};
   }
   if (util_markdown->parsed()) {

@@ -217,4 +217,16 @@ TEST(AppTest, GeneratesShellCompletionsFromTheCommandSchema) {
   EXPECT_EQ(run({"util", "completion", "tcsh"}).code, 2);
 }
 
+TEST(AppTest, PrintsTheConfigurationSchema) {
+  const Result schema = run({"util", "config-schema"});
+  ASSERT_EQ(schema.code, 0) << schema.error;
+  EXPECT_NE(schema.output.find("https://json-schema.org/draft/2020-12/schema"),
+            std::string::npos);
+  EXPECT_NE(schema.output.find("patternProperties"), std::string::npos);
+  EXPECT_NE(schema.output.find("additionalProperties\": false"),
+            std::string::npos);
+  EXPECT_EQ(run({"util", "config-schema"}).output, schema.output);
+  EXPECT_EQ(run({"util", "config-schema", "extra"}).code, 2);
+}
+
 }  // namespace gg::test
