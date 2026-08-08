@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
+#include <regex>
 #include <sstream>
 #include <utility>
 
@@ -20,6 +21,12 @@ namespace {
 
 constexpr std::string_view kUndoPrefix = "undo: restore to operation ";
 constexpr std::string_view kRedoPrefix = "redo: restore to operation ";
+
+std::string substitute_target(std::string_view expression,
+                              const git_oid& target) {
+  return std::regex_replace(std::string(expression), std::regex("\\bto\\b"),
+                            oid_string(target));
+}
 
 struct RefListItem {
   std::string display_name;
@@ -463,12 +470,31 @@ void command_bookmark(Repository& repo,
         options.from.empty()) {
       throw UserError("bookmark move requires a name or --from revision");
     }
-    const git_oid target =
-        repo.resolve(options.revision.empty() ? "@" : options.revision);
+    std::string target_expression = options.revision;
+    if (target_expression.empty()) {
+      if (options.action == BookmarkAction::advance) {
+        target_expression =
+            *config_value(repo, "revsets.bookmark-advance-to");
+      } else {
+        target_expression = "@";
+      }
+    }
+    const git_oid target = repo.resolve(target_expression);
     std::set<git_oid, OidLess> sources;
     const std::vector<git_oid> resolved_sources =
         resolve_revision_arguments(repo, options.from);
     sources.insert(resolved_sources.begin(), resolved_sources.end());
+    const std::optional<std::string> configured_from =
+        config_value(repo, "revsets.bookmark-advance-from");
+    const bool configured_advance = options.action == BookmarkAction::advance &&
+                                    options.names.empty() &&
+                                    configured_from.has_value();
+    if (configured_advance) {
+      const std::string expression = substitute_target(
+          *configured_from, target);
+      const std::vector<git_oid> configured = repo.resolve_set(expression);
+      sources.insert(configured.begin(), configured.end());
+    }
     std::vector<std::pair<std::string, git_oid>> matches;
     for (const auto& [reference, oid] : repo.data_refs()) {
       constexpr std::string_view prefix = "refs/heads/";
@@ -480,14 +506,15 @@ void command_bookmark(Repository& repo,
       }
       if (!sources.empty() && !sources.contains(oid)) continue;
       if (options.action == BookmarkAction::advance &&
-          options.names.empty()) {
+          options.names.empty() && !configured_advance) {
         const int ancestor = git_graph_descendant_of(repo.raw(), &target, &oid);
         check(ancestor, "select bookmarks to advance");
         if (ancestor == 0) continue;
       }
       matches.emplace_back(name, oid);
     }
-    if (options.action == BookmarkAction::advance && options.names.empty()) {
+    if (options.action == BookmarkAction::advance && options.names.empty() &&
+        !configured_advance) {
       std::vector<std::pair<std::string, git_oid>> closest;
       for (const auto& candidate : matches) {
         const bool shadowed =

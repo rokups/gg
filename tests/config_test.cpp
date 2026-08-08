@@ -11,6 +11,8 @@ namespace gg::test {
 
 TEST_F(RepositoryTest, SetsGetsListsAndUnsetsLayeredConfiguration) {
   EXPECT_EQ(invoke({"config", "get", "ui.movement.edit"}).output, "false\n");
+  EXPECT_EQ(invoke({"config", "get", "revsets.bookmark-advance-to"}).output,
+            "@\n");
   EXPECT_EQ(invoke({"config", "list", "ui.movement.edit"}).output, "");
   EXPECT_NE(invoke({"config", "list", "--include-defaults",
                     "ui.movement.edit"})

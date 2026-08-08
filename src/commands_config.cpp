@@ -20,6 +20,7 @@ namespace {
 enum class ConfigScope { user, repository, workspace };
 
 const std::map<std::string, std::string> kDefaultValues{
+    {"revsets.bookmark-advance-to", "@"},
     {"ui.movement.edit", "false"}};
 
 std::string trim(std::string_view value) {

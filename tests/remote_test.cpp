@@ -230,6 +230,9 @@ TEST_F(RepositoryTest, MovesBookmarksByNameAndSourceRevision) {
   EXPECT_NE(invoke({"bookmark", "move", "one", "--to", "@"})
                 .output.find("No bookmarks to update."),
             std::string::npos);
+  EXPECT_NE(invoke({"bookmark", "move", "one"})
+                .output.find("No bookmarks to update."),
+            std::string::npos);
   EXPECT_NE(invoke({"bookmark", "move", "missing", "--to", "@"})
                 .output.find("No bookmarks to update."),
             std::string::npos);
@@ -282,6 +285,24 @@ TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
   ASSERT_EQ(invoke({"bookmark", "advance", "glob:o*", "--to", "@"}).code,
             0);
   EXPECT_TRUE(points_to("refs/heads/old", target));
+  ASSERT_EQ(invoke({"bookmark", "create", "configured", "-r", "@-"}).code,
+            0);
+  const Result configured = invoke(
+      {"--config",
+       "revsets.bookmark-advance-from=bookmarks(exact:configured) & ancestors(to)",
+       "bookmark", "advance"});
+  ASSERT_EQ(configured.code, 0) << configured.error;
+  EXPECT_TRUE(points_to("refs/heads/configured", target));
+
+  ASSERT_EQ(invoke({"bookmark", "create", "configured-target", "-r",
+                    git_oid_tostr_s(&old)})
+                .code,
+            0);
+  const Result configured_target =
+      invoke({"--config", "revsets.bookmark-advance-to=@-", "bookmark",
+              "advance", "configured-target"});
+  ASSERT_EQ(configured_target.code, 0) << configured_target.error;
+  EXPECT_TRUE(points_to("refs/heads/configured-target", near));
   EXPECT_NE(invoke({"bookmark", "advance", "near"})
                 .output.find("No bookmarks to update."),
             std::string::npos);
