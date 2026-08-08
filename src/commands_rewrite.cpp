@@ -71,7 +71,7 @@ void command_split(Repository& repo,
   const git_oid selected = repo.rewrite_commit(old, old_parents, selected_tree,
                                                 selected_message);
   const git_oid remainder = repo.create_commit(old_tree, {selected}, "");
-  const std::string remainder_id = repo.new_change_id(remainder);
+  const std::string remainder_id = repo.new_change_id();
   RewritePlan plan = repo.descendants({{old, remainder}}, {old});
   for (const auto& [name, target] : repo.rewrite_refs()) {
     if (target == old && starts_with(name, kChangePrefix)) {
@@ -87,7 +87,7 @@ void command_split(Repository& repo,
                                            : *workspace);
   finish_workspace(repo, new_workspace, std::move(plan.updates), {}, "gg split");
   output << "Selected change: " << oid_string(selected, 8) << '\n'
-         << "Remaining change: " << remainder_id.substr(0, 8) << ' '
+         << "Remaining change: " << repo.short_change_id(remainder_id) << ' '
          << oid_string(remainder, 8) << '\n';
 }
 
@@ -141,7 +141,7 @@ void command_squash(Repository& repo,
   if (*workspace == source_oid) {
     new_workspace = repo.create_commit(
         *git_commit_tree_id(source_commit.get()), {rewritten_destination}, "");
-    const std::string id = repo.new_change_id(new_workspace);
+    const std::string id = repo.new_change_id();
     plan.updates[std::string(kChangePrefix) + id] = new_workspace;
   } else if (plan.commits.contains(*workspace)) {  // GG_COV_EXCL_BRANCH
     new_workspace = plan.commits.at(*workspace);
@@ -179,7 +179,7 @@ void command_abandon(Repository& repo,
     CommitPtr parent_commit = repo.commit(parent);
     new_workspace = repo.create_commit(*git_commit_tree_id(parent_commit.get()),
                                        {parent}, "");
-    const std::string id = repo.new_change_id(new_workspace);
+    const std::string id = repo.new_change_id();
     plan.updates[std::string(kChangePrefix) + id] = new_workspace;
   } else if (plan.commits.contains(*workspace)) {
     new_workspace = plan.commits.at(*workspace);

@@ -42,6 +42,9 @@ moving its refs and writes conflict markers into the working tree. Resolve the
 files and run `gg continue`, or run `gg abort` to restore the pre-rewrite
 operation. First-class conflicted commits are intentionally outside this MVP.
 
+Change IDs use Jujutsu's 32-character reverse-hex format (`z` through `k`).
+Commands show the shortest unique prefix with a minimum length of eight.
+
 `gg undo` and `gg redo` behave like editor history: each restoration is itself
 recorded, repeated commands move backward or forward, and a new operation after
 an undo clears the redo path. `gg operation log` (also `gg op log`) shows the

@@ -28,11 +28,11 @@ void command_new(Repository& repo,
   }
   const git_oid change =
       repo.create_commit(combined_tree(repo, parents), parents, options.message);
-  const std::string id = repo.new_change_id(change);
+  const std::string id = repo.new_change_id();
   std::map<std::string, git_oid> updates{
       {std::string(kChangePrefix) + id, change}};
   finish_workspace(repo, change, std::move(updates), {}, "gg new");
-  output << "Working copy now at: " << id.substr(0, 8) << ' '
+  output << "Working copy now at: " << repo.short_change_id(id) << ' '
          << oid_string(change, 8) << ' '
          << (options.message.empty() ? "(no description set)" : options.message)
          << '\n';
@@ -47,7 +47,8 @@ void command_status(Repository& repo, std::ostream& output) {
   }
   CommitPtr change = repo.commit(*workspace);
   const auto id = repo.change_id(*workspace);
-  output << "Working copy (@): " << (id.has_value() ? id->substr(0, 8) : "--------")
+  output << "Working copy (@): "
+         << (id.has_value() ? repo.short_change_id(*id) : "--------")
          << ' ' << oid_string(*workspace, 8) << ' ';
   const std::string description = first_line(git_commit_message(change.get()));
   output << (description.empty() ? "(no description set)" : description) << '\n';
@@ -118,7 +119,8 @@ void command_log(Repository& repo,
     output << (workspace.has_value() && *workspace == oid ? '@'
                : id.has_value()                         ? 'o'
                                                         : '*')
-           << "  " << (id.has_value() ? id->substr(0, 8) : oid_string(oid, 8))
+           << "  "
+           << (id.has_value() ? repo.short_change_id(*id) : oid_string(oid, 8))
            << ' ' << oid_string(oid, 8);
     for (const std::string& bookmark : bookmarks) {
       output << " " << bookmark;
@@ -137,11 +139,11 @@ void command_edit(Repository& repo,
   std::map<std::string, git_oid> updates;
   auto id = repo.change_id(target);
   if (!id.has_value()) {
-    id = repo.new_change_id(target);
+    id = repo.new_change_id();
     updates[std::string(kChangePrefix) + *id] = target;
   }
   finish_workspace(repo, target, std::move(updates), {}, "gg edit");
-  output << "Working copy now at: " << id->substr(0, 8) << ' '
+  output << "Working copy now at: " << repo.short_change_id(*id) << ' '
          << oid_string(target, 8) << '\n';
 }
 

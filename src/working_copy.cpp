@@ -145,7 +145,7 @@ bool Repository::sync_workspace() const {
     const std::vector<git_oid> parent_oids =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
     const git_oid imported = create_commit(tree_oid, parent_oids, "");
-    const std::string id = new_change_id(imported);
+    const std::string id = new_change_id();
     std::map<std::string, git_oid> updates{
         {std::string(kWorkspaceRef), imported},
         {std::string(kChangePrefix) + id, imported}};

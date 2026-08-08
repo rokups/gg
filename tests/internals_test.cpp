@@ -30,9 +30,14 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   EXPECT_FALSE(refs.contains("refs/heads/unborn-link"));
   EXPECT_FALSE(repo.rewrite_refs().contains("refs/remotes/origin/main"));
 
-  const std::string id = repo.new_change_id(base);
+  const std::string id = repo.new_change_id();
+  EXPECT_EQ(id.size(), 32U);
+  for (char digit : id) {
+    EXPECT_GE(digit, 'k');
+    EXPECT_LE(digit, 'z');
+  }
   set_ref(std::string(detail::kChangePrefix) + id, base);
-  EXPECT_EQ(repo.new_change_id(base), id + "z");
+  EXPECT_EQ(repo.short_change_id(id), id.substr(0, 8));
   set_ref(std::string(detail::kChangePrefix) + "a1", base);
   const git_oid other = raw_commit("other");
   set_ref(std::string(detail::kChangePrefix) + "a2", other);
@@ -41,6 +46,17 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   set_ref(std::string(detail::kChangePrefix) + "b2", base);
   const git_oid matching = repo.resolve("b");
   EXPECT_TRUE(git_oid_equal(&matching, &base) != 0);
+  EXPECT_EQ(repo.short_change_id("a"), "a");
+
+  std::string first(32, 'k');
+  std::string second = first;
+  first.replace(0, 9, "zzzzzzzzl");
+  second.replace(0, 9, "zzzzzzzzm");
+  set_ref(std::string(detail::kChangePrefix) + "zzzz", base);
+  set_ref(std::string(detail::kChangePrefix) + first, base);
+  set_ref(std::string(detail::kChangePrefix) + second, other);
+  EXPECT_EQ(repo.short_change_id(first), first.substr(0, 9));
+  EXPECT_EQ(repo.short_change_id(second), second.substr(0, 9));
 
   repo.apply_refs({}, {}, "no changes");
   EXPECT_THROW(repo.abort_rewrite(), detail::UserError);

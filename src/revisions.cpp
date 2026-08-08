@@ -6,6 +6,9 @@
 
 #include <git2/sys/errors.h>
 
+#include <algorithm>
+#include <random>
+
 namespace gg::detail {
 
 std::map<std::string, git_oid> Repository::changes() const {
@@ -18,20 +21,37 @@ std::map<std::string, git_oid> Repository::changes() const {
   return result;
 }
 
-std::string Repository::new_change_id(const git_oid& seed) const {
+std::string Repository::new_change_id() const {
   constexpr std::string_view alphabet = "zyxwvutsrqponmlk";
-  const std::string hex = oid_string(seed);
+  std::random_device random;
   std::string result;
-  result.reserve(hex.size());
-  for (char character : hex) {
-    const int value = character <= '9' ? character - '0' : character - 'a' + 10;
-    result.push_back(alphabet[static_cast<std::size_t>(value)]);
-  }
-  const auto existing = changes();
-  while (existing.contains(result)) {
-    result.push_back('z');
-  }
+  result.reserve(32);
+  do {
+    result.clear();
+    for (int index = 0; index < 16; ++index) {
+      const unsigned int byte = random() & 0xffU;
+      result.push_back(alphabet[byte >> 4U]);
+      result.push_back(alphabet[byte & 0xfU]);
+    }
+  } while (changes().contains(result));  // GG_COV_EXCL_BRANCH
   return result;
+}
+
+std::string Repository::short_change_id(std::string_view id) const {
+  std::size_t length = std::min<std::size_t>(8, id.size());
+  for (const auto& [other, oid] : changes()) {
+    (void)oid;
+    if (other == id) {
+      continue;
+    }
+    std::size_t common = 0;
+    while (common < id.size() && common < other.size() &&
+           id[common] == other[common]) {
+      ++common;
+    }
+    length = std::max(length, std::min(id.size(), common + 1));
+  }
+  return std::string(id.substr(0, length));
 }
 
 std::optional<std::string> Repository::change_id(const git_oid& oid) const {
