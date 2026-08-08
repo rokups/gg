@@ -829,6 +829,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       workspace->add_subcommand("root", "Show the workspace root");
   workspace_root->add_option("--name", workspace_root_value.name,
                              "Workspace name");
+  WorkspaceCommand workspace_add_value;
+  workspace_add_value.action = WorkspaceAction::add;
+  auto* workspace_add =
+      workspace->add_subcommand("add", "Create a linked workspace");
+  workspace_add
+      ->add_option("destination", workspace_add_value.destination,
+                   "Workspace path")
+      ->required();
+  workspace_add->add_option("--name", workspace_add_value.name,
+                            "Workspace name");
+  workspace_add->add_option("-r,--revision", workspace_add_value.revision,
+                            "Parent revision");
+  workspace_add->add_option("-m,--message", workspace_add_value.message,
+                            "Working-copy description");
   WorkspaceCommand workspace_forget_value;
   workspace_forget_value.action = WorkspaceAction::forget;
   auto* workspace_forget =
@@ -938,8 +952,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   const bool lean = lean_mode_enabled();
   if (lean) {
     for (CLI::App* command :
-         {status, diff, show, tag, clone, init, fetch, push, workspace,
-          sparse}) {
+         {status, diff, show, tag, clone, init, fetch, push, sparse}) {
       command->disabled()->group("");
     }
     for (CLI::App* command : {file_list, file_show, file_search, create, set,
@@ -1115,6 +1128,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(workspace_list_value)};
   } else if (workspace_root->parsed()) {
     command = RepositoryCommand{std::move(workspace_root_value)};
+  } else if (workspace_add->parsed()) {
+    command = RepositoryCommand{std::move(workspace_add_value)};
   } else if (workspace_forget->parsed()) {
     command = RepositoryCommand{std::move(workspace_forget_value)};
   } else if (workspace_rename->parsed()) {

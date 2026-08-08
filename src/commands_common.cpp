@@ -587,7 +587,7 @@ void finish_workspace(Repository& repo,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation) {
-  updates[repo.workspace_ref().value_or(std::string(kWorkspaceRef))] = workspace;
+  updates[repo.workspace_ref_name()] = workspace;
   const HeadState head = repo.head_for_workspace(workspace);
   repo.record(std::move(updates), std::move(deletes), head, operation);
   repo.set_head(head);
@@ -732,15 +732,68 @@ void command_workspace(Repository& repo,
       std::filesystem::weakly_canonical(git_repository_workdir(repo.raw()));
   const auto workspace_reference = repo.workspace_ref();
   const auto workspace = repo.workspace();
-  const std::string workspace_name =
-      workspace_reference.has_value()
-          ? workspace_reference->substr(kWorkspacePrefix.size())
-          : "";
+  const std::string workspace_name = repo.workspace_name();
+  const auto roots = repo.workspace_roots();
   if (options.action == WorkspaceAction::root) {
-    if (!options.name.empty() && options.name != workspace_name) {
+    if (options.name.empty()) {
+      output << root.string() << '\n';
+      return;
+    }
+    const std::string reference =
+        std::string(kWorkspacePrefix) + options.name;
+    const auto found = roots.find(options.name);
+    if (!repo.ref_target(reference).has_value() || found == roots.end()) {
       throw UserError("workspace not found: " + options.name);
     }
-    output << root.string() << '\n';
+    output << std::filesystem::weakly_canonical(found->second).string() << '\n';
+    return;
+  }
+  if (options.action == WorkspaceAction::add) {
+    repo.sync_workspace();
+    if (!options.name.empty()) {
+      int valid = 0;
+      const std::string reference =
+          std::string(kWorkspacePrefix) + options.name;
+      check(git_reference_name_is_valid(&valid, reference.c_str()),
+            "validate workspace name");
+      if (valid == 0) {
+        throw UserError("invalid workspace name: " + options.name);
+      }
+    }
+    if (!options.name.empty() && roots.contains(options.name)) {
+      throw UserError("workspace already exists: " + options.name);
+    }
+    if (!options.name.empty() &&
+        repo.ref_target(std::string(kWorkspacePrefix) + options.name)
+            .has_value()) {
+      throw UserError("workspace already exists: " + options.name);
+    }
+    const std::filesystem::path destination =
+        std::filesystem::absolute(options.destination).lexically_normal();
+    const std::string revision =
+        options.revision.empty() ? (workspace.has_value() ? "@" : "HEAD")
+                                 : options.revision;
+    const git_oid parent = repo.resolve(revision);
+    const CommitPtr parent_commit = repo.commit(parent);
+    const git_oid working = repo.create_commit(
+        *git_commit_tree_id(parent_commit.get()), {parent}, options.message);
+    UtilExecCommand command{
+        "git",
+        {"--git-dir=" + std::string(git_repository_commondir(repo.raw())),
+         "worktree", "add", "--quiet", "--detach", destination.string(),
+         oid_string(parent)}};
+    if (command_util_exec(command, git_repository_path(repo.raw())) != 0) {
+      throw UserError("cannot create linked workspace");
+    }
+    Repository linked(destination);
+    if (!options.name.empty()) linked.set_workspace_name(options.name);
+    const std::string name = linked.workspace_name();
+    const std::string id = repo.new_change_id();
+    repo.record({{std::string(kWorkspacePrefix) + name, working},
+                 {std::string(kChangePrefix) + id, working}},
+                {}, repo.head_state(), "gg workspace add " + name, true);
+    output << "Created workspace " << name << " at " << destination.string()
+           << ".\n";
     return;
   }
   if (options.action == WorkspaceAction::rename) {
@@ -756,9 +809,21 @@ void command_workspace(Repository& repo,
     check(git_reference_name_is_valid(&valid, renamed.c_str()),
           "validate workspace name");
     if (valid == 0) throw UserError("invalid workspace name: " + options.name);
-    repo.record({{renamed, *workspace}}, {*workspace_reference},
-                repo.head_state(),
-                "gg workspace rename " + workspace_name + " " + options.name);
+    if (roots.contains(options.name) || repo.ref_target(renamed).has_value()) {
+      throw UserError("workspace already exists: " + options.name);
+    }
+    (void)repo.ensure_operation();
+    repo.set_workspace_name(options.name);
+    try {
+      repo.record({{renamed, *workspace}}, {*workspace_reference},
+                  repo.head_state(),
+                  "gg workspace rename " + workspace_name + " " +
+                      options.name,
+                  true);
+    } catch (...) {
+      repo.set_workspace_name(workspace_name);
+      throw;
+    }
     return;
   }
   if (options.action == WorkspaceAction::forget) {
@@ -768,23 +833,30 @@ void command_workspace(Repository& repo,
                                            ? workspace_name
                                            : "default"}
             : options.names;
-    bool found = false;
+    std::set<std::string> deletes;
     for (const std::string& name : names) {
-      if (workspace_reference.has_value() && name == workspace_name) {
-        found = true;
+      const std::string reference = std::string(kWorkspacePrefix) + name;
+      if (repo.ref_target(reference).has_value()) {
+        deletes.insert(reference);
       } else {
         output << "No such workspace: " << name << '\n';
       }
     }
-    if (!found) {
+    if (deletes.empty()) {
       output << "Nothing changed.\n";
       return;
     }
-    repo.record({}, {*workspace_reference}, repo.head_state(),
-                "gg workspace forget " + workspace_name);
+    repo.record({}, std::move(deletes), repo.head_state(),
+                "gg workspace forget", true);
     return;
   }
-  if (!workspace.has_value()) {
+  std::vector<std::pair<std::string, git_oid>> workspaces;
+  for (const auto& [name, oid] : repo.data_refs()) {
+    if (starts_with(name, kWorkspacePrefix)) {
+      workspaces.emplace_back(name.substr(kWorkspacePrefix.size()), oid);
+    }
+  }
+  if (workspaces.empty()) {
     if (!options.template_value.empty()) {
       static const std::map<std::string, std::string> values{
           {"name", ""},      {"target", ""},
@@ -801,17 +873,25 @@ void command_workspace(Repository& repo,
     output << "No workspaces.\n";
     return;
   }
-  if (!options.template_value.empty()) {
-    auto values = revision_template_values(repo, *workspace);
-    values["name"] = workspace_name;
-    values["target"] = oid_string(*workspace);
-    values["root"] = root.string();
-    output << render_template(options.template_value, values);
-  } else {
-    const auto id = repo.change_id(*workspace);
-    output << workspace_name << ": "
-           << (id.has_value() ? repo.short_change_id(*id) : "--------") << ' '
-           << oid_string(*workspace, 8) << ' ' << root.string() << '\n';
+  for (const auto& [name, oid] : workspaces) {
+    const auto found = roots.find(name);
+    const std::string workspace_root =
+        found == roots.end()
+            ? "(stale)"
+            : std::filesystem::weakly_canonical(found->second).string();
+    if (!options.template_value.empty()) {
+      auto values = revision_template_values(repo, oid);
+      values["name"] = name;
+      values["target"] = oid_string(oid);
+      values["root"] = workspace_root;
+      values["working_copy"] = name == workspace_name ? "true" : "false";
+      output << render_template(options.template_value, values);
+    } else {
+      const auto id = repo.change_id(oid);
+      output << name << ": "
+             << (id.has_value() ? repo.short_change_id(*id) : "--------")
+             << ' ' << oid_string(oid, 8) << ' ' << workspace_root << '\n';
+    }
   }
 }
 

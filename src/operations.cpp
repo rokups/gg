@@ -11,6 +11,16 @@
 namespace gg::detail {
 namespace {
 
+bool refs_equal(const std::map<std::string, git_oid>& left,
+                const std::map<std::string, git_oid>& right) {
+  return left.size() == right.size() &&
+         std::equal(left.begin(), left.end(), right.begin(),
+                    [](const auto& first, const auto& second) {
+                      return first.first == second.first &&
+                             first.second == second.second;
+                    });
+}
+
 constexpr std::string_view kOperationV2 = "gg-operation-v2";
 constexpr std::string_view kOperationV3 = "gg-operation-v3";
 
@@ -56,17 +66,21 @@ OperationState parse_operation_state(std::string_view text) {
 }
 
 std::string operation_metadata(std::optional<git_oid> previous,
-                               std::string_view description) {
+                               std::string_view description,
+                               std::string_view workspace_name) {
   std::ostringstream output;
   output << kOperationV3 << "\nprevious "
          << (previous.has_value() ? oid_string(*previous) : "-")
-         << "\ndescription " << description << '\n';
+         << "\ndescription " << description << "\nworkspace "
+         << workspace_name << '\n';
   return output.str();
 }
 
 }  // namespace
 
-OperationState Repository::state() const { return {head_state(), data_refs()}; }
+OperationState Repository::state() const {
+  return {head_state(), data_refs(), workspace_name()};
+}
 
 std::string Repository::serialize(const OperationState& state,
                       std::optional<git_oid> previous,
@@ -110,9 +124,20 @@ OperationState Repository::parse_operation(const git_commit* operation) const {
   check(git_blob_lookup(&raw_blob, repo_.get(), git_tree_entry_id(entry.get())),
         "read operation state");
   BlobPtr blob(raw_blob);
-  return parse_operation_state(
+  OperationState state = parse_operation_state(
       std::string_view(static_cast<const char*>(git_blob_rawcontent(blob.get())),
                        git_blob_rawsize(blob.get())));
+  std::istringstream metadata{std::string(message)};
+  std::string line;
+  for (int index = 0; index < 3; ++index) {
+    (void)std::getline(metadata, line);
+  }
+  constexpr std::string_view workspace_prefix = "workspace ";
+  if (std::getline(metadata, line) &&  // GG_COV_EXCL_BRANCH
+      starts_with(line, workspace_prefix)) {  // GG_COV_EXCL_BRANCH
+    state.workspace_name = line.substr(workspace_prefix.size());
+  }
+  return state;
 }
 
 std::string Repository::operation_description(const git_oid& oid) const {
@@ -222,10 +247,13 @@ git_oid Repository::create_operation(const OperationState& state,
   check(git_treebuilder_write(&tree_oid, builder.get()),
         "write operation state tree");
   return create_commit(tree_oid, parents,
-                       operation_metadata(previous, description));
+                       operation_metadata(previous, description,
+                                          state.workspace_name));
 }
 
-std::optional<git_oid> Repository::operation() const { return ref_target(kOperationRef); }
+std::optional<git_oid> Repository::operation() const {
+  return ref_target(operation_ref_name());
+}
 
 git_oid Repository::resolve_operation(std::string_view expression) const {
   if (expression.empty()) {
@@ -259,15 +287,30 @@ git_oid Repository::resolve_operation(std::string_view expression) const {
     }
     current = operation_previous(*current);
   }
-  if (!match.has_value()) {
-    throw UserError("operation not found: " + std::string(expression));
+  if (match.has_value()) return *match;
+  git_object* raw_object = nullptr;
+  const int resolved = git_revparse_single(
+      &raw_object, repo_.get(), std::string(expression).c_str());
+  if (resolved == 0) {
+    ObjectPtr object(raw_object);
+    const git_oid oid = *git_object_id(object.get());
+    try {
+      (void)parse_operation(oid);
+      return oid;
+    } catch (const GitError&) {  // GG_COV_EXCL_BRANCH
+    }
+  } else {
+    git_error_clear();
   }
-  return *match;
+  throw UserError("operation not found: " + std::string(expression));
 }
 
 void Repository::view_at_operation(std::string_view expression) {
   const git_oid operation_oid = resolve_operation(expression);
   operation_view_ = parse_operation(operation_oid);
+  if (!operation_view_->workspace_name.empty()) {
+    workspace_name_ = operation_view_->workspace_name;
+  }
   viewed_operation_ = operation_oid;
   ignore_working_copy_ = true;
 }
@@ -275,15 +318,47 @@ void Repository::view_at_operation(std::string_view expression) {
 git_oid Repository::ensure_operation() const {
   const auto current = operation();
   if (current.has_value()) {
-    return *current;
+    const OperationState recorded = parse_operation(*current);
+    const OperationState actual = state();
+    if (recorded.head.symbolic == actual.head.symbolic &&
+        recorded.head.value == actual.head.value &&
+        refs_equal(recorded.refs, actual.refs)) {
+      return *current;
+    }
   }
-  return create_operation(state(), std::nullopt, "initialize repository");
+  const git_oid synchronized = create_operation(
+      state(), std::nullopt,
+      current.has_value() ? "synchronize workspace" : "initialize repository");
+  apply_refs({{operation_ref_name(), synchronized}}, {},
+             "gg synchronize workspace");
+  return synchronized;
 }
 
 void Repository::record(std::map<std::string, git_oid> updates,
             std::set<std::string> deletes,
             const HeadState& head,
-            std::string_view description) const {
+            std::string_view description,
+            bool manage_workspaces) const {
+  if (!manage_workspaces) {
+    const std::string current_workspace = workspace_ref_name();
+    for (const auto& [name, target] : updates) {
+      if (!starts_with(name, kWorkspacePrefix) || name == current_workspace) {
+        continue;
+      }
+      const auto existing = ref_target(name);
+      if (!existing.has_value() || !(*existing == target)) {
+        throw UserError("operation would rewrite active workspace: " +
+                        name.substr(kWorkspacePrefix.size()));
+      }
+    }
+    for (const std::string& name : deletes) {
+      if (starts_with(name, kWorkspacePrefix) && name != current_workspace &&
+          ref_target(name).has_value()) {
+        throw UserError("operation would remove active workspace: " +
+                        name.substr(kWorkspacePrefix.size()));
+      }
+    }
+  }
   OperationState next = state();
   next.head = head;
   for (const std::string& name : deletes) {
@@ -294,7 +369,7 @@ void Repository::record(std::map<std::string, git_oid> updates,
   }
   const git_oid operation_oid =
       create_operation(next, ensure_operation(), description);
-  updates[std::string(kOperationRef)] = operation_oid;
+  updates[operation_ref_name()] = operation_oid;
   apply_refs(updates, deletes, description);
 }
 
@@ -304,10 +379,50 @@ void Repository::restore_operation(const git_oid& operation_oid,
                                    bool restore_remote_tracking) const {
   const OperationState source = parse_operation(operation_oid);
   OperationState target = state();
+  const auto current_operation = operation();
+  const bool manage_workspaces =
+      starts_with(operation_description(operation_oid), "gg workspace ") ||
+      (current_operation.has_value() &&
+       starts_with(operation_description(*current_operation),  // GG_COV_EXCL_BRANCH
+                   "gg workspace "));
   if (restore_repository) {
     target.head = source.head;
   }
+  const std::string current_workspace = workspace_ref_name();
+  std::set<std::string> other_workspaces;
+  for (const auto& [name, root] : workspace_roots()) {
+    (void)root;
+    if (name != workspace_name()) {
+      other_workspaces.insert(std::string(kWorkspacePrefix) + name);
+    }
+  }
+  std::optional<std::string> restored_workspace_name;
+  const auto current_target = target.refs.find(current_workspace);
+  if (restore_repository && !source.workspace_name.empty() &&
+      source.workspace_name != workspace_name()) {
+    restored_workspace_name = source.workspace_name;
+  } else if (restore_repository && source.workspace_name.empty() &&
+             manage_workspaces &&  // GG_COV_EXCL_BRANCH
+             current_target != target.refs.end() &&  // GG_COV_EXCL_BRANCH
+             !source.refs.contains(current_workspace)) {  // GG_COV_EXCL_BRANCH
+    for (const auto& [name, oid] : source.refs) {  // GG_COV_EXCL_BRANCH
+      if (starts_with(name, kWorkspacePrefix) &&
+          !target.refs.contains(name) &&  // GG_COV_EXCL_BRANCH
+          !other_workspaces.contains(name) &&  // GG_COV_EXCL_BRANCH
+          oid == current_target->second) {  // GG_COV_EXCL_BRANCH
+        restored_workspace_name = name.substr(kWorkspacePrefix.size());
+        break;
+      }
+    }
+  }
+  if (restored_workspace_name.has_value()) {
+    target.workspace_name = *restored_workspace_name;
+  }
   for (auto iterator = target.refs.begin(); iterator != target.refs.end();) {
+    if (!manage_workspaces && other_workspaces.contains(iterator->first)) {
+      ++iterator;
+      continue;
+    }
     const bool remote = starts_with(iterator->first, "refs/remotes/") ||
                         starts_with(iterator->first, kRemoteTagPrefix) ||
                         starts_with(iterator->first, kBookmarkTrackingPrefix) ||
@@ -320,6 +435,9 @@ void Repository::restore_operation(const git_oid& operation_oid,
     }
   }
   for (const auto& [name, oid] : source.refs) {
+    if (!manage_workspaces && other_workspaces.contains(name)) {
+      continue;
+    }
     const bool remote = starts_with(name, "refs/remotes/") ||
                         starts_with(name, kRemoteTagPrefix) ||
                         starts_with(name, kBookmarkTrackingPrefix) ||
@@ -331,7 +449,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
   }
   const auto current = data_refs();
   std::map<std::string, git_oid> updates = target.refs;
-  updates[std::string(kOperationRef)] =
+  updates[operation_ref_name()] =
       description.empty()
           ? operation_oid
           : create_operation(target, ensure_operation(), description);
@@ -342,8 +460,19 @@ void Repository::restore_operation(const git_oid& operation_oid,
       deletes.insert(name);
     }
   }
-  apply_refs(updates, deletes,
-             description.empty() ? "gg restore operation" : description);
+  const std::string previous_workspace_name = workspace_name();
+  if (restored_workspace_name.has_value()) {
+    set_workspace_name(*restored_workspace_name);
+  }
+  try {
+    apply_refs(updates, deletes,
+               description.empty() ? "gg restore operation" : description);
+  } catch (...) {
+    if (restored_workspace_name.has_value()) {
+      set_workspace_name(previous_workspace_name);
+    }
+    throw;
+  }
   if (restore_repository) {
     set_head(target.head);
     const auto workspace = this->workspace();

@@ -13,7 +13,7 @@
 namespace gg::detail {
 
 std::optional<PendingRewrite> Repository::pending() const {
-  const auto pending_oid = ref_target(kRewriteRef);
+  const auto pending_oid = ref_target(rewrite_ref_name());
   if (!pending_oid.has_value()) {
     return std::nullopt;
   }
@@ -84,7 +84,7 @@ std::string Repository::serialize(const PendingRewrite& pending) const {
 void Repository::write_pending(const PendingRewrite& pending) const {
   const git_oid holder =
       create_commit(pending.marker_tree, {pending.operation}, serialize(pending));
-  apply_refs({{std::string(kRewriteRef), holder}}, {}, "gg pause rewrite");
+  apply_refs({{rewrite_ref_name(), holder}}, {}, "gg pause rewrite");
 }
 
 void Repository::pause(const std::vector<std::string_view>& arguments,
@@ -145,8 +145,9 @@ std::vector<std::string> Repository::prepare_continue() const {
 }
 
 void Repository::finish_rewrite() const {
-  if (ref_target(kRewriteRef).has_value()) {
-    apply_refs({}, {std::string(kRewriteRef)}, "gg finish rewrite");
+  const std::string reference = rewrite_ref_name();
+  if (ref_target(reference).has_value()) {
+    apply_refs({}, {reference}, "gg finish rewrite");
   }
 }
 
@@ -156,7 +157,7 @@ void Repository::abort_rewrite() const {
     throw UserError("no rewrite is in progress");
   }
   restore_operation(rewrite->operation);
-  apply_refs({}, {std::string(kRewriteRef)}, "gg abort rewrite");
+  apply_refs({}, {rewrite_ref_name()}, "gg abort rewrite");
 }
 
 void Repository::pending_status(std::ostream& output) const {

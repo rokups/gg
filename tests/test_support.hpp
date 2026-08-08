@@ -99,17 +99,27 @@ class RepositoryTest : public testing::Test {
   }
 
   Result invoke(std::vector<std::string> arguments) {
-    arguments.insert(arguments.begin(), path_.string());
+    return invoke_at(path_, std::move(arguments));
+  }
+
+  Result invoke_at(const std::filesystem::path& repository,
+                   std::vector<std::string> arguments) {
+    arguments.insert(arguments.begin(), repository.string());
     arguments.insert(arguments.begin(), "-R");
     return run(std::move(arguments));
   }
 
   Result invoke_git(const std::vector<std::string>& arguments) {
+    return invoke_git_at(path_, arguments);
+  }
+
+  Result invoke_git_at(const std::filesystem::path& repository,
+                       const std::vector<std::string>& arguments) {
     static unsigned long counter = 0;
     const auto output_path =
         path_ / ".git" / ("gg-test-git-output-" + std::to_string(++counter));
     const auto error_path = output_path.string() + ".error";
-    std::string command = "git -C " + shell_quote(path_.string());
+    std::string command = "git -C " + shell_quote(repository.string());
     for (const std::string& argument : arguments) {
       command += " " + shell_quote(argument);
     }

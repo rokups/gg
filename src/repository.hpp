@@ -75,6 +75,7 @@ using DiffStatsPtr = GitPtr<git_diff_stats, git_diff_stats_free>;
 using SignaturePtr = GitPtr<git_signature, git_signature_free>;
 using TransactionPtr = GitPtr<git_transaction, git_transaction_free>;
 using RemotePtr = GitPtr<git_remote, git_remote_free>;
+using WorktreePtr = GitPtr<git_worktree, git_worktree_free>;
 
 struct MergeConflict {
   git_oid ancestor;
@@ -102,7 +103,11 @@ bool starts_with(std::string_view value, std::string_view prefix);
 
 struct HeadState { bool symbolic = true; std::string value; };
 struct ShortId { std::string value; std::size_t prefix_length; };
-struct OperationState { HeadState head; std::map<std::string, git_oid> refs; };
+struct OperationState {
+  HeadState head;
+  std::map<std::string, git_oid> refs;
+  std::string workspace_name;
+};
 struct RewritePlan {
   std::map<git_oid, git_oid, OidLess> commits;
   std::map<std::string, git_oid> updates;
@@ -147,6 +152,18 @@ class Repository {
   void invalidate_ref_cache() const;
 
   std::optional<std::string> workspace_ref() const;
+
+  const std::string& workspace_name() const;
+
+  std::string workspace_ref_name() const;
+
+  std::string operation_ref_name() const;
+
+  std::string rewrite_ref_name() const;
+
+  std::map<std::string, std::filesystem::path> workspace_roots() const;
+
+  void set_workspace_name(std::string_view name) const;
 
   std::optional<git_oid> workspace() const;
 
@@ -257,7 +274,8 @@ class Repository {
   void record(std::map<std::string, git_oid> updates,
                 std::set<std::string> deletes,
                 const HeadState& head,
-                std::string_view description) const;
+                std::string_view description,
+                bool manage_workspaces = false) const;
 
   void restore_operation(const git_oid& operation_oid,
                          std::string_view description = {},
@@ -317,6 +335,9 @@ class Repository {
   std::optional<std::vector<std::string>> scoped_change_ids_;
   std::optional<std::vector<std::string>> scoped_commit_ids_;
   bool ref_cache_enabled_{false};
+  bool linked_worktree_{false};
+  std::string worktree_id_{"default"};
+  mutable std::string workspace_name_{"default"};
 };
 
 }  // namespace gg::detail

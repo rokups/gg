@@ -139,8 +139,37 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   EXPECT_EQ(invoke({"workspace", "list", "-T", "name"}).output,
             "No workspaces.\n");
   EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).code, 2);
+  const auto unused = path_.parent_path() /
+                      (path_.filename().string() + "-unused-workspace");
+  std::ofstream(unused) << "occupied\n";
+  EXPECT_EQ(invoke({"workspace", "add", unused.string()}).code, 2);
+  std::filesystem::remove(unused);
 
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  EXPECT_EQ(invoke({"workspace", "add", unused.string(), "--name",
+                    "default"})
+                .code,
+            2);
+  set_ref("refs/gg/workspaces/stale", ref(detail::kWorkspaceRef));
+  EXPECT_EQ(invoke({"workspace", "root", "--name", "stale"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "add", unused.string(), "--name", "stale"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"workspace", "add", unused.string(), "--name",
+                    "bad..name"})
+                .code,
+            2);
+  const auto automatic = path_.parent_path() /
+                         (path_.filename().string() + "-automatic-workspace");
+  std::filesystem::remove_all(automatic);
+  ASSERT_EQ(invoke({"workspace", "add", automatic.string()}).code, 0);
+  const std::string automatic_name = automatic.filename().string();
+  EXPECT_TRUE(has_ref(std::string(detail::kWorkspacePrefix) + automatic_name));
+  ASSERT_EQ(invoke({"workspace", "forget", automatic_name}).code, 0);
+  ASSERT_EQ(invoke_git({"worktree", "remove", "--force", automatic.string()})
+                .code,
+            0);
+  ASSERT_EQ(invoke({"workspace", "forget", "stale"}).code, 0);
   EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).output,
             root + "\n");
   const Result listed = invoke({"workspace", "list"});
@@ -165,9 +194,38 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
 
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   const git_oid original = ref(detail::kWorkspaceRef);
+  set_ref("refs/gg/workspaces/taken", original);
+  EXPECT_EQ(invoke({"workspace", "rename", "taken"}).code, 2);
+  ASSERT_EQ(invoke({"workspace", "forget", "taken"}).code, 0);
+  const git_oid before_rename_operation = ref(detail::kOperationRef);
+  detail::Repository before_rename(path_);
+  detail::OperationState legacy_state = before_rename.state();
+  legacy_state.workspace_name.clear();
+  const git_oid legacy_operation = before_rename.create_commit(
+      before_rename.empty_tree(), {},
+      before_rename.serialize(legacy_state, before_rename.operation(),
+                              "legacy workspace state"));
   ASSERT_EQ(invoke({"workspace", "rename", "topic"}).code, 0);
+  const git_oid rename_operation = ref(detail::kOperationRef);
   EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
   ASSERT_TRUE(has_ref("refs/gg/workspaces/topic"));
+  EXPECT_EQ(invoke({"--at-operation", git_oid_tostr_s(&before_rename_operation),
+                    "workspace", "list", "-T", "name ++ \"\\n\""})
+                .output,
+            "default\n");
+  detail::Repository legacy_view(path_);
+  legacy_view.view_at_operation(git_oid_tostr_s(&legacy_operation));
+  EXPECT_EQ(legacy_view.workspace_name(), "topic");
+  ASSERT_EQ(invoke({"operation", "restore", git_oid_tostr_s(&legacy_operation)})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref(detail::kWorkspaceRef));
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/topic"));
+  ASSERT_EQ(invoke({"operation", "restore", git_oid_tostr_s(&rename_operation)})
+                .code,
+            0);
+  EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/topic"));
   const git_oid renamed = ref("refs/gg/workspaces/topic");
   EXPECT_EQ(git_oid_equal(&original, &renamed), 1);
   EXPECT_NE(invoke({"workspace", "list"}).output.find("topic: "),
@@ -180,8 +238,25 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
   EXPECT_EQ(invoke({"workspace", "rename", "topic"}).output,
             "Nothing changed.\n");
   EXPECT_EQ(invoke({"workspace", "rename", "bad..name"}).code, 2);
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_TRUE(has_ref(detail::kWorkspaceRef));
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/topic"));
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+  EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/topic"));
 
   ASSERT_EQ(invoke({"describe", "-m", "renamed workspace"}).code, 0);
+  const git_oid after_rename_operation = ref(detail::kOperationRef);
+  ASSERT_EQ(invoke({"operation", "restore",
+                    git_oid_tostr_s(&before_rename_operation)})
+                .code,
+            0);
+  EXPECT_TRUE(has_ref(detail::kWorkspaceRef));
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/topic"));
+  ASSERT_EQ(invoke({"operation", "restore",
+                    git_oid_tostr_s(&after_rename_operation)})
+                .code,
+            0);
   EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
   EXPECT_TRUE(has_ref("refs/gg/workspaces/topic"));
   EXPECT_EQ(invoke({"workspace", "forget", "missing"}).output,
@@ -198,7 +273,8 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
 
   set_ref("refs/gg/workspaces/duplicate",
           ref("refs/gg/workspaces/topic"));
-  EXPECT_EQ(invoke({"workspace", "list"}).code, 2);
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("duplicate: "),
+            std::string::npos);
 }
 
 TEST_F(RepositoryTest, ListsAndResetsFullWorkingCopyPatterns) {
@@ -901,6 +977,8 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   EXPECT_EQ(invoke({"operation", "restore", "@-"}).code, 0);
   expect_workspace_coherent();
   EXPECT_EQ(invoke({"operation", "restore", "missing"}).code, 2);
+  const git_oid head = ref("HEAD");
+  EXPECT_EQ(invoke({"operation", "restore", git_oid_tostr_s(&head)}).code, 2);
   EXPECT_EQ(invoke({"operation", "restore", "@x"}).code, 2);
   EXPECT_EQ(invoke({"operation", "restore", "@-x"}).code, 2);
 }

@@ -4,6 +4,8 @@
 
 #include "test_support.hpp"
 
+#include "repository.hpp"
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, NewSnapshotsStagedAndUnstagedFilesForGit) {
@@ -170,26 +172,197 @@ TEST_F(RepositoryTest, CommitRestoreAndMetadataCommandsKeepGitCoherent) {
             "");
 }
 
-TEST_F(RepositoryTest, RejectsLinkedWorktreesWithoutTouchingEitherCheckout) {
+TEST_F(RepositoryTest, IsolatesGgStateAcrossLinkedWorkspaces) {
   const auto linked = path_.parent_path() /
                       (path_.filename().string() + "-linked");
   std::filesystem::remove_all(linked);
-  ASSERT_EQ(invoke_git({"worktree", "add", "-q", "-b", "linked",
-                        linked.string(), "main"})
-                .code,
-            0);
+  ASSERT_EQ(invoke({"new", "-m", "primary", "main"}).code, 0);
+  const git_oid primary_workspace = ref(detail::kWorkspaceRef);
+  detail::Repository initial(path_);
+  initial.record({}, {std::string(detail::kWorkspaceRef)},
+                 initial.head_state(), "test current workspace delete");
+  EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  ASSERT_TRUE(has_ref(detail::kWorkspaceRef));
   const std::string primary_before = file();
-  const std::string linked_before = read_path(linked / "tracked.txt");
-
-  const Result result = run({"-R", linked.string(), "log"});
-  EXPECT_EQ(result.code, 2);
-  EXPECT_NE(result.error.find("linked Git worktrees are not supported yet"),
+  const Result added = invoke({"workspace", "add", linked.string(), "--name",
+                               "secondary", "-r", "@", "-m",
+                               "secondary"});
+  ASSERT_EQ(added.code, 0) << added.error;
+  ASSERT_TRUE(has_ref("refs/gg/workspaces/secondary"));
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/secondary"));
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+  ASSERT_TRUE(has_ref("refs/gg/workspaces/secondary"));
+  EXPECT_EQ(invoke({"workspace", "rename", "secondary"}).code, 2);
+  EXPECT_NE(invoke({"workspace", "list"}).output.find(linked.string()),
             std::string::npos);
+  const Result templated = invoke(
+      {"workspace", "list", "-T", "name ++ \" \" ++ working_copy ++ \"\\n\""});
+  EXPECT_NE(templated.output.find("default true\n"), std::string::npos);
+  EXPECT_NE(templated.output.find("secondary false\n"), std::string::npos);
+  detail::Repository primary(path_);
+  const git_oid secondary_workspace =
+      ref("refs/gg/workspaces/secondary");
+  primary.record({{"refs/gg/workspaces/secondary", secondary_workspace}}, {},
+                 primary.head_state(), "test unchanged workspace");
+  EXPECT_THROW(primary.record({{"refs/gg/workspaces/missing",
+                                secondary_workspace}},
+                              {}, primary.head_state(),
+                              "test missing workspace update"),
+               detail::UserError);
+  primary.record({}, {"refs/gg/workspaces/missing"}, primary.head_state(),
+                 "test missing workspace delete");
+  EXPECT_THROW(primary.record({}, {"refs/gg/workspaces/secondary"},
+                              primary.head_state(), "test protected delete"),
+               detail::UserError);
+  EXPECT_EQ(invoke_at(linked, {"workspace", "root", "--name", "secondary"})
+                .output,
+            std::filesystem::weakly_canonical(linked).string() + "\n");
+
+  std::ofstream(linked / "linked.txt") << "linked\n";
+  ASSERT_EQ(invoke_at(linked, {"new", "-m", "linked work"}).code, 0);
+  EXPECT_EQ(invoke_git_at(linked, {"status", "--porcelain=v2",
+                                   "--untracked-files=all"})
+                .output,
+            "");
   EXPECT_EQ(file(), primary_before);
-  EXPECT_EQ(read_path(linked / "tracked.txt"), linked_before);
+  git_oid actual_primary = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&actual_primary, &primary_workspace), 0);
+
+  const std::string primary_id = git_oid_tostr_s(&primary_workspace);
+  const Result protected_rewrite =
+      invoke_at(linked, {"describe", "-m", "forbidden", primary_id});
+  EXPECT_EQ(protected_rewrite.code, 2);
+  EXPECT_NE(protected_rewrite.error.find(
+                "operation would rewrite active workspace: default"),
+            std::string::npos);
+  actual_primary = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&actual_primary, &primary_workspace), 0);
+
+  const git_oid linked_first = ref("refs/gg/workspaces/secondary");
+  ASSERT_EQ(invoke_at(linked, {"new", "-m", "another"}).code, 0);
+  ASSERT_EQ(invoke_at(linked, {"undo"}).code, 0);
+  const git_oid linked_after_undo = ref("refs/gg/workspaces/secondary");
+  EXPECT_NE(git_oid_equal(&linked_after_undo, &linked_first), 0);
+  actual_primary = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&actual_primary, &primary_workspace), 0);
+  EXPECT_EQ(invoke({"undo"}).code, 2);
+
+  const Result operation_refs =
+      invoke_git({"for-each-ref", "--format=%(refname)",
+                  "refs/gg/operations"});
+  EXPECT_NE(operation_refs.output.find("refs/gg/operations/current"),
+            std::string::npos);
+  EXPECT_NE(operation_refs.output.find("refs/gg/operations/worktrees/"),
+            std::string::npos);
+
+  ASSERT_EQ(invoke({"workspace", "forget", "secondary"}).code, 0);
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/secondary"));
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/secondary"));
   EXPECT_EQ(invoke_git({"worktree", "remove", "--force", linked.string()})
                 .code,
             0);
+}
+
+TEST_F(RepositoryTest, RegistersGitCreatedLinkedWorktreesOnFirstUse) {
+  ASSERT_EQ(invoke({"new", "-m", "primary", "main"}).code, 0);
+  const std::string primary_name = path_.filename().string() + "-native";
+  ASSERT_EQ(invoke({"workspace", "rename", primary_name}).code, 0);
+  const auto linked = path_.parent_path() / primary_name;
+  const auto second_linked =
+      path_.parent_path() / (primary_name + "-other");
+  std::filesystem::remove_all(linked);
+  std::filesystem::remove_all(second_linked);
+  ASSERT_EQ(invoke_git({"worktree", "add", "--quiet", "--detach",
+                        linked.string(), "main"})
+                .code,
+            0);
+
+  const Result log = invoke_at(linked, {"log", "-r", "@", "--no-graph"});
+  ASSERT_EQ(log.code, 0) << log.error;
+  const std::string name = primary_name + "-2";
+  ASSERT_TRUE(has_ref(std::string(detail::kWorkspacePrefix) + name));
+  const git_oid workspace =
+      ref(std::string(detail::kWorkspacePrefix) + name);
+  detail::Repository repo(linked);
+  const auto id = repo.change_id(workspace);
+  ASSERT_TRUE(id.has_value());
+  EXPECT_EQ(id->size(), 32U);
+  EXPECT_NE(*id, git_oid_tostr_s(&workspace));
+  EXPECT_EQ(invoke_git_at(linked, {"status", "--porcelain=v2",
+                                   "--untracked-files=all"})
+                .output,
+            "");
+
+  ASSERT_EQ(invoke_git({"worktree", "add", "--quiet", "--detach",
+                        second_linked.string(), "main"})
+                .code,
+            0);
+  ASSERT_EQ(invoke_at(second_linked, {"log", "-r", "@", "--no-graph"}).code,
+            0);
+  const std::string second_name = second_linked.filename().string();
+  detail::Repository second(second_linked);
+  const std::filesystem::path name_path =
+      std::filesystem::path(git_repository_path(second.raw())) / "gg" /
+      "workspace";
+
+  second.set_workspace_name(name);
+  EXPECT_EQ(invoke({"workspace", "list"}).code, 2);
+  second.set_workspace_name(second_name);
+
+  const std::filesystem::path temporary = name_path.string() + ".tmp";
+  ASSERT_TRUE(std::filesystem::create_directory(temporary));
+  EXPECT_THROW(second.set_workspace_name(second_name), detail::UserError);
+  std::filesystem::remove(temporary);
+  ASSERT_TRUE(std::filesystem::remove(name_path));
+  ASSERT_TRUE(std::filesystem::create_directory(name_path));
+  EXPECT_THROW(second.set_workspace_name(second_name), detail::UserError);
+  std::filesystem::remove(name_path);
+  second.set_workspace_name(second_name);
+
+  std::ofstream(name_path, std::ios::trunc) << "bad..name\n";
+  EXPECT_THROW(
+      {
+        detail::Repository invalid{second_linked};
+        (void)invalid;
+      },
+      detail::UserError);
+  std::ofstream(name_path, std::ios::trunc) << '\n';
+  detail::Repository recovered(second_linked);
+  EXPECT_EQ(recovered.workspace_name(), second_name);
+
+  ASSERT_EQ(invoke({"workspace", "forget", second_name}).code, 0);
+  std::ofstream(name_path, std::ios::trunc) << '\n';
+  detail::Repository forgotten(second_linked);
+  EXPECT_EQ(forgotten.workspace_name(), second_name);
+
+  const std::string collision_name = primary_name + "-ref-collision";
+  const auto collision_linked = path_.parent_path() / collision_name;
+  std::filesystem::remove_all(collision_linked);
+  set_ref(std::string(detail::kWorkspacePrefix) + collision_name, workspace);
+  ASSERT_EQ(invoke_git({"worktree", "add", "--quiet", "--detach",
+                        collision_linked.string(), "main"})
+                .code,
+            0);
+  detail::Repository collision(collision_linked);
+  EXPECT_EQ(collision.workspace_name(), collision_name + "-2");
+  ASSERT_EQ(invoke({"workspace", "forget", collision_name}).code, 0);
+  ASSERT_EQ(invoke_git({"worktree", "remove", "--force",
+                        collision_linked.string()})
+                .code,
+            0);
+
+  ASSERT_EQ(invoke({"workspace", "forget", name}).code, 0);
+  EXPECT_EQ(invoke_git({"worktree", "remove", "--force", linked.string()})
+                .code,
+            0);
+  EXPECT_EQ(
+      invoke_git({"worktree", "remove", "--force", second_linked.string()})
+          .code,
+      0);
 }
 
 }  // namespace gg::test

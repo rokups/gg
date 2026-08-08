@@ -1,14 +1,145 @@
 # gg
 
-`gg` is a small Git tool with a JJ-shaped interface. Local branches are exposed
-as **bookmarks**, and remotes receive no custom objects, headers, notes, or refs.
+`gg` brings a change-oriented, Jujutsu-inspired workflow to ordinary Git
+repositories. Its primary purpose is to make local history easy to build,
+rearrange, and revise: the working copy is a mutable change, old changes can be
+edited directly, descendants are restacked automatically, and repository
+changes can be undone.
 
-The working copy is represented by a commit under
-`refs/gg/workspaces/default`. Stable change IDs live under
-`refs/gg/changes/<id>`. Git `HEAD` stays at the working change's parent so
-existing tooling continues to see normal working-tree changes.
+`gg` does not require a new repository format or server support. Changes are Git
+commits, local branches are exposed as **bookmarks**, and remotes receive no
+custom objects, headers, notes, or refs. By default, use `gg` for change and
+history editing and use Git for familiar operations such as clone, status,
+diff, fetch, and push.
 
-## MVP commands
+## What changes compared with Git
+
+Git normally asks you to stage files, create a commit, and use a separate
+history-editing workflow when an earlier commit needs to change. With `gg`:
+
+- The working copy is a mutable change that `gg` snapshots automatically. A
+  separate staging step is optional.
+- Each change has a stable change ID, even when editing it produces a new Git
+  commit ID.
+- `gg edit` can make any change the working copy. Further edits rewrite that
+  change and automatically restack its descendants.
+- `gg new`, `gg split`, `gg squash`, `gg rebase`, and `gg abandon` operate on
+  the change graph directly.
+- `gg undo` and `gg redo` provide editor-style history for repository
+  operations.
+
+Revisions use `@` for the working-copy change and `@-` for its parent. Commands
+also accept stable change-ID prefixes, bookmarks, and Git object IDs.
+
+## Workflows
+
+### Mutable changes
+
+This is the main `gg` workflow. Start a named change, edit files normally, and
+start the next change when you are ready. There is no commit step:
+
+```sh
+git clone URL project
+cd project
+
+gg new -m "Add the parser"
+gg bookmark create topic
+# edit files
+gg log                    # snapshots and displays the current change
+
+gg new -m "Add parser tests"
+# edit files
+gg bookmark advance topic
+git push -u origin topic
+```
+
+Descriptions are editable metadata rather than a finalization boundary. Use
+`gg describe -m "New description"` at any time. To revise an earlier change,
+copy its stable ID from `gg log`, run `gg edit CHANGE_ID`, edit the files, and
+run another `gg` command to snapshot the result. Descendant changes and affected
+local refs are updated together.
+
+### Commit-oriented changes
+
+`gg commit` provides a more familiar boundary while retaining automatic
+snapshotting, stable change IDs, restacking, and undo:
+
+```sh
+gg new
+gg bookmark create topic
+
+# edit files
+gg commit -m "Add the parser"
+
+# edit more files
+gg commit -m "Add parser tests"
+
+gg bookmark advance topic --to @-
+git push -u origin topic
+```
+
+Each `gg commit` describes the current change and creates a new empty working
+change. Paths may be supplied to commit only part of the working change; the
+remaining edits stay in the new working change:
+
+```sh
+gg commit -m "Add the parser" src/parser.cpp include/parser.hpp
+```
+
+### Using only `gg` commands
+
+Lean mode is the default and deliberately hides top-level command families that
+native Git already handles well, along with equivalent subcommands inside
+retained families. Set `GG_LEAN=0` to expose the full command set, including
+clone, init, status, diff, show, tag management, fetch, push, basic bookmark
+management, and garbage collection. Workspace commands remain available in
+lean mode because they coordinate gg state that Git worktrees do not know
+about:
+
+```sh
+export GG_LEAN=0
+gg clone URL project
+cd project
+gg new -m "Add the parser"
+# edit files
+gg bookmark create topic
+gg push --bookmark topic
+```
+
+Help, generated manuals, and shell completions follow the selected mode.
+
+## Storage model
+
+Each working copy is represented by a commit under
+`refs/gg/workspaces/<name>`. The primary checkout starts as `default`; linked
+Git worktrees have their own names, operation histories, and paused-rewrite
+state while sharing commits, change IDs, bookmarks, and tags. Stable change
+IDs live under `refs/gg/changes/<id>`. Git `HEAD` stays at the working change's
+parent so existing tooling continues to see normal working-tree changes.
+
+Use `gg workspace add` when creating another checkout so the Git worktree and
+its gg working change are created together:
+
+```sh
+gg workspace add ../project-review --name review -r main
+gg -R ../project-review new -m "Review fixes"
+gg workspace list
+```
+
+`gg workspace` is needed in addition to `git worktree` because Git only tracks
+the checkout, `HEAD`, and index. gg must also assign a working-change ref and
+stable ID, isolate undo and conflict-recovery state, and prevent a rewrite in
+one checkout from silently moving another. A worktree created directly with
+`git worktree add` is adopted automatically on its first revision-facing gg
+command.
+
+Removing a checkout remains a Git operation: run `git worktree remove PATH`,
+then `gg workspace forget NAME` if its gg workspace ref is still listed.
+
+## Command reference
+
+The following is the full implemented command surface. Lean mode exposes the
+smaller default surface through `gg --help`.
 
 ```text
 gg status [PATH...]
@@ -59,7 +190,10 @@ gg util gc [--expire now]
 gg util install-man-pages PATH
 gg util markdown-help
 gg util snapshot
+gg workspace add DESTINATION [--name NAME] [-r REVISION] [-m DESCRIPTION]
+gg workspace forget [NAME...]
 gg workspace list
+gg workspace rename NAME
 gg workspace root [--name default]
 gg next [--edit|--no-edit] [OFFSET]
 gg prev [--edit|--no-edit] [OFFSET]
@@ -71,24 +205,14 @@ gg config unset (--user|--repo|--workspace) NAME
 gg config edit (--user|--repo|--workspace)
 ```
 
-Revisions use JJ names: `@`, `@-`, stable change-ID prefixes, bookmarks, or
-Git object IDs. Rewrites restack descendants and move affected local
-refs together. If libgit2 reports a merge conflict, the rewrite pauses before
-moving its refs and writes conflict markers into the working tree. Resolve the
-files and run `gg continue`, or run `gg abort` to restore the pre-rewrite
-operation. First-class conflicted commits are intentionally outside this MVP.
+Rewrites restack descendants and move affected local refs together. If libgit2
+reports a merge conflict, the rewrite pauses before moving its refs and writes
+conflict markers into the working tree. Resolve the files and run `gg continue`,
+or run `gg abort` to restore the pre-rewrite operation. First-class conflicted
+commits are intentionally outside this MVP.
 
 Change IDs use Jujutsu's 32-character reverse-hex format (`z` through `k`).
 Commands show the shortest unique prefix with a minimum length of eight.
-
-Lean mode is the default. It keeps gg's change-editing, revision graph,
-operation-history, bookmark tracking, and configuration workflows while hiding
-and rejecting equivalent native commands. Those include status, diff, show,
-file inspection, basic bookmark management, all tag/fetch/push commands,
-clone/init, workspace and sparse-checkout helpers, external command execution,
-and garbage collection.
-Help, generated manuals, and shell completions expose the same reduced command
-set. Set `GG_LEAN=0` to expose the full command set.
 
 `gg undo` and `gg redo` behave like editor history: each restoration is itself
 recorded, repeated commands move backward or forward, and a new operation after

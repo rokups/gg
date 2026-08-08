@@ -63,7 +63,7 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   const Result disabled_bare_bookmark = run({"bookmark"});
   const Result disabled_tag = run({"tag", "set", "v1"});
   const Result disabled_util = run({"util", "gc"});
-  const Result disabled_workspace = run({"workspace", "root"});
+  const Result enabled_workspace = run({"workspace", "--help"});
   const Result hidden_help = run({"help", "status"});
   const Result enabled_log = run({"log", "--help"});
   const Result enabled_file = run({"file", "chmod", "--help"});
@@ -87,7 +87,7 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   EXPECT_EQ(root_help.output.find("  status, st "), std::string::npos);
   for (std::string_view command :
        {"diff", "show", "tag", "clone", "init", "fetch", "push",
-        "workspace", "sparse"}) {
+        "sparse"}) {
     EXPECT_EQ(root_help.output.find("  " + std::string(command) + " "),
               std::string::npos)
         << command;
@@ -96,7 +96,9 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
         << command;
   }
   EXPECT_NE(root_help.output.find("  log "), std::string::npos);
+  EXPECT_NE(root_help.output.find("  workspace "), std::string::npos);
   EXPECT_NE(completion.output.find(" log "), std::string::npos);
+  EXPECT_NE(completion.output.find(" workspace "), std::string::npos);
 
   EXPECT_EQ(file_help.output.find("  list "), std::string::npos);
   EXPECT_EQ(file_help.output.find("  show "), std::string::npos);
@@ -119,12 +121,11 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   for (const Result* disabled :
        {&disabled_status, &disabled_file, &disabled_bookmark,
         &disabled_status_help, &disabled_bare_bookmark, &disabled_tag,
-        &disabled_fetch, &disabled_push, &disabled_util, &disabled_workspace,
-        &hidden_help}) {
+        &disabled_fetch, &disabled_push, &disabled_util, &hidden_help}) {
     EXPECT_EQ(disabled->code, 2);
   }
   for (const Result* enabled :
-       {&enabled_log, &enabled_file, &enabled_bookmark}) {
+       {&enabled_log, &enabled_file, &enabled_bookmark, &enabled_workspace}) {
     EXPECT_EQ(enabled->code, 0) << enabled->error;
   }
 }
@@ -227,6 +228,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"workspace"}).code, 2);
   EXPECT_EQ(invoke({"workspace", "list", "extra"}).code, 2);
   EXPECT_EQ(invoke({"workspace", "root", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "add"}).code, 2);
   EXPECT_EQ(invoke({"next", "0"}).code, 2);
   EXPECT_EQ(invoke({"prev", "word"}).code, 2);
   EXPECT_EQ(invoke({"next", "--edit", "--no-edit"}).code, 2);

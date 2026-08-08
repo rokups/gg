@@ -9,8 +9,55 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <set>
 
 namespace gg::detail {
+
+void check(int result, std::string_view action);
+
+namespace {
+
+std::filesystem::path workspace_name_path(
+    const std::filesystem::path& git_directory) {
+  return git_directory / "gg" / "workspace";
+}
+
+std::optional<std::string> stored_workspace_name(
+    const std::filesystem::path& git_directory) {
+  std::ifstream input(workspace_name_path(git_directory));
+  std::string value;
+  if (!std::getline(input, value) || value.empty()) return std::nullopt;
+  return value;
+}
+
+void validate_workspace_name(std::string_view name) {
+  const std::string reference = std::string(kWorkspacePrefix) + std::string(name);
+  int valid = 0;
+  check(git_reference_name_is_valid(&valid, reference.c_str()),
+        "validate workspace name");
+  if (valid == 0) throw UserError("invalid workspace name: " + std::string(name));
+}
+
+std::set<std::string> other_workspace_names(git_repository* repository,
+                                            std::string_view current_id) {
+  std::set<std::string> result;
+  const std::filesystem::path common = git_repository_commondir(repository);
+  result.insert(stored_workspace_name(common).value_or("default"));
+  git_strarray names{};
+  check(git_worktree_list(&names, repository), "list linked worktrees");
+  for (std::size_t index = 0; index < names.count; ++index) {
+    if (names.strings[index] == current_id) continue;
+    result.insert(stored_workspace_name(common / "worktrees" /
+                                        names.strings[index])
+                      .value_or(names.strings[index]));
+  }
+  git_strarray_dispose(&names);
+  return result;
+}
+
+}  // namespace
 
 void check(int result, std::string_view action) {
 if (result >= 0) return;
@@ -63,8 +110,34 @@ Repository::Repository(const std::filesystem::path& path,
   if (git_repository_is_bare(repo_.get()) != 0) {
     throw UserError("this command requires a working tree");
   }
-  if (git_repository_is_worktree(repo_.get()) != 0) {
-    throw UserError("linked Git worktrees are not supported yet");
+
+  linked_worktree_ = git_repository_is_worktree(repo_.get()) != 0;
+  if (linked_worktree_) {
+    git_worktree* raw_worktree = nullptr;
+    check(git_worktree_open_from_repository(&raw_worktree, repo_.get()),
+          "identify linked worktree");
+    WorktreePtr worktree(raw_worktree);
+    worktree_id_ = git_worktree_name(worktree.get());
+  }
+  const std::filesystem::path git_directory = git_repository_path(repo_.get());
+  workspace_name_ = stored_workspace_name(git_directory).value_or(worktree_id_);
+  validate_workspace_name(workspace_name_);
+  if (linked_worktree_ && !stored_workspace_name(git_directory).has_value()) {
+    const std::set<std::string> occupied =
+        other_workspace_names(repo_.get(), worktree_id_);
+    std::string candidate = workspace_name_;
+    const bool owns_candidate = operation().has_value() &&
+                                ref_target(std::string(kWorkspacePrefix) +
+                                           candidate)
+                                    .has_value();
+    for (std::size_t suffix = 2;
+         occupied.contains(candidate) ||
+         (!owns_candidate &&
+          ref_target(std::string(kWorkspacePrefix) + candidate).has_value());
+         ++suffix) {
+      candidate = workspace_name_ + "-" + std::to_string(suffix);
+    }
+    set_workspace_name(candidate);
   }
 }
 
@@ -92,7 +165,7 @@ TreePtr Repository::tree(const git_oid& oid) const {
 
 std::optional<git_oid> Repository::ref_target(std::string_view name) const {
   if (operation_view_.has_value()) {
-    if (name == kOperationRef) return viewed_operation_;
+    if (name == operation_ref_name()) return viewed_operation_;
     if (name == "HEAD") {
       if (operation_view_->head.symbolic) {
         const auto target = operation_view_->refs.find(operation_view_->head.value);
@@ -193,16 +266,82 @@ void Repository::invalidate_ref_cache() const {
 }
 
 std::optional<std::string> Repository::workspace_ref() const {
-  std::optional<std::string> result;
-  for (const auto& [name, oid] : data_refs()) {
-    (void)oid;
-    if (!starts_with(name, kWorkspacePrefix)) continue;
-    if (result.has_value()) {
-      throw UserError("multiple gg workspaces are not supported yet");
+  const std::string reference = workspace_ref_name();
+  return ref_target(reference).has_value()
+             ? std::optional<std::string>{reference}
+             : std::nullopt;
+}
+
+const std::string& Repository::workspace_name() const {
+  return workspace_name_;
+}
+
+std::string Repository::workspace_ref_name() const {
+  return std::string(kWorkspacePrefix) + workspace_name_;
+}
+
+std::string Repository::operation_ref_name() const {
+  return linked_worktree_
+             ? "refs/gg/operations/worktrees/" + worktree_id_
+             : std::string(kOperationRef);
+}
+
+std::string Repository::rewrite_ref_name() const {
+  return linked_worktree_ ? "refs/gg/rewrites/" + worktree_id_
+                          : std::string(kRewriteRef);
+}
+
+std::map<std::string, std::filesystem::path> Repository::workspace_roots() const {
+  std::map<std::string, std::filesystem::path> result;
+  const std::filesystem::path common = git_repository_commondir(repo_.get());
+  git_repository* raw_main = nullptr;
+  check(git_repository_open(&raw_main, common.string().c_str()),
+        "open primary worktree");
+  RepositoryPtr main(raw_main);
+  const std::string primary_name =
+      stored_workspace_name(common).value_or("default");
+  validate_workspace_name(primary_name);
+  result.emplace(primary_name, git_repository_workdir(main.get()));
+
+  git_strarray names{};
+  check(git_worktree_list(&names, repo_.get()), "list linked worktrees");
+  for (std::size_t index = 0; index < names.count; ++index) {
+    git_worktree* raw_worktree = nullptr;
+    check(git_worktree_lookup(&raw_worktree, repo_.get(), names.strings[index]),
+          "read linked worktree");
+    WorktreePtr worktree(raw_worktree);
+    const std::string name =
+        stored_workspace_name(common / "worktrees" / names.strings[index])
+            .value_or(names.strings[index]);
+    validate_workspace_name(name);
+    if (!result.emplace(name, git_worktree_path(worktree.get())).second) {
+      git_strarray_dispose(&names);
+      throw UserError("duplicate workspace name: " + name);
     }
-    result = name;
   }
+  git_strarray_dispose(&names);
   return result;
+}
+
+void Repository::set_workspace_name(std::string_view name) const {
+  validate_workspace_name(name);
+  const std::filesystem::path path =
+      workspace_name_path(git_repository_path(repo_.get()));
+  std::filesystem::create_directories(path.parent_path());
+  const std::filesystem::path temporary = path.string() + ".tmp";
+  {
+    std::ofstream output(temporary, std::ios::trunc);
+    if (!output || !(output << name << '\n')) {  // GG_COV_EXCL_BRANCH
+      throw UserError("cannot write workspace name");
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+  if (error) {
+    std::filesystem::remove(temporary);
+    throw UserError("cannot replace workspace name: " + error.message());
+  }
+  workspace_name_ = name;
 }
 
 std::optional<git_oid> Repository::workspace() const {

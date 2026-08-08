@@ -1265,12 +1265,12 @@ void command_push(Repository& repo,
 
 void command_undo(Repository& repo, std::ostream& output) {
   repo.sync_workspace();
-  const auto current = repo.operation();
-  if (!current.has_value()) {
+  if (!repo.operation().has_value()) {
     throw UserError("nothing to undo");
   }
+  const git_oid current = repo.ensure_operation();
   const git_oid target =
-      repo.operation_target(*current, kUndoPrefix).value_or(*current);
+      repo.operation_target(current, kUndoPrefix).value_or(current);
   auto previous = repo.operation_previous(target);
   if (!previous.has_value()) {
     throw UserError("nothing to undo");
@@ -1283,12 +1283,12 @@ void command_undo(Repository& repo, std::ostream& output) {
 
 void command_redo(Repository& repo, std::ostream& output) {
   repo.sync_workspace();
-  const auto current = repo.operation();
-  if (!current.has_value()) {
+  if (!repo.operation().has_value()) {
     throw UserError("nothing to redo");
   }
+  const git_oid current = repo.ensure_operation();
   const git_oid target =
-      repo.operation_target(*current, kRedoPrefix).value_or(*current);
+      repo.operation_target(current, kRedoPrefix).value_or(current);
   if (!repo.operation_target(target, kUndoPrefix).has_value()) {
     throw UserError("nothing to redo");
   }
