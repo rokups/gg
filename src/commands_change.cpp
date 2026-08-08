@@ -6,6 +6,8 @@
 
 #include <git2.h>
 #include <algorithm>
+#include <cctype>
+#include <ctime>
 #include <filesystem>
 #include <iostream>
 #include <iterator>
@@ -13,6 +15,91 @@
 #include <utility>
 
 namespace gg::detail {
+namespace {
+
+std::pair<std::string, std::string> parse_author(std::string_view value) {
+  const std::size_t separator = value.rfind(" <");
+  if (separator == std::string_view::npos) {
+    throw UserError("author must have the form 'Name <email>'");
+  }
+  if (separator == 0) {
+    throw UserError("author must have the form 'Name <email>'");
+  }
+  if (value.back() != '>') {
+    throw UserError("author must have the form 'Name <email>'");
+  }
+  std::string name(value.substr(0, separator));
+  std::string email(value.substr(separator + 2, value.size() - separator - 3));
+  if (email.empty()) {
+    throw UserError("author must have the form 'Name <email>'");
+  }
+  return {std::move(name), std::move(email)};
+}
+
+std::pair<git_time_t, int> parse_author_timestamp(std::string_view value) {
+  if (value.size() < 20) {
+    throw UserError("author timestamp must use RFC 3339 form");
+  }
+  std::tm fields{};
+  std::string owned(value);
+  char* suffix = strptime(owned.c_str(), "%Y-%m-%dT%H:%M:%S", &fields);
+  if (suffix != owned.c_str() + 19) {
+    throw UserError("author timestamp must use RFC 3339 form");
+  }
+  int offset = 0;
+  if (*suffix == 'Z') {
+    if (suffix[1] != '\0') {
+      throw UserError("author timestamp must use RFC 3339 form");
+    }
+    offset = 0;
+  } else {
+    if (*suffix != '+' && *suffix != '-') {
+      throw UserError("author timestamp must use RFC 3339 form");
+    }
+    if (std::string_view(suffix).size() != 6 || suffix[3] != ':') {
+      throw UserError("author timestamp must use RFC 3339 form");
+    }
+    for (const int index : {1, 2, 4, 5}) {
+      if (std::isdigit(static_cast<unsigned char>(suffix[index])) == 0) {
+        throw UserError("author timestamp must use RFC 3339 form");
+      }
+    }
+    const int hours = (suffix[1] - '0') * 10 + suffix[2] - '0';
+    const int minutes = (suffix[4] - '0') * 10 + suffix[5] - '0';
+    if (hours > 23) {
+      throw UserError("author timestamp has an invalid UTC offset");
+    }
+    if (minutes > 59) {
+      throw UserError("author timestamp has an invalid UTC offset");
+    }
+    offset = hours * 60 + minutes;
+    if (*suffix == '-') offset = -offset;
+  }
+  const std::time_t local = timegm(&fields);
+  return {static_cast<git_time_t>(local) - offset * 60, offset};
+}
+
+SignaturePtr make_signature(std::string_view name,
+                            std::string_view email,
+                            git_time_t time,
+                            int offset) {
+  git_signature* raw = nullptr;
+  const std::string owned_name(name);
+  const std::string owned_email(email);
+  check(git_signature_new(&raw, owned_name.c_str(), owned_email.c_str(), time,
+                          offset),
+        "create author signature");
+  return SignaturePtr(raw);
+}
+
+bool same_signature(const git_signature* left, const git_signature* right) {
+  if (std::string_view(left->name) != right->name) return false;
+  if (std::string_view(left->email) != right->email) return false;
+  if (left->when.time != right->when.time) return false;
+  return left->when.offset == right->when.offset;
+}
+
+}  // namespace
 
 void command_new(Repository& repo,
                  const NewCommand& options,
@@ -299,6 +386,171 @@ void command_log(Repository& repo,
     if (show_diff) {
       render_revision_diff(repo, oid, options.paths, options.format, output);
     }
+  }
+}
+
+void command_metaedit(Repository& repo,
+                      const MetaeditCommand& options,
+                      std::ostream& output) {
+  repo.sync_workspace();
+  std::vector<std::string> revisions = options.revisions;
+  revisions.insert(revisions.end(), options.revision_options.begin(),
+                   options.revision_options.end());
+  if (revisions.empty()) revisions.emplace_back("@");
+  std::set<git_oid, OidLess> selected;
+  for (const std::string& revision : revisions) {
+    selected.insert(repo.resolve(revision));
+  }
+
+  std::optional<std::pair<std::string, std::string>> explicit_author;
+  if (options.author_provided) explicit_author = parse_author(options.author);
+  std::optional<std::pair<git_time_t, int>> explicit_timestamp;
+  if (options.author_timestamp_provided) {
+    explicit_timestamp = parse_author_timestamp(options.author_timestamp);
+  }
+  SignaturePtr configured = repo.signature();
+  const auto refs = repo.rewrite_refs();
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
+  RevwalkPtr walk(raw_walk);
+  git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+  for (const auto& [name, oid] : refs) {
+    (void)name;
+    const int pushed = git_revwalk_push(walk.get(), &oid);
+    if (pushed != GIT_EINVALIDSPEC) {  // GG_COV_EXCL_BRANCH
+      check(pushed, "walk revisions");
+    }
+  }
+  for (const git_oid& oid : selected) {
+    check(git_revwalk_push(walk.get(), &oid), "walk selected revisions");
+  }
+
+  RewritePlan plan;
+  std::size_t modified = 0;
+  std::size_t reparented = 0;
+  git_oid oid{};
+  while (git_revwalk_next(&oid, walk.get()) == 0) {
+    const std::vector<git_oid> old_parents = repo.parents(oid);
+    std::vector<git_oid> new_parents;
+    new_parents.reserve(old_parents.size());
+    bool parents_changed = false;
+    for (const git_oid& parent : old_parents) {
+      const auto replacement = plan.commits.find(parent);
+      const git_oid next = replacement == plan.commits.end()
+                               ? parent
+                               : replacement->second;
+      if (!(next == parent)) parents_changed = true;
+      new_parents.push_back(next);
+    }
+    const bool is_selected = selected.contains(oid);
+    if (!is_selected && !parents_changed) continue;
+
+    CommitPtr old = repo.commit(oid);
+    std::optional<std::string_view> message;
+    bool metadata_changed = options.update_change_id;
+    if (is_selected && options.message_provided) {
+      const char* old_message = git_commit_message(old.get());
+      const std::string_view original =
+          old_message == nullptr ? "" : old_message;  // GG_COV_EXCL_BRANCH
+      if (options.message != original) {
+        message = options.message;
+        metadata_changed = true;
+      }
+    }
+
+    SignaturePtr author;
+    const bool edit_author =
+        explicit_author.has_value() | options.update_author |
+        explicit_timestamp.has_value() | options.update_author_timestamp;
+    if (is_selected && edit_author) {
+      const git_signature* old_author = git_commit_author(old.get());
+      std::string name = old_author->name;
+      std::string email = old_author->email;
+      git_time_t time = old_author->when.time;
+      int offset = old_author->when.offset;
+      if (explicit_author.has_value()) {
+        name = explicit_author->first;
+        email = explicit_author->second;
+      } else if (options.update_author) {
+        name = configured->name;
+        email = configured->email;
+      }
+      if (explicit_timestamp.has_value()) {
+        time = explicit_timestamp->first;
+        offset = explicit_timestamp->second;
+      } else if (options.update_author_timestamp) {
+        time = configured->when.time;
+        offset = configured->when.offset;
+      }
+      author = make_signature(name, email, time, offset);
+      if (!same_signature(author.get(), old_author)) {
+        metadata_changed = true;
+      } else {
+        author.reset();
+      }
+    }
+
+    if (is_selected && !parents_changed && !metadata_changed &&
+        !options.force_rewrite) {
+      continue;
+    }
+    SignaturePtr committer;
+    if (is_selected) {
+      git_time_t time = configured->when.time;
+      const git_signature* old_committer = git_commit_committer(old.get());
+      SignaturePtr candidate = make_signature(
+          configured->name, configured->email, time, configured->when.offset);
+      if (same_signature(candidate.get(), old_committer)) ++time;
+      committer = make_signature(configured->name, configured->email, time,
+                                 configured->when.offset);
+    }
+    const git_oid rewritten = repo.rewrite_commit(
+        oid, new_parents, std::nullopt, message, author.get(), committer.get());
+    plan.commits.emplace(oid, rewritten);
+    if (is_selected) {
+      ++modified;
+    } else {
+      ++reparented;
+    }
+  }
+
+  if (plan.commits.empty()) {
+    output << "Nothing changed.\n";
+    return;
+  }
+  for (const auto& [name, target] : refs) {
+    const auto replacement = plan.commits.find(target);
+    if (replacement != plan.commits.end()) {
+      plan.updates.emplace(name, replacement->second);
+    }
+  }
+  std::set<std::string> deletes;
+  if (options.update_change_id) {
+    for (const git_oid& old : selected) {
+      for (const auto& [name, target] : refs) {
+        if (target == old && starts_with(name, kChangePrefix)) {
+          plan.updates.erase(name);
+          deletes.insert(name);
+        }
+      }
+      const git_oid target = plan.commits.at(old);
+      plan.updates[std::string(kChangePrefix) + repo.new_change_id()] = target;
+    }
+  }
+  const auto workspace = repo.ref_target(kWorkspaceRef);
+  if (workspace.has_value()) {
+    const git_oid next = plan.commits.contains(*workspace)
+                             ? plan.commits.at(*workspace)
+                             : *workspace;
+    finish_workspace(repo, next, std::move(plan.updates), std::move(deletes),
+                     "gg metaedit");
+  } else {
+    repo.record(std::move(plan.updates), std::move(deletes), repo.head_state(),
+                "gg metaedit");
+  }
+  output << "Modified " << modified << " revision(s).\n";
+  if (reparented > 0) {
+    output << "Rebased " << reparented << " descendant revision(s).\n";
   }
 }
 

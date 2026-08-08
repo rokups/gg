@@ -78,6 +78,7 @@ if(GG_BUILD_TESTS)
     gg_tests
     tests/app_test.cpp
     tests/commit_test.cpp
+    tests/metaedit_test.cpp
     tests/workflow_test.cpp
     tests/diff_test.cpp
     tests/file_test.cpp

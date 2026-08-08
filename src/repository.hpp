@@ -131,7 +131,8 @@ class Repository {
   git_oid create_commit(const git_oid& tree_oid,
                           const std::vector<git_oid>& parent_oids,
                           std::string_view message,
-                          const git_signature* author = nullptr) const;
+                          const git_signature* author = nullptr,
+                          const git_signature* committer = nullptr) const;
 
   git_oid empty_tree() const;
 
@@ -153,7 +154,9 @@ class Repository {
                            const std::vector<git_oid>& new_parents,
                            std::optional<git_oid> tree_override = std::nullopt,
                            std::optional<std::string_view> message_override =
-                               std::nullopt) const;
+                               std::nullopt,
+                           const git_signature* author_override = nullptr,
+                           const git_signature* committer_override = nullptr) const;
 
   std::vector<git_oid> parents(const git_oid& oid) const;
 

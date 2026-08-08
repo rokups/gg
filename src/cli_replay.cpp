@@ -94,6 +94,36 @@ std::vector<std::string> repository_replay_arguments(
           [](const EditCommand& value) {
             return std::vector<std::string>{"edit", value.revision};
           },
+          [](const MetaeditCommand& value) {
+            std::vector<std::string> result{"metaedit"};
+            result.insert(result.end(), value.revisions.begin(),
+                          value.revisions.end());
+            for (const std::string& revision : value.revision_options) {
+              result.emplace_back("-r");
+              result.push_back(revision);
+            }
+            if (value.update_change_id) {
+              result.emplace_back("--update-change-id");
+            }
+            if (value.message_provided) {
+              result.emplace_back("--message");
+              result.push_back(value.message);
+            }
+            if (value.update_author_timestamp) {
+              result.emplace_back("--update-author-timestamp");
+            }
+            if (value.update_author) result.emplace_back("--update-author");
+            if (value.author_provided) {
+              result.emplace_back("--author");
+              result.push_back(value.author);
+            }
+            if (value.author_timestamp_provided) {
+              result.emplace_back("--author-timestamp");
+              result.push_back(value.author_timestamp);
+            }
+            if (value.force_rewrite) result.emplace_back("--force-rewrite");
+            return result;
+          },
           [](const RebaseCommand& value) {
             return std::vector<std::string>{"rebase", "-s", value.source, "-d",
                                             value.destination};

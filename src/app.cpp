@@ -51,6 +51,9 @@ int execute(Repository& repository,
             [&](const EditCommand& value) {
               command_edit(repository, value, output);
             },
+            [&](const MetaeditCommand& value) {
+              command_metaedit(repository, value, output);
+            },
             [&](const RebaseCommand& value) {
               command_rebase(repository, value, output);
             },

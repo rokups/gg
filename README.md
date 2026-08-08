@@ -18,6 +18,7 @@ gg new [-m DESCRIPTION] [--no-edit] [PARENT...]
 gg new [-m DESCRIPTION] [--no-edit] (--insert-after REV | --insert-before REV)
 gg describe [-m DESCRIPTION | --stdin | --editor] [REV]
 gg edit [REV | -r REV]
+gg metaedit [REV...] [-m DESCRIPTION] [--author 'NAME <EMAIL>']
 gg squash [-r REV | --from REV --into REV]
 gg split [-r REV] [-m DESCRIPTION] PATH...
 gg abandon [--retain-bookmarks] [--restore-descendants] [REV]

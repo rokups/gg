@@ -36,6 +36,7 @@ void command_new(Repository&, const NewCommand&, std::ostream&);
 void command_status(Repository&, const StatusCommand&, std::ostream&);
 void command_log(Repository&, const LogCommand&, std::ostream&);
 void command_edit(Repository&, const EditCommand&, std::ostream&);
+void command_metaedit(Repository&, const MetaeditCommand&, std::ostream&);
 void command_describe(Repository&, const DescribeCommand&, std::ostream&);
 void command_rebase(Repository&, const RebaseCommand&, std::ostream&);
 void command_split(Repository&, const SplitCommand&, std::ostream&);

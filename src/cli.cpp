@@ -99,6 +99,33 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   edit_revision->excludes(edit_revision_option);
   edit->require_option(1);
 
+  MetaeditCommand metaedit_value;
+  auto* metaedit = app.add_subcommand("metaedit", "Modify revision metadata");
+  metaedit->add_option("revisions", metaedit_value.revisions, "Revisions");
+  metaedit
+      ->add_option("-r,--revision", metaedit_value.revision_options,
+                   "Revision")
+      ->expected(1);
+  metaedit->add_flag("--update-change-id", metaedit_value.update_change_id,
+                     "Generate a new change ID");
+  CLI::Option* metaedit_message = metaedit->add_option(
+      "-m,--message", metaedit_value.message, "Description");
+  CLI::Option* update_author_timestamp = metaedit->add_flag(
+      "--update-author-timestamp", metaedit_value.update_author_timestamp,
+      "Set the author timestamp to now");
+  CLI::Option* update_author = metaedit->add_flag(
+      "--update-author", metaedit_value.update_author,
+      "Use the configured author identity");
+  CLI::Option* author = metaedit->add_option(
+      "--author", metaedit_value.author, "Author as 'Name <email>'");
+  author->excludes(update_author);
+  CLI::Option* author_timestamp = metaedit->add_option(
+      "--author-timestamp", metaedit_value.author_timestamp,
+      "Author timestamp in RFC 3339 form");
+  author_timestamp->excludes(update_author_timestamp);
+  metaedit->add_flag("--force-rewrite", metaedit_value.force_rewrite,
+                     "Rewrite even if metadata is unchanged");
+
   RebaseCommand rebase_value;
   auto* rebase = app.add_subcommand("rebase", "Move a change and descendants");
   rebase->add_option("-s,--source", rebase_value.source, "Source revision")
@@ -599,6 +626,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       edit_value.revision = std::move(edit_positional);
     }
     command = RepositoryCommand{std::move(edit_value)};
+  } else if (metaedit->parsed()) {
+    metaedit_value.message_provided = metaedit_message->count() != 0;
+    metaedit_value.author_provided = author->count() != 0;
+    metaedit_value.author_timestamp_provided = author_timestamp->count() != 0;
+    command = RepositoryCommand{std::move(metaedit_value)};
   } else if (rebase->parsed()) {
     command = RepositoryCommand{std::move(rebase_value)};
   } else if (split->parsed()) {

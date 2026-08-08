@@ -59,6 +59,20 @@ struct DescribeCommand {
 struct EditCommand {
   std::string revision;
 };
+struct MetaeditCommand {
+  std::vector<std::string> revisions;
+  std::vector<std::string> revision_options;
+  std::string message;
+  std::string author;
+  std::string author_timestamp;
+  bool update_change_id{false};
+  bool update_author_timestamp{false};
+  bool update_author{false};
+  bool force_rewrite{false};
+  bool message_provided{false};
+  bool author_provided{false};
+  bool author_timestamp_provided{false};
+};
 struct RebaseCommand {
   std::string source;
   std::string destination;
@@ -230,7 +244,8 @@ struct ConfigCommand {
 
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
-                 EditCommand, RebaseCommand, SplitCommand, SquashCommand,
+                 EditCommand, MetaeditCommand, RebaseCommand, SplitCommand,
+                 SquashCommand,
                  AbandonCommand, CommitCommand, RestoreCommand,
                  SimplifyParentsCommand, FileCommand, DiffCommand, ShowCommand,
                  BookmarkCommand, TagCommand,

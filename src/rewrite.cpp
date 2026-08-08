@@ -73,7 +73,9 @@ git_oid Repository::replay(const git_oid& old_parent,
 git_oid Repository::rewrite_commit(const git_oid& old_oid,
                        const std::vector<git_oid>& new_parents,
                        std::optional<git_oid> tree_override,
-                       std::optional<std::string_view> message_override) const {
+                       std::optional<std::string_view> message_override,
+                       const git_signature* author_override,
+                       const git_signature* committer_override) const {
   CommitPtr old = commit(old_oid);
   git_oid new_tree = tree_override.value_or(*git_commit_tree_id(old.get()));
   if (!tree_override.has_value() && git_commit_parentcount(old.get()) > 0 &&
@@ -87,8 +89,10 @@ git_oid Repository::rewrite_commit(const git_oid& old_oid,
   const std::string_view original =
       old_message == nullptr ? "" : old_message;  // GG_COV_EXCL_BRANCH
   const std::string_view message = message_override.value_or(original);
-  return create_commit(new_tree, new_parents, message,
-                       git_commit_author(old.get()));
+  return create_commit(
+      new_tree, new_parents, message,
+      author_override == nullptr ? git_commit_author(old.get()) : author_override,
+      committer_override);
 }
 
 std::vector<git_oid> Repository::parents(const git_oid& oid) const {

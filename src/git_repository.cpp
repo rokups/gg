@@ -167,7 +167,8 @@ SignaturePtr Repository::signature() const {
 git_oid Repository::create_commit(const git_oid& tree_oid,
                       const std::vector<git_oid>& parent_oids,
                       std::string_view message,
-                      const git_signature* author) const {
+                      const git_signature* author,
+                      const git_signature* committer_override) const {
   TreePtr commit_tree = tree(tree_oid);
   std::vector<CommitPtr> parents;
   std::vector<const git_commit*> parent_pointers;
@@ -179,10 +180,12 @@ git_oid Repository::create_commit(const git_oid& tree_oid,
   }
   SignaturePtr committer = signature();
   const git_signature* actual_author = author == nullptr ? committer.get() : author;
+  const git_signature* actual_committer =
+      committer_override == nullptr ? committer.get() : committer_override;
   git_oid result{};
   const std::string owned_message(message);
   check(git_commit_create(&result, repo_.get(), nullptr, actual_author,
-                          committer.get(), nullptr, owned_message.c_str(),
+                          actual_committer, nullptr, owned_message.c_str(),
                           commit_tree.get(), parent_pointers.size(),
                           parent_pointers.data()),
         "write commit");
