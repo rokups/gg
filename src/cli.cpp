@@ -272,8 +272,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* operation = app.add_subcommand("operation", "Manage operation history");
   operation->alias("op");
   operation->require_subcommand(1);
+  OperationLogCommand operation_log_value;
   auto* operation_log =
       operation->add_subcommand("log", "Show the operation log");
+  operation_log
+      ->add_option("-n,--limit", operation_log_value.limit,
+                   "Maximum number of operations")
+      ->check(CLI::NonNegativeNumber);
+  operation_log->add_flag("--reversed", operation_log_value.reversed,
+                          "Show older operations first");
+  operation_log->add_flag("-G,--no-graph", operation_log_value.no_graph,
+                          "Do not show the operation graph");
+  operation_log->add_option("-T,--template",
+                            operation_log_value.template_value,
+                            "Operation template");
   OperationRestoreCommand operation_restore_value;
   auto* operation_restore = operation->add_subcommand(
       "restore", "Restore the repository to an earlier operation");
@@ -441,7 +453,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   } else if (redo->parsed()) {
     command = RepositoryCommand{RedoCommand{}};
   } else if (operation_log->parsed()) {  // GG_COV_EXCL_BRANCH
-    command = RepositoryCommand{OperationLogCommand{}};
+    command = RepositoryCommand{std::move(operation_log_value)};
   } else if (operation_restore->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{std::move(operation_restore_value)};
   } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH

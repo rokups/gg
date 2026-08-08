@@ -42,7 +42,8 @@ void command_fetch(Repository&, const GitFetchCommand&, std::ostream&);
 void command_push(Repository&, const GitPushCommand&, std::ostream&);
 void command_undo(Repository&, std::ostream&);
 void command_redo(Repository&, std::ostream&);
-void command_operation_log(Repository&, std::ostream&);
+void command_operation_log(Repository&, const OperationLogCommand&,
+                           std::ostream&);
 void command_operation_restore(Repository&, const OperationRestoreCommand&,
                                std::ostream&);
 void command_util_snapshot(Repository&, std::ostream&);

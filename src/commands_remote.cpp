@@ -242,25 +242,39 @@ void command_redo(Repository& repo, std::ostream& output) {
   output << "Redid operation.\n";
 }
 
-void command_operation_log(Repository& repo, std::ostream& output) {
+void command_operation_log(Repository& repo,
+                           const OperationLogCommand& options,
+                           std::ostream& output) {
   repo.sync_workspace();
   auto current = repo.operation();
   if (!current.has_value()) {
     output << "No operations.\n";
     return;
   }
-  bool first = true;
-  while (current.has_value()) {
-    CommitPtr operation = repo.commit(*current);
-    const std::string description = repo.operation_description(*current);
-    const auto previous = repo.operation_previous(*current);
-    output << (first ? "@ " : "○ ") << oid_string(*current, 8) << ' '
-           << operation_timestamp(operation.get()) << ' ' << description << '\n';
-    if (previous.has_value()) {
+  if (!options.template_value.empty()) {
+    throw UserError("operation templates are not supported yet");
+  }
+  const git_oid newest = *current;
+  std::vector<git_oid> operations;
+  while (current.has_value() && operations.size() < options.limit) {
+    operations.push_back(*current);
+    current = repo.operation_previous(*current);
+  }
+  if (options.reversed) {
+    std::reverse(operations.begin(), operations.end());
+  }
+  for (std::size_t index = 0; index < operations.size(); ++index) {
+    const git_oid& oid = operations[index];
+    CommitPtr operation = repo.commit(oid);
+    const std::string description = repo.operation_description(oid);
+    if (!options.no_graph) {
+      output << (oid == newest ? "@ " : "○ ");
+    }
+    output << oid_string(oid, 8) << ' ' << operation_timestamp(operation.get())
+           << ' ' << description << '\n';
+    if (!options.no_graph && index + 1 < operations.size()) {
       output << "│\n";
     }
-    first = false;
-    current = previous;
   }
 }
 

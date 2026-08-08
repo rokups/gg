@@ -211,8 +211,16 @@ std::vector<std::string> repository_replay_arguments(
           },
           [](const UndoCommand&) { return std::vector<std::string>{"undo"}; },
           [](const RedoCommand&) { return std::vector<std::string>{"redo"}; },
-          [](const OperationLogCommand&) {
-            return std::vector<std::string>{"operation", "log"};
+          [](const OperationLogCommand& value) {
+            std::vector<std::string> result{"operation", "log"};
+            if (value.limit != std::numeric_limits<std::uint64_t>::max()) {
+              result.emplace_back("--limit");
+              result.push_back(std::to_string(value.limit));
+            }
+            if (value.reversed) result.emplace_back("--reversed");
+            if (value.no_graph) result.emplace_back("--no-graph");
+            add_option(result, "--template", value.template_value);
+            return result;
           },
           [](const OperationRestoreCommand& value) {
             std::vector<std::string> result{"operation", "restore"};

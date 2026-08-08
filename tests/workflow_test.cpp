@@ -4,6 +4,8 @@
 
 #include "test_support.hpp"
 
+#include <algorithm>
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, StartsFromGitHeadWithoutAnExplicitParent) {
@@ -231,6 +233,25 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   EXPECT_NE(log.output.find("○ "), std::string::npos);
   EXPECT_NE(log.output.find("│\n"), std::string::npos);
   EXPECT_EQ(invoke({"op", "log"}).output, log.output);
+
+  const Result limited = invoke({"operation", "log", "--limit", "1"});
+  EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 1);
+  EXPECT_EQ(limited.output.front(), '@');
+  EXPECT_EQ(limited.output.find("│"), std::string::npos);
+  EXPECT_EQ(invoke({"operation", "log", "-n", "0"}).output, "");
+
+  const Result flat =
+      invoke({"operation", "log", "--limit", "2", "--no-graph"});
+  EXPECT_EQ(flat.output.find("@ "), std::string::npos);
+  EXPECT_EQ(flat.output.find("○ "), std::string::npos);
+  EXPECT_EQ(flat.output.find("│"), std::string::npos);
+  EXPECT_EQ(std::count(flat.output.begin(), flat.output.end(), '\n'), 2);
+
+  const Result reversed = invoke({"operation", "log", "--reversed"});
+  EXPECT_LT(reversed.output.find("initialize repository"),
+            reversed.output.find("redo: restore to operation "));
+  EXPECT_EQ(invoke({"operation", "log", "-T", "description"}).code, 2);
+  EXPECT_EQ(invoke({"operation", "log", "--limit", "word"}).code, 2);
 }
 
 TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {

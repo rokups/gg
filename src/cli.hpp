@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iosfwd>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -127,7 +128,12 @@ struct ContinueCommand {};
 struct AbortCommand {};
 struct UndoCommand {};
 struct RedoCommand {};
-struct OperationLogCommand {};
+struct OperationLogCommand {
+  std::uint64_t limit{std::numeric_limits<std::uint64_t>::max()};
+  bool reversed{false};
+  bool no_graph{false};
+  std::string template_value;
+};
 struct OperationRestoreCommand {
   std::string operation;
   std::vector<std::string> what;
