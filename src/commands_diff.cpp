@@ -18,13 +18,38 @@ git_oid tree_id(Repository& repo, const git_oid& revision) {
 
 git_oid parent_tree_id(Repository& repo, const git_oid& revision) {
   const std::vector<git_oid> parents = repo.parents(revision);
-  if (parents.empty()) {
-    return repo.empty_tree();
+  return combined_tree(repo, parents);
+}
+
+std::optional<std::pair<git_oid, git_oid>> revision_set_trees(
+    Repository& repo, std::string_view expression) {
+  const std::vector<git_oid> resolved = repo.resolve_set(expression);
+  if (resolved.empty()) return std::nullopt;
+  const std::set<git_oid, OidLess> selected(resolved.begin(), resolved.end());
+  std::set<git_oid, OidLess> roots;
+  std::set<git_oid, OidLess> heads = selected;
+  for (const git_oid& oid : selected) {
+    for (const git_oid& parent : repo.parents(oid)) {
+      if (selected.contains(parent)) {
+        heads.erase(parent);
+      } else {
+        roots.insert(parent);
+      }
+    }
   }
-  if (parents.size() != 1) {
-    throw UserError("diffing merge revisions is not supported yet");
+  for (const git_oid& root : roots) {
+    for (const git_oid& oid : selected) {
+      const int gap = git_graph_descendant_of(repo.raw(), &root, &oid);
+      check(gap, "validate revision-set diff");
+      if (gap != 0) {
+        throw UserError("diff revision set contains a gap");
+      }
+    }
   }
-  return tree_id(repo, parents.front());
+  const std::vector<git_oid> root_values(roots.begin(), roots.end());
+  const std::vector<git_oid> head_values(heads.begin(), heads.end());
+  return std::pair(combined_tree(repo, root_values),
+                   combined_tree(repo, head_values));
 }
 
 std::vector<std::string> diff_paths(const std::vector<std::string>& values) {
@@ -257,10 +282,12 @@ void command_diff(Repository& repo,
     to_tree =
         tree_id(repo, repo.resolve(options.to.empty() ? "@" : options.to));
   } else {
-    const git_oid revision =
-        repo.resolve(options.revisions.empty() ? "@" : options.revisions);
-    from_tree = parent_tree_id(repo, revision);
-    to_tree = tree_id(repo, revision);
+    std::string_view revisions = "@";
+    if (!options.revisions.empty()) revisions = options.revisions;
+    const auto trees = revision_set_trees(repo, revisions);
+    if (!trees.has_value()) return;
+    from_tree = trees->first;
+    to_tree = trees->second;
   }
   DiffPtr diff =
       create_diff(repo, from_tree, to_tree, options.paths, options.format);

@@ -66,6 +66,16 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
             std::string::npos);
   EXPECT_NE(invoke({"diff", "-r", "main"}).output.find("+base"),
             std::string::npos);
+
+  ASSERT_EQ(invoke({"new"}).code, 0);
+  write("second.txt", "second\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const Result range = invoke({"diff", "-r", "@-::@", "--summary"});
+  ASSERT_EQ(range.code, 0) << range.error;
+  EXPECT_NE(range.output.find("A added.txt"), std::string::npos);
+  EXPECT_NE(range.output.find("A second.txt"), std::string::npos);
+  EXPECT_EQ(invoke({"diff", "-r", "main | @"}).code, 2);
+  EXPECT_EQ(invoke({"diff", "-r", "none()"}).output, "");
 }
 
 TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
@@ -149,7 +159,7 @@ TEST_F(RepositoryTest, ValidatesDiffAndShowRequests) {
   const git_oid side = raw_commit("side");
   set_ref("refs/heads/side", side);
   ASSERT_EQ(invoke({"new", "main", "side"}).code, 0);
-  EXPECT_EQ(invoke({"diff"}).code, 2);
+  EXPECT_EQ(invoke({"diff"}).output, "");
 }
 
 }  // namespace gg::test
