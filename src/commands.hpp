@@ -38,6 +38,7 @@ void command_file(Repository&, const FileCommand&, std::ostream&);
 void command_diff(Repository&, const DiffCommand&, std::ostream&);
 void command_show(Repository&, const ShowCommand&, std::ostream&);
 void command_bookmark(Repository&, const BookmarkCommand&, std::ostream&);
+void command_tag(Repository&, const TagCommand&, std::ostream&);
 void command_fetch(Repository&, const GitFetchCommand&, std::ostream&);
 void command_push(Repository&, const GitPushCommand&, std::ostream&);
 void command_undo(Repository&, std::ostream&);

@@ -34,6 +34,9 @@ gg bookmark delete NAME...
 gg bookmark forget [--include-remotes] NAME...
 gg bookmark rename [--overwrite-existing] OLD NEW
 gg bookmark list
+gg tag set [--allow-move] NAME... [-r REV]
+gg tag delete NAME...
+gg tag list [NAME...]
 gg init [DESTINATION]
 gg clone URL [DESTINATION]
 gg fetch [--remote REMOTE]

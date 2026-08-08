@@ -198,6 +198,26 @@ std::vector<std::string> repository_replay_arguments(
             }
             return result;
           },
+          [](const TagCommand& value) {
+            std::vector<std::string> result{"tag"};
+            if (value.action == TagAction::set) {
+              result.emplace_back("set");
+            } else if (value.action == TagAction::erase) {
+              result.emplace_back("delete");
+            } else {
+              result.emplace_back("list");
+            }
+            result.insert(result.end(), value.names.begin(), value.names.end());
+            add_option(result, "--revision", value.revision);
+            add_option(result, "--remote", value.remote);
+            add_option(result, "--template", value.template_value);
+            add_option(result, "--sort", value.sort);
+            if (value.allow_move) result.emplace_back("--allow-move");
+            if (value.all_remotes) result.emplace_back("--all-remotes");
+            if (value.tracked) result.emplace_back("--tracked");
+            if (value.conflicted) result.emplace_back("--conflicted");
+            return result;
+          },
           [](const GitFetchCommand& value) {
             std::vector<std::string> result{"fetch"};
             add_option(result, "--remote", value.remote);

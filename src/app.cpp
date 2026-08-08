@@ -76,6 +76,9 @@ int execute(Repository& repository,
             [&](const BookmarkCommand& value) {
               command_bookmark(repository, value, output);
             },
+            [&](const TagCommand& value) {
+              command_tag(repository, value, output);
+            },
             [&](const GitFetchCommand& value) {
               command_fetch(repository, value, output);
             },

@@ -83,6 +83,7 @@ if(GG_BUILD_TESTS)
     tests/rewrite_workflow_test.cpp
     tests/conflict_test.cpp
     tests/remote_test.cpp
+    tests/tag_test.cpp
     tests/internals_test.cpp
   )
   target_include_directories(gg_tests PRIVATE src)

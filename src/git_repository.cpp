@@ -132,6 +132,7 @@ std::map<std::string, git_oid> Repository::data_refs() const {
     check(resolution, "resolve reference");
     ReferencePtr resolved(raw_resolved);
     if (starts_with(name, "refs/heads/") ||
+        starts_with(name, "refs/tags/") ||
         starts_with(name, "refs/remotes/") ||
         starts_with(name, "refs/gg/changes/") ||
         starts_with(name, "refs/gg/workspaces/")) {

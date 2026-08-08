@@ -109,6 +109,20 @@ struct BookmarkCommand {
   bool overwrite_existing{false};
 };
 
+enum class TagAction { list, set, erase };
+struct TagCommand {
+  TagAction action{TagAction::list};
+  std::vector<std::string> names;
+  std::string revision;
+  std::string remote;
+  std::string template_value;
+  std::string sort;
+  bool allow_move{false};
+  bool all_remotes{false};
+  bool tracked{false};
+  bool conflicted{false};
+};
+
 struct GitCloneCommand {
   std::string url;
   std::string destination;
@@ -160,8 +174,8 @@ using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
                  AbandonCommand, CommitCommand, FileCommand, DiffCommand,
-                 ShowCommand, BookmarkCommand, GitFetchCommand, GitPushCommand,
-                 UndoCommand, RedoCommand,
+                 ShowCommand, BookmarkCommand, TagCommand, GitFetchCommand,
+                 GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilSnapshotCommand, WorkspaceCommand, MovementCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,

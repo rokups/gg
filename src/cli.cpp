@@ -244,6 +244,36 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   BookmarkCommand bookmark_list;
   auto* list = bookmark->add_subcommand("list", "List bookmarks");
 
+  auto* tag = app.add_subcommand("tag", "Manage Git-backed tags");
+  tag->require_subcommand(1);
+  TagCommand tag_set_value;
+  tag_set_value.action = TagAction::set;
+  auto* tag_set = tag->add_subcommand("set", "Set tags");
+  tag_set->add_option("names", tag_set_value.names, "Tag names")->required();
+  tag_set->add_option("-r,--revision,--to", tag_set_value.revision,
+                      "Revision");
+  tag_set->add_flag("--allow-move", tag_set_value.allow_move,
+                    "Allow moving existing tags");
+  TagCommand tag_delete_value;
+  tag_delete_value.action = TagAction::erase;
+  auto* tag_delete = tag->add_subcommand("delete", "Delete tags");
+  tag_delete->add_option("names", tag_delete_value.names, "Tag names")
+      ->required();
+  TagCommand tag_list_value;
+  auto* tag_list = tag->add_subcommand("list", "List tags");
+  tag_list->add_option("names", tag_list_value.names, "Tag names");
+  tag_list->add_flag("-a,--all-remotes", tag_list_value.all_remotes,
+                     "Include remote tags");
+  tag_list->add_option("--remote", tag_list_value.remote, "Remote name");
+  tag_list->add_flag("-t,--tracked", tag_list_value.tracked,
+                     "Show tracked tags only");
+  tag_list->add_flag("-c,--conflicted", tag_list_value.conflicted,
+                     "Show conflicted tags only");
+  tag_list->add_option("-r,--revision", tag_list_value.revision, "Revision");
+  tag_list->add_option("-T,--template", tag_list_value.template_value,
+                       "Tag template");
+  tag_list->add_option("--sort", tag_list_value.sort, "Sort key");
+
   GitCloneCommand clone_value;
   auto* clone = app.add_subcommand("clone", "Clone a Git repository");
   clone->add_option("url", clone_value.url, "Repository URL")->required();
@@ -450,6 +480,12 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(bookmark_rename)};
   } else if (list->parsed() || bookmark->parsed()) {
     command = RepositoryCommand{std::move(bookmark_list)};
+  } else if (tag_set->parsed()) {
+    command = RepositoryCommand{std::move(tag_set_value)};
+  } else if (tag_delete->parsed()) {
+    command = RepositoryCommand{std::move(tag_delete_value)};
+  } else if (tag_list->parsed()) {
+    command = RepositoryCommand{std::move(tag_list_value)};
   } else if (clone->parsed()) {
     command = std::move(clone_value);
   } else if (init->parsed()) {

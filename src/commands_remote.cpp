@@ -5,6 +5,7 @@
 #include "commands.hpp"
 
 #include <git2.h>
+#include <git2/sys/errors.h>
 
 #include <algorithm>
 #include <chrono>
@@ -140,6 +141,101 @@ void command_bookmark(Repository& repo,
   for (const std::string& name : options.names) {
     output << (options.action == BookmarkAction::create ? "Created " : "Moved ")
            << name << " at " << oid_string(target, 8) << '\n';
+  }
+}
+
+void command_tag(Repository& repo,
+                 const TagCommand& options,
+                 std::ostream& output) {
+  repo.sync_workspace();
+  const auto tag_target = [&](const std::string& name) -> std::optional<git_oid> {
+    git_object* raw_object = nullptr;
+    const std::string reference = "refs/tags/" + name;
+    const int lookup =
+        git_revparse_single(&raw_object, repo.raw(), reference.c_str());
+    if (lookup == GIT_ENOTFOUND) {
+      git_error_clear();
+      return std::nullopt;
+    }
+    check(lookup, "read tag");
+    ObjectPtr object(raw_object);
+    git_object* raw_commit = nullptr;
+    check(git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT),
+          "resolve tag");
+    ObjectPtr commit(raw_commit);
+    return *git_object_id(commit.get());
+  };
+
+  if (options.action == TagAction::list) {
+    if (options.all_remotes || !options.remote.empty() || options.tracked ||
+        options.conflicted) {
+      throw UserError("remote tag state is not supported yet");
+    }
+    if (!options.template_value.empty()) {
+      throw UserError("tag templates are not supported yet");
+    }
+    if (!options.sort.empty()) {
+      throw UserError("tag sort keys are not supported yet");
+    }
+    std::optional<git_oid> revision;
+    if (!options.revision.empty()) {
+      revision = repo.resolve(options.revision);
+    }
+    for (const auto& [reference, ref_oid] : repo.data_refs()) {
+      (void)ref_oid;
+      if (!starts_with(reference, "refs/tags/")) {
+        continue;
+      }
+      const std::string name =
+          reference.substr(std::string_view("refs/tags/").size());
+      if (!options.names.empty() &&
+          std::find(options.names.begin(), options.names.end(), name) ==
+              options.names.end()) {
+        continue;
+      }
+      const std::optional<git_oid> target = tag_target(name);
+      if (revision.has_value() && !(*revision == *target)) {
+        continue;
+      }
+      output << name << ": " << oid_string(*target, 8) << '\n';
+    }
+    return;
+  }
+
+  if (options.action == TagAction::erase) {
+    std::set<std::string> deletes;
+    for (const std::string& name : options.names) {
+      const std::string reference = "refs/tags/" + name;
+      if (!repo.ref_target(reference).has_value()) {
+        throw UserError("tag not found: " + name);
+      }
+      deletes.insert(reference);
+    }
+    repo.record({}, deletes, repo.head_state(), "gg tag delete");
+    output << "Deleted " << deletes.size() << " tag(s).\n";
+    return;
+  }
+
+  const git_oid target =
+      repo.resolve(options.revision.empty() ? "@" : options.revision);
+  std::map<std::string, git_oid> updates;
+  for (const std::string& name : options.names) {
+    const std::string reference = "refs/tags/" + name;
+    int valid = 0;
+    check(git_reference_name_is_valid(&valid, reference.c_str()),
+          "validate tag name");
+    if (valid == 0) {
+      throw UserError("invalid tag name: " + name);
+    }
+    const std::optional<git_oid> current = tag_target(name);
+    if (current.has_value() && !(*current == target) && !options.allow_move) {
+      throw UserError("tag already exists at a different revision: " + name);
+    }
+    updates.emplace(reference, target);
+  }
+  repo.record(std::move(updates), {}, repo.head_state(), "gg tag set");
+  for (const std::string& name : options.names) {
+    output << "Set " << name << " at " << oid_string(target, 8) << '\n';
   }
 }
 
