@@ -518,6 +518,32 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                    "Overwrite the destination bookmark");
   BookmarkCommand bookmark_list;
   auto* list = bookmark->add_subcommand("list", "List bookmarks");
+  list->add_option("names", bookmark_list.names, "Bookmark names");
+  CLI::Option* bookmark_list_all =
+      list->add_flag("-a,--all-remotes", bookmark_list.all_remotes,
+                     "Include all remote bookmarks");
+  CLI::Option* bookmark_list_remotes =
+      list->add_option("--remote", bookmark_list.remotes, "Remote name");
+  CLI::Option* bookmark_list_tracked =
+      list->add_flag("-t,--tracked", bookmark_list.tracked,
+                     "Show tracked remote bookmarks only");
+  CLI::Option* bookmark_list_conflicted =
+      list->add_flag("-c,--conflicted", bookmark_list.conflicted,
+                     "Show conflicted bookmarks only");
+  bookmark_list_all->excludes(bookmark_list_remotes)
+      ->excludes(bookmark_list_tracked)
+      ->excludes(bookmark_list_conflicted);
+  list->add_option("-r,--revision,--revisions", bookmark_list.revisions,
+                   "Revision containing a bookmark target");
+  list->add_option("-T,--template", bookmark_list.template_value,
+                   "Bookmark template");
+  list->add_option("--sort", bookmark_list.sort, "Sort key")
+      ->delimiter(',')
+      ->check(CLI::IsMember(
+          {"name", "name-", "author-name", "author-name-", "author-email",
+           "author-email-", "author-date", "author-date-", "committer-name",
+           "committer-name-", "committer-email", "committer-email-",
+           "committer-date", "committer-date-"}));
 
   auto* tag = app.add_subcommand("tag", "Manage Git-backed tags");
   tag->require_subcommand(1);

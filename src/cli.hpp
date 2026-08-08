@@ -159,7 +159,14 @@ struct BookmarkCommand {
   std::string revision;
   std::vector<std::string> names;
   std::vector<std::string> from;
+  std::vector<std::string> remotes;
+  std::vector<std::string> revisions;
+  std::vector<std::string> sort;
+  std::string template_value;
   bool allow_backwards{false};
+  bool all_remotes{false};
+  bool tracked{false};
+  bool conflicted{false};
   bool include_remotes{false};
   bool overwrite_existing{false};
 };

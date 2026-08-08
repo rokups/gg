@@ -37,6 +37,78 @@ TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
             0);
 }
 
+TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "alpha"}).code, 0);
+  const git_oid first = ref("refs/heads/alpha");
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "beta"}).code, 0);
+  const git_oid second = ref("refs/heads/beta");
+  set_ref("refs/remotes/origin/alpha", first);
+  set_ref("refs/remotes/origin/HEAD", second);
+  set_ref("refs/remotes/backup/beta", second);
+
+  const Result local = invoke({"bookmark", "list"});
+  ASSERT_EQ(local.code, 0) << local.error;
+  EXPECT_NE(local.output.find("alpha:"), std::string::npos);
+  EXPECT_NE(local.output.find("beta:"), std::string::npos);
+  EXPECT_EQ(local.output.find("@origin"), std::string::npos);
+
+  const Result named = invoke({"bookmark", "list", "alpha"});
+  EXPECT_NE(named.output.find("alpha:"), std::string::npos);
+  EXPECT_EQ(named.output.find("beta:"), std::string::npos);
+  const Result revised = invoke({"bookmark", "list", "-r", "alpha"});
+  EXPECT_NE(revised.output.find("alpha:"), std::string::npos);
+  EXPECT_EQ(revised.output.find("beta:"), std::string::npos);
+  const Result unioned =
+      invoke({"bookmark", "list", "beta", "-r", "alpha"});
+  EXPECT_NE(unioned.output.find("alpha:"), std::string::npos);
+  EXPECT_NE(unioned.output.find("beta:"), std::string::npos);
+  EXPECT_EQ(invoke({"bookmark", "list", "-r", "alpha", "-r", "beta"})
+                .code,
+            0);
+
+  const Result all = invoke({"bookmark", "list", "--all-remotes"});
+  EXPECT_NE(all.output.find("alpha@origin:"), std::string::npos);
+  EXPECT_NE(all.output.find("beta@backup:"), std::string::npos);
+  EXPECT_EQ(all.output.find("HEAD@origin"), std::string::npos);
+  const Result origin =
+      invoke({"bookmark", "list", "--remote", "origin"});
+  EXPECT_NE(origin.output.find("alpha@origin:"), std::string::npos);
+  EXPECT_EQ(origin.output.find("beta@backup:"), std::string::npos);
+  EXPECT_EQ(origin.output.find("alpha:"), std::string::npos);
+  const Result remotes = invoke(
+      {"bookmark", "list", "--remote", "origin", "--remote", "backup"});
+  EXPECT_NE(remotes.output.find("alpha@origin:"), std::string::npos);
+  EXPECT_NE(remotes.output.find("beta@backup:"), std::string::npos);
+  EXPECT_TRUE(invoke({"bookmark", "list", "--remote", "missing"})
+                  .output.empty());
+
+  const Result descending =
+      invoke({"bookmark", "list", "--sort", "name-"});
+  EXPECT_LT(descending.output.find("beta:"), descending.output.find("alpha:"));
+  const std::string all_sort_keys =
+      "name,name-,author-name,author-name-,author-email,author-email-,"
+      "author-date,author-date-,committer-name,committer-name-,"
+      "committer-email,committer-email-,committer-date,committer-date-";
+  EXPECT_EQ(invoke({"bookmark", "list", "--sort", all_sort_keys}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "list", "--sort", "unknown"}).code, 2);
+
+  EXPECT_EQ(invoke({"bookmark", "list", "--tracked"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "list", "--conflicted"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "list", "--template", "name"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--remote",
+                    "origin"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--tracked"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--conflicted"})
+                .code,
+            2);
+}
+
 TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   ASSERT_EQ(invoke({"bookmark", "create", "old", "occupied", "plain"}).code,

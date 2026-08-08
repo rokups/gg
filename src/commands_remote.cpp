@@ -21,6 +21,47 @@ namespace {
 constexpr std::string_view kUndoPrefix = "undo: restore to operation ";
 constexpr std::string_view kRedoPrefix = "redo: restore to operation ";
 
+struct BookmarkListItem {
+  std::string display_name;
+  git_oid oid;
+  std::string author_name;
+  std::string author_email;
+  git_time_t author_date;
+  std::string committer_name;
+  std::string committer_email;
+  git_time_t committer_date;
+};
+
+int compare_text(std::string_view left, std::string_view right) {
+  return left.compare(right);
+}
+
+int compare_date(git_time_t left, git_time_t right) {
+  return (left > right) - (left < right);
+}
+
+int compare_bookmarks(const BookmarkListItem& left,
+                      const BookmarkListItem& right,
+                      std::string_view key) {
+  if (key == "name") return compare_text(left.display_name, right.display_name);
+  if (key == "author-name") {
+    return compare_text(left.author_name, right.author_name);
+  }
+  if (key == "author-email") {
+    return compare_text(left.author_email, right.author_email);
+  }
+  if (key == "author-date") {
+    return compare_date(left.author_date, right.author_date);
+  }
+  if (key == "committer-name") {
+    return compare_text(left.committer_name, right.committer_name);
+  }
+  if (key == "committer-email") {
+    return compare_text(left.committer_email, right.committer_email);
+  }
+  return compare_date(left.committer_date, right.committer_date);
+}
+
 std::string operation_timestamp(const git_commit* operation) {
   const int offset = git_commit_time_offset(operation);
   const std::chrono::sys_seconds local_time{
@@ -49,11 +90,88 @@ void command_bookmark(Repository& repo,
                       std::ostream& output) {
   repo.sync_workspace();
   if (options.action == BookmarkAction::list) {
-    for (const auto& [name, oid] : repo.data_refs()) {
-      if (starts_with(name, "refs/heads/")) {
-        output << name.substr(std::string_view("refs/heads/").size()) << ": "
-               << oid_string(oid, 8) << '\n';
+    if (options.tracked) {
+      throw UserError("bookmark tracking state is not supported yet");
+    }
+    if (options.conflicted) {
+      throw UserError("bookmark conflict state is not supported yet");
+    }
+    if (!options.template_value.empty()) {
+      throw UserError("bookmark templates are not supported yet");
+    }
+
+    std::set<git_oid, OidLess> revisions;
+    for (const std::string& revision : options.revisions) {
+      revisions.insert(repo.resolve(revision));
+    }
+    std::vector<BookmarkListItem> items;
+    for (const auto& [reference, oid] : repo.data_refs()) {
+      constexpr std::string_view local_prefix = "refs/heads/";
+      constexpr std::string_view remote_prefix = "refs/remotes/";
+      const bool local = starts_with(reference, local_prefix);
+      if (!local && !starts_with(reference, remote_prefix)) continue;
+
+      std::string name;
+      std::string display_name;
+      if (local) {
+        if (!options.remotes.empty()) continue;
+        name = reference.substr(local_prefix.size());
+        display_name = name;
+      } else {
+        if (!options.all_remotes && options.remotes.empty()) continue;
+        const std::string remote_bookmark =
+            reference.substr(remote_prefix.size());
+        const std::size_t slash = remote_bookmark.find('/');
+        if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
+        const std::string remote = remote_bookmark.substr(0, slash);
+        name = remote_bookmark.substr(slash + 1);
+        if (name == "HEAD") continue;
+        if (!options.remotes.empty() &&
+            std::ranges::find(options.remotes, remote) ==
+                options.remotes.end()) {
+          continue;
+        }
+        display_name = name + "@" + remote;
       }
+      const bool name_matches =
+          !options.names.empty() &&
+          std::ranges::find(options.names, name) != options.names.end();
+      const bool revision_matches =
+          !revisions.empty() && revisions.contains(oid);
+      if ((!options.names.empty() || !revisions.empty()) && !name_matches &&
+          !revision_matches) {
+        continue;
+      }
+
+      CommitPtr commit = repo.commit(oid);
+      const git_signature* author = git_commit_author(commit.get());
+      const git_signature* committer = git_commit_committer(commit.get());
+      items.push_back({display_name,
+                       oid,
+                       author->name,
+                       author->email,
+                       author->when.time,
+                       committer->name,
+                       committer->email,
+                       committer->when.time});
+    }
+    const std::vector<std::string> default_sort{"name"};
+    const std::vector<std::string>& sort =
+        options.sort.empty() ? default_sort : options.sort;
+    for (auto iterator = sort.rbegin(); iterator != sort.rend(); ++iterator) {
+      const bool descending = iterator->ends_with('-');
+      const std::string_view key = descending
+                                       ? std::string_view(*iterator).substr(
+                                             0, iterator->size() - 1)
+                                       : std::string_view(*iterator);
+      std::stable_sort(items.begin(), items.end(), [&](const auto& left,
+                                                       const auto& right) {
+        const int comparison = compare_bookmarks(left, right, key);
+        return descending ? comparison > 0 : comparison < 0;
+      });
+    }
+    for (const BookmarkListItem& item : items) {
+      output << item.display_name << ": " << oid_string(item.oid, 8) << '\n';
     }
     return;
   }

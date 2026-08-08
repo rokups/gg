@@ -69,7 +69,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"squash", "extra"}).code, 2);
   EXPECT_EQ(invoke({"squash", "--into", "main"}).code, 0);
   EXPECT_EQ(invoke({"abandon", "@", "main"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "list", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "list", "extra"}).code, 0);
   EXPECT_EQ(invoke({"bookmark"}).code, 0);
   EXPECT_EQ(invoke({"bookmark", "delete"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "delete", "-r", "@", "topic"}).code, 2);
