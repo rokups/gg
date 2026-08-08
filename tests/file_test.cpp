@@ -12,6 +12,9 @@ TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
   write("nested/empty.txt", "");
   write("nested/tool.txt", "alpha\nbeta alpha\nfinal");
   std::filesystem::create_symlink("tool.txt", path_ / "nested/link");
+  std::filesystem::permissions(
+      path_ / "nested/tool.txt", std::filesystem::perms::owner_exec,
+      std::filesystem::perm_options::add);
 
   const std::string all =
       "nested/empty.txt\nnested/link\nnested/tool.txt\ntracked.txt\n";
@@ -23,8 +26,19 @@ TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
   EXPECT_EQ(invoke({"file", "list", "missing"}).output, "");
   EXPECT_EQ(invoke({"file", "list", "-r", "main"}).output,
             "tracked.txt\n");
+  EXPECT_EQ(
+      invoke({"file", "list", "nested", "-T",
+              "path ++ \" \" ++ file_type ++ \" \" ++ executable ++ \" \" "
+              "++ conflict ++ \" \" ++ conflict_side_count ++ \"\\n\""})
+          .output,
+      "nested/empty.txt file false false 1\n"
+      "nested/link symlink false false 1\n"
+      "nested/tool.txt file true false 1\n");
 
   EXPECT_EQ(invoke({"file", "show", "tracked.txt"}).output, "working\n");
+  EXPECT_EQ(invoke({"file", "show", "-T", "path ++ ':'", "tracked.txt"})
+                .output,
+            "tracked.txt:working\n");
   EXPECT_EQ(invoke({"file", "show", "-r", "main", "tracked.txt"}).output,
             "base\n");
   EXPECT_EQ(invoke({"file", "show", "nested/empty.txt"}).output, "");
@@ -35,9 +49,9 @@ TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
   EXPECT_EQ(invoke({"file", "list", ""}).code, 2);
   EXPECT_EQ(invoke({"file", "list", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"file", "list", "../outside"}).code, 2);
-  EXPECT_EQ(invoke({"file", "list", "-T", "path"}).code, 2);
-  EXPECT_EQ(invoke({"file", "show", "-T", "path", "tracked.txt"}).code,
-            2);
+  EXPECT_EQ(invoke({"file", "list", "-T", "unknown"}).code, 2);
+  EXPECT_EQ(
+      invoke({"file", "show", "-T", "unknown", "tracked.txt"}).code, 2);
 }
 
 TEST_F(RepositoryTest, SearchesRevisionFileContents) {

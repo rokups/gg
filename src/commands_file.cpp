@@ -114,6 +114,22 @@ std::string blob_contents(Repository& repo, const FileEntry& entry) {
   return {static_cast<const char*>(git_blob_rawcontent(blob.get())), size};
 }
 
+std::map<std::string, std::string> file_template_values(
+    const FileEntry& entry) {
+  static const std::map<git_filemode_t, std::string> file_types{
+      {GIT_FILEMODE_BLOB, "file"},
+      {GIT_FILEMODE_BLOB_EXECUTABLE, "file"},
+      {GIT_FILEMODE_LINK, "symlink"},
+      {GIT_FILEMODE_COMMIT, "git-submodule"},
+  };  // GG_COV_EXCL_BRANCH
+  return {{"path", entry.path},
+          {"conflict", "false"},
+          {"conflict_side_count", "1"},
+          {"file_type", file_types.at(entry.mode)},
+          {"executable",
+           entry.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false"}};
+}
+
 std::string escape_regex(std::string_view pattern, bool glob) {
   std::string result;
   for (const char character : pattern) {
@@ -159,18 +175,27 @@ std::regex search_pattern(const std::string& value) {
 }
 
 void list_files(const std::vector<const FileEntry*>& entries,
+                std::string_view template_value,
                 std::ostream& output) {
   for (const FileEntry* entry : entries) {
-    output << entry->path << '\n';
+    if (template_value.empty()) {
+      output << entry->path << '\n';
+    } else {
+      output << render_template(template_value, file_template_values(*entry));
+    }
   }
 }
 
 void show_files(Repository& repo,
                 const std::vector<const FileEntry*>& entries,
+                std::string_view template_value,
                 std::ostream& output) {
   for (const FileEntry* entry : entries) {
     if (!is_regular_file(entry->mode)) {
       throw UserError("path is not a regular file: " + entry->path);
+    }
+    if (!template_value.empty()) {
+      output << render_template(template_value, file_template_values(*entry));
     }
     const std::string content = blob_contents(repo, *entry);
     output.write(content.data(), static_cast<std::streamsize>(content.size()));
@@ -265,9 +290,6 @@ void command_file(Repository& repo,
                   const FileCommand& options,
                   std::ostream& output) {
   repo.sync_workspace();
-  if (!options.template_value.empty()) {
-    throw UserError("file templates are not supported yet");
-  }
   std::vector<std::string> normalized_paths;
   normalized_paths.reserve(options.paths.size());
   for (const std::string& path : options.paths) {
@@ -297,10 +319,10 @@ void command_file(Repository& repo,
   }
   switch (options.action) {
     case FileAction::list:
-      list_files(selected, output);
+      list_files(selected, options.template_value, output);
       return;
     case FileAction::show:
-      show_files(repo, selected, output);
+      show_files(repo, selected, options.template_value, output);
       return;
     case FileAction::search:
       search_files(repo, options, selected, output);
