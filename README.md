@@ -25,6 +25,7 @@ gg bookmark create NAME... [-r REV]
 gg bookmark set NAME... [-r REV]
 gg bookmark delete NAME...
 gg bookmark list
+gg init [DESTINATION]
 gg clone URL [DESTINATION]
 gg fetch [--remote REMOTE]
 gg push --bookmark NAME [--remote REMOTE]

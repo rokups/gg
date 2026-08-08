@@ -110,6 +110,12 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   clone->add_option("url", clone_value.url, "Repository URL")->required();
   clone->add_option("destination", clone_value.destination, "Destination")
       ->expected(0, 1);
+  GitInitCommand init_value;
+  auto* init = app.add_subcommand("init", "Initialize a gg repository");
+  init->add_option("destination", init_value.destination, "Destination")
+      ->expected(0, 1);
+  init->add_option("--object-hash", init_value.object_hash, "Object hash")
+      ->check(CLI::IsMember({"sha1", "sha256"}));
   GitFetchCommand fetch_value;
   auto* fetch = app.add_subcommand("fetch", "Fetch a Git remote");
   fetch->add_option("--remote", fetch_value.remote, "Remote name");
@@ -262,6 +268,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(bookmark_list)};
   } else if (clone->parsed()) {
     command = std::move(clone_value);
+  } else if (init->parsed()) {
+    command = std::move(init_value);
   } else if (fetch->parsed()) {
     command = RepositoryCommand{std::move(fetch_value)};
   } else if (push->parsed()) {

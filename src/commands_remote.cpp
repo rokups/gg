@@ -251,4 +251,28 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
   return 0;
 }
 
+int init_command(const GitInitCommand& options, std::ostream& output) {
+  git_repository_init_options init_options = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+  init_options.flags = GIT_REPOSITORY_INIT_MKPATH;
+  if (options.object_hash == "sha256") {
+    throw UserError("gg does not support SHA-256 repositories");
+  }
+  const std::filesystem::path destination =
+      options.destination.empty() ? "." : options.destination;
+  git_repository* raw_repository = nullptr;
+  check(git_repository_init_ext(&raw_repository, destination.string().c_str(),
+                                &init_options),
+        "initialize repository");
+  RepositoryPtr initialized(raw_repository);
+  initialized.reset();
+
+  Repository repo(destination);
+  output << "Initialized repository at "
+         << std::filesystem::weakly_canonical(destination).string() << '\n';
+  if (!repo.ref_target(kWorkspaceRef).has_value()) {
+    command_new(repo, NewCommand{}, output);
+  }
+  return 0;
+}
+
 }  // namespace gg::detail

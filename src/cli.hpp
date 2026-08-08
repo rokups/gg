@@ -60,6 +60,10 @@ struct GitCloneCommand {
   std::string url;
   std::string destination;
 };
+struct GitInitCommand {
+  std::string destination;
+  std::string object_hash{"sha1"};
+};
 struct GitFetchCommand {
   std::string remote;
 };
@@ -94,7 +98,7 @@ using RepositoryCommand =
                  GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
                  UtilSnapshotCommand, MovementCommand>;
-using Command = std::variant<RepositoryCommand, GitCloneCommand,
+using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,
                              ContinueCommand, AbortCommand>;
 
 struct Invocation {

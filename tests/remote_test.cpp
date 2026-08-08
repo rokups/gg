@@ -122,4 +122,56 @@ TEST_F(RepositoryTest, InfersCloneDestinationWithoutDotGitSuffix) {
   std::filesystem::remove_all(remote_path);
 }
 
+TEST_F(RepositoryTest, InitializesNewAndExistingGitRepositories) {
+  const git_oid base = ref("HEAD");
+  Result initialized = run({"init", path_.string()});
+  ASSERT_EQ(initialized.code, 0) << initialized.error;
+  const git_oid adopted = ref("refs/gg/workspaces/default");
+  const git_oid adopted_parent = commit_parent(adopted);
+  EXPECT_NE(git_oid_equal(&adopted_parent, &base), 0);
+
+  const auto target =
+      path_.parent_path() / (path_.filename().string() + "-initialized");
+  std::filesystem::remove_all(target);
+
+  initialized = run({"init", "--object-hash", "sha1", target.string()});
+  ASSERT_EQ(initialized.code, 0) << initialized.error;
+  EXPECT_NE(initialized.output.find("Initialized repository"), std::string::npos);
+  EXPECT_NE(run({"-R", target.string(), "status"})
+                .output.find("Working copy (@)"),
+            std::string::npos);
+
+  git_repository* repository = nullptr;
+  ASSERT_EQ(git_repository_open(&repository, target.string().c_str()), 0);
+  git_oid before{};
+  ASSERT_EQ(git_reference_name_to_id(&before, repository,
+                                     "refs/gg/workspaces/default"),
+            0);
+  git_repository_free(repository);
+  initialized = run({"init", target.string()});
+  ASSERT_EQ(initialized.code, 0) << initialized.error;
+  ASSERT_EQ(git_repository_open(&repository, target.string().c_str()), 0);
+  git_oid after{};
+  ASSERT_EQ(git_reference_name_to_id(&after, repository,
+                                     "refs/gg/workspaces/default"),
+            0);
+  git_repository_free(repository);
+  EXPECT_NE(git_oid_equal(&before, &after), 0);
+
+  EXPECT_EQ(run({"init", "--object-hash", "sha256", target.string()}).code, 2);
+  std::filesystem::remove_all(target);
+
+  const auto default_target =
+      path_.parent_path() / (path_.filename().string() + "-default-init");
+  std::filesystem::remove_all(default_target);
+  std::filesystem::create_directories(default_target);
+  const auto original_directory = std::filesystem::current_path();
+  std::filesystem::current_path(default_target);
+  const Result default_initialized = run({"init"});
+  std::filesystem::current_path(original_directory);
+  EXPECT_EQ(default_initialized.code, 0) << default_initialized.error;
+  EXPECT_TRUE(std::filesystem::exists(default_target / ".git"));
+  std::filesystem::remove_all(default_target);
+}
+
 }  // namespace gg::test

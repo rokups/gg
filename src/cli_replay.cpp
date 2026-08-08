@@ -158,6 +158,17 @@ std::vector<std::string> replay_arguments(const Command& command) {
             }
             return result;
           },
+          [](const GitInitCommand& value) {
+            std::vector<std::string> result{"init"};
+            if (value.object_hash != "sha1") {
+              result.emplace_back("--object-hash");
+              result.push_back(value.object_hash);
+            }
+            if (!value.destination.empty()) {
+              result.push_back(value.destination);
+            }
+            return result;
+          },
           [](const ContinueCommand&) {
             return std::vector<std::string>{"continue"};
           },

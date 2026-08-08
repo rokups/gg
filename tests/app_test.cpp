@@ -80,6 +80,8 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"push", "-b", "missing", "extra"}).code, 2);
   EXPECT_EQ(run({"clone"}).code, 2);
   EXPECT_EQ(run({"clone", "one", "two", "three"}).code, 2);
+  EXPECT_EQ(run({"init", "one", "two"}).code, 2);
+  EXPECT_EQ(run({"init", "--object-hash", "invalid"}).code, 2);
   EXPECT_EQ(invoke({"undo", "extra"}).code, 2);
   EXPECT_EQ(invoke({"redo", "extra"}).code, 2);
   EXPECT_EQ(invoke({"operation"}).code, 2);
