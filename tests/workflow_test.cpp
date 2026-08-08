@@ -494,12 +494,29 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   EXPECT_NE(log.output.find("│\n"), std::string::npos);
   EXPECT_EQ(invoke({"op", "log"}).output, log.output);
 
+  const Result colored =
+      invoke({"--color", "debug", "operation", "log", "--limit", "2"});
+  EXPECT_NE(colored.output.find("<<working_copy::@>>"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<current_operation_id::"),
+            std::string::npos);
+  EXPECT_NE(colored.output.find("<<timestamp::"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<change_id::○>>"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<operation_id::"), std::string::npos);
+
   const Result diff = invoke({"operation", "log", "--op-diff", "--no-graph"});
   EXPECT_NE(diff.output.find("  + HEAD "), std::string::npos);
   EXPECT_NE(diff.output.find("  ~ HEAD "), std::string::npos);
   EXPECT_NE(diff.output.find("  + refs/heads/moving "), std::string::npos);
   EXPECT_NE(diff.output.find("  ~ refs/heads/moving "), std::string::npos);
   EXPECT_NE(diff.output.find("  - refs/heads/moving "), std::string::npos);
+  const Result colored_diff = invoke(
+      {"--color", "debug", "operation", "log", "--op-diff", "--no-graph"});
+  EXPECT_NE(colored_diff.output.find("<<added::  + HEAD "),
+            std::string::npos);
+  EXPECT_NE(colored_diff.output.find("<<modified::  ~ HEAD "),
+            std::string::npos);
+  EXPECT_NE(colored_diff.output.find("<<removed::  - refs/heads/moving "),
+            std::string::npos);
 
   const Result limited = invoke({"operation", "log", "--limit", "1"});
   EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 1);

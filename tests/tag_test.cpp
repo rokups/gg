@@ -13,6 +13,10 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
   const std::string listed = invoke({"tag", "list"}).output;
   EXPECT_NE(listed.find("stable: "), std::string::npos);
   EXPECT_NE(listed.find("v1: "), std::string::npos);
+  const Result colored =
+      invoke({"--color", "debug", "tag", "list", "v1"});
+  EXPECT_NE(colored.output.find("<<tag::v1>>"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<commit_id::"), std::string::npos);
   EXPECT_NE(invoke({"tag", "list", "v1"}).output.find("v1: "),
             std::string::npos);
   EXPECT_EQ(invoke({"tag", "list", "missing"}).output, "");

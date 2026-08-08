@@ -55,6 +55,10 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   EXPECT_NE(local.output.find("alpha:"), std::string::npos);
   EXPECT_NE(local.output.find("beta:"), std::string::npos);
   EXPECT_EQ(local.output.find("@origin"), std::string::npos);
+  const Result colored =
+      invoke({"--color", "debug", "bookmark", "list", "alpha"});
+  EXPECT_NE(colored.output.find("<<bookmark::alpha>>"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<commit_id::"), std::string::npos);
 
   const Result named = invoke({"bookmark", "list", "alpha"});
   EXPECT_NE(named.output.find("alpha:"), std::string::npos);

@@ -27,13 +27,17 @@ struct StyleSpec {
   std::string_view label;
 };
 
-constexpr std::array<StyleSpec, 11> kStyles{{
+constexpr std::array<StyleSpec, 15> kStyles{{
     {"\x1b[1;38;5;2m", "working_copy"},
     {"\x1b[38;5;5m", "change_id"},
     {"\x1b[1;38;5;13m", "working_copy change_id"},
     {"\x1b[38;5;4m", "commit_id"},
     {"\x1b[1;38;5;12m", "working_copy commit_id"},
     {"\x1b[38;5;5m", "bookmark"},
+    {"\x1b[38;5;5m", "tag"},
+    {"\x1b[38;5;4m", "operation_id"},
+    {"\x1b[1;38;5;12m", "current_operation_id"},
+    {"\x1b[38;5;6m", "timestamp"},
     {"\x1b[38;5;2m", "added"},
     {"\x1b[38;5;1m", "removed"},
     {"\x1b[38;5;3m", "modified"},

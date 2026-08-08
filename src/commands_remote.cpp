@@ -131,11 +131,16 @@ void render_operation_diff(Repository& repo,
           ? std::optional<OperationState>{repo.parse_operation(*previous)}
           : std::nullopt;
   if (!before.has_value()) {
-    output << "  + HEAD " << head_text(after.head) << '\n';
+    output << styled(output, "  + HEAD " + head_text(after.head),
+                     OutputStyle::added)
+           << '\n';
   } else if (before->head.symbolic != after.head.symbolic ||
              before->head.value != after.head.value) {
-    output << "  ~ HEAD " << head_text(before->head) << " -> "
-           << head_text(after.head) << '\n';
+    output << styled(output,
+                     "  ~ HEAD " + head_text(before->head) + " -> " +
+                         head_text(after.head),
+                     OutputStyle::modified)
+           << '\n';
   }
 
   std::set<std::string> names;
@@ -154,12 +159,21 @@ void render_operation_diff(Repository& repo,
                                         : after.refs.end();
     const auto current = after.refs.find(name);
     if (!before.has_value() || old == before->refs.end()) {
-      output << "  + " << name << ' ' << oid_string(current->second, 8) << '\n';
+      output << styled(output,
+                       "  + " + name + " " + oid_string(current->second, 8),
+                       OutputStyle::added)
+             << '\n';
     } else if (current == after.refs.end()) {
-      output << "  - " << name << ' ' << oid_string(old->second, 8) << '\n';
+      output << styled(output,
+                       "  - " + name + " " + oid_string(old->second, 8),
+                       OutputStyle::removed)
+             << '\n';
     } else if (!(old->second == current->second)) {
-      output << "  ~ " << name << ' ' << oid_string(old->second, 8) << " -> "
-             << oid_string(current->second, 8) << '\n';
+      output << styled(output,
+                       "  ~ " + name + " " + oid_string(old->second, 8) +
+                           " -> " + oid_string(current->second, 8),
+                       OutputStyle::modified)
+             << '\n';
     }
   }
 }
@@ -227,7 +241,10 @@ void command_bookmark(Repository& repo,
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      output << item.display_name << ": " << oid_string(item.oid, 8) << '\n';
+      output << styled(output, item.display_name, OutputStyle::bookmark)
+             << ": "
+             << styled(output, oid_string(item.oid, 8), OutputStyle::commit_id)
+             << '\n';
     }
     return;
   }
@@ -468,7 +485,9 @@ void command_tag(Repository& repo,
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      output << item.display_name << ": " << oid_string(item.oid, 8) << '\n';
+      output << styled(output, item.display_name, OutputStyle::tag) << ": "
+             << styled(output, oid_string(item.oid, 8), OutputStyle::commit_id)
+             << '\n';
     }
     return;
   }
@@ -929,9 +948,17 @@ void command_operation_log(Repository& repo,
     CommitPtr operation = repo.commit(oid);
     const std::string description = repo.operation_description(oid);
     if (!options.no_graph) {
-      output << (oid == newest ? "@ " : "○ ");
+      output << styled(output, oid == newest ? "@" : "○",
+                       oid == newest ? OutputStyle::working_copy
+                                     : OutputStyle::change_id)
+             << ' ';
     }
-    output << oid_string(oid, 8) << ' ' << operation_timestamp(operation.get())
+    output << styled(output, oid_string(oid, 8),
+                     oid == newest ? OutputStyle::current_operation_id
+                                   : OutputStyle::operation_id)
+           << ' '
+           << styled(output, operation_timestamp(operation.get()),
+                     OutputStyle::timestamp)
            << ' ' << description << '\n';
     if (options.op_diff) render_operation_diff(repo, oid, output);
     if (!options.no_graph && index + 1 < operations.size()) {
