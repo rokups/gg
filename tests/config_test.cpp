@@ -10,6 +10,24 @@
 namespace gg::test {
 
 TEST_F(RepositoryTest, SetsGetsListsAndUnsetsLayeredConfiguration) {
+  EXPECT_EQ(invoke({"config", "get", "ui.movement.edit"}).output, "false\n");
+  EXPECT_EQ(invoke({"config", "list", "ui.movement.edit"}).output, "");
+  EXPECT_NE(invoke({"config", "list", "--include-defaults",
+                    "ui.movement.edit"})
+                .output.find("ui.movement.edit = false"),
+            std::string::npos);
+  ASSERT_EQ(invoke({"config", "set", "--repo", "ui.movement.edit", "true"})
+                .code,
+            0);
+  const Result default_override =
+      invoke({"config", "list", "--include-defaults", "--include-overridden",
+              "ui.movement.edit"});
+  EXPECT_EQ(std::count(default_override.output.begin(),
+                       default_override.output.end(), '\n'),
+            2);
+  ASSERT_EQ(invoke({"config", "unset", "--repo", "ui.movement.edit"}).code,
+            0);
+
   EXPECT_EQ(invoke({"config", "set", "--repo", "ui.color", "\"red\""}).code,
             0);
   EXPECT_EQ(invoke({"config", "get", "ui.color"}).output, "\"red\"\n");

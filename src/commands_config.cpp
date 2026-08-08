@@ -19,6 +19,9 @@ namespace {
 
 enum class ConfigScope { user, repository, workspace };
 
+const std::map<std::string, std::string> kDefaultValues{
+    {"ui.movement.edit", "false"}};
+
 std::string trim(std::string_view value) {
   const std::size_t first = value.find_first_not_of(" \t\r\n");
   if (first == std::string_view::npos) return {};
@@ -198,15 +201,17 @@ bool name_matches(std::string_view name, std::string_view filter) {
 
 std::optional<std::string> config_value(Repository& repo,
                                         std::string_view name) {
-  std::optional<std::string> result;
+  std::map<std::string, std::string> values = kDefaultValues;
   const std::array<ConfigScope, 3> scopes{
       ConfigScope::user, ConfigScope::repository, ConfigScope::workspace};
   for (const ConfigScope scope : scopes) {
-    const auto values = read_values(config_path(repo, scope));
-    const auto value = values.find(std::string(name));
-    if (value != values.end()) result = value->second;
+    for (const auto& entry : read_values(config_path(repo, scope))) {
+      values[entry.first] = entry.second;
+    }
   }
-  return result;
+  const auto value = values.find(std::string(name));
+  if (value == values.end()) return std::nullopt;
+  return value->second;
 }
 
 void command_config(Repository& repo,
@@ -245,11 +250,23 @@ void command_config(Repository& repo,
     unset_value(config_path(repo, *scope), options.name);
     return;
   }
+  if (options.action == ConfigAction::get) {
+    const auto value = config_value(repo, options.name);
+    if (!value.has_value()) {
+      throw UserError("configuration key not found: " + options.name);
+    }
+    output << *value << '\n';
+    return;
+  }
 
   const std::array<ConfigScope, 3> scopes{
       ConfigScope::user, ConfigScope::repository, ConfigScope::workspace};
   std::map<std::string, std::string> merged;
   std::vector<std::pair<std::string, std::string>> layered;
+  if (options.include_defaults) {
+    merged = kDefaultValues;
+    layered.insert(layered.end(), merged.begin(), merged.end());
+  }
   for (const ConfigScope layer : scopes) {
     if (scope.has_value()) {
       if (*scope != layer) continue;
@@ -258,14 +275,6 @@ void command_config(Repository& repo,
       merged[entry.first] = entry.second;
       layered.push_back(entry);
     }
-  }
-  if (options.action == ConfigAction::get) {
-    const auto value = merged.find(options.name);
-    if (value == merged.end()) {
-      throw UserError("configuration key not found: " + options.name);
-    }
-    output << value->second << '\n';
-    return;
   }
   const auto print = [&](const auto& entries) {
     for (const auto& [name, value] : entries) {

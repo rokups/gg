@@ -617,13 +617,12 @@ void command_move(Repository& repo,
   }
   bool edit = options.edit;
   if (!edit && !options.no_edit) {
-    if (const auto configured = config_value(repo, "ui.movement.edit");
-        configured.has_value()) {
-      if (*configured == "true") {
-        edit = true;
-      } else if (*configured != "false") {
-        throw UserError("ui.movement.edit must be true or false");
-      }
+    const std::string configured =
+        config_value(repo, "ui.movement.edit").value_or("false");
+    if (configured == "true") {
+      edit = true;
+    } else if (configured != "false") {
+      throw UserError("ui.movement.edit must be true or false");
     }
   }
   if (!edit && !repo.children(*workspace).empty()) {
