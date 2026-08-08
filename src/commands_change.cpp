@@ -404,9 +404,12 @@ void command_log(Repository& repo,
   check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
   RevwalkPtr walk(raw_walk);
   git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME);
+  std::optional<std::set<git_oid, OidLess>> selected_revisions;
   if (!options.revision.empty()) {
-    for (const git_oid& selected : repo.resolve_set(options.revision)) {
-      check(git_revwalk_push(walk.get(), &selected), "walk revisions");
+    const std::vector<git_oid> selected = repo.resolve_set(options.revision);
+    selected_revisions.emplace(selected.begin(), selected.end());
+    for (const git_oid& oid : selected) {
+      check(git_revwalk_push(walk.get(), &oid), "walk revisions");
     }
   } else {
     const auto workspace = repo.ref_target(kWorkspaceRef);
@@ -424,6 +427,10 @@ void command_log(Repository& repo,
   git_oid oid{};
   while (revisions.size() < options.limit &&
          git_revwalk_next(&oid, walk.get()) == 0) {
+    if (selected_revisions.has_value() &&
+        !selected_revisions->contains(oid)) {
+      continue;
+    }
     if (!options.paths.empty() &&
         !revision_matches_paths(repo, oid, options.paths, options.format)) {
       continue;

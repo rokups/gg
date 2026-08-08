@@ -155,7 +155,7 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
 
   const Result limited =
-      invoke({"log", "-r", "@", "--limit", "2", "--reversed",
+      invoke({"log", "-r", "ancestors(@)", "--limit", "2", "--reversed",
               "--no-graph"});
   ASSERT_EQ(limited.code, 0) << limited.error;
   EXPECT_EQ(std::count(limited.output.begin(), limited.output.end(), '\n'), 2);
@@ -163,7 +163,7 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   EXPECT_FALSE(limited.output.starts_with("@  ") ||
                limited.output.starts_with("○  ") ||
                limited.output.starts_with("*  "));
-  EXPECT_EQ(invoke({"log", "-r", "@", "--limit", "2", "--count"}).output,
+  EXPECT_EQ(invoke({"log", "-r", "ancestors(@)", "--limit", "2", "--count"}).output,
             "2\n");
   const Result revset_log =
       invoke({"log", "-r", "@ | @-", "--no-graph"});
@@ -184,7 +184,8 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   EXPECT_NE(debug.output.find("<<working_copy::@>>"), std::string::npos);
   EXPECT_EQ(invoke({"--color", "invalid", "log"}).code, 2);
 
-  const Result filtered = invoke({"log", "-r", "@", "tracked.txt"});
+  const Result filtered =
+      invoke({"log", "-r", "ancestors(@)", "tracked.txt"});
   ASSERT_EQ(filtered.code, 0) << filtered.error;
   EXPECT_NE(filtered.output.find("first"), std::string::npos);
   EXPECT_EQ(filtered.output.find("second"), std::string::npos);
@@ -655,12 +656,13 @@ TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
   ASSERT_EQ(git_commit_lookup(&merge, repository_.get(), &workspace), 0);
   EXPECT_EQ(git_commit_parentcount(merge), 2U);
   git_commit_free(merge);
-  const Result graph = invoke({"log", "-r", "@"});
+  const Result graph = invoke({"log", "-r", "ancestors(@)"});
   EXPECT_NE(graph.output.find("@─╮"), std::string::npos) << graph.output;
   EXPECT_NE(graph.output.find("○  │"), std::string::npos) << graph.output;
   EXPECT_NE(graph.output.find("│ ○"), std::string::npos) << graph.output;
   EXPECT_NE(graph.output.find("╰─○"), std::string::npos) << graph.output;
-  const Result reversed = invoke({"log", "-r", "@", "--reversed"});
+  const Result reversed =
+      invoke({"log", "-r", "ancestors(@)", "--reversed"});
   EXPECT_NE(reversed.output.find("│"), std::string::npos);
 }
 
@@ -674,7 +676,7 @@ TEST_F(RepositoryTest, MergesUnrelatedParents) {
   set_ref("refs/heads/third", third);
   const Result merge = invoke({"new", "first", "second", "third"});
   ASSERT_EQ(merge.code, 0) << merge.error;
-  const Result graph = invoke({"log", "-r", "@"});
+  const Result graph = invoke({"log", "-r", "ancestors(@)"});
   EXPECT_EQ(graph.code, 0);
   EXPECT_NE(graph.output.find("┬"), std::string::npos);
 }
