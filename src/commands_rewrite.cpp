@@ -270,9 +270,6 @@ void command_restore(Repository& repo,
                      const RestoreCommand& options,
                      std::ostream& output) {
   repo.sync_workspace();
-  if (options.interactive || !options.tool.empty()) {
-    throw UserError("interactive restore selection is not supported yet");
-  }
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
@@ -313,9 +310,14 @@ void command_restore(Repository& repo,
 
   CommitPtr old = repo.commit(destination);
   const git_oid destination_tree = *git_commit_tree_id(old.get());
-  const git_oid restored_tree =
+  git_oid restored_tree =
       select_all ? source_tree
                  : repo.selected_tree(destination_tree, source_tree, paths);
+  if (options.interactive || !options.tool.empty()) {
+    restored_tree = select_diff_tree(
+        repo, destination_tree, restored_tree,
+        select_all ? std::vector<std::string>{} : paths, options.tool);
+  }
   if (restored_tree == destination_tree) {
     output << "Nothing changed.\n";
     return;

@@ -63,6 +63,53 @@ TEST_F(RepositoryTest, CanPreserveDescendantContentsWhileRestacking) {
             "child\n");
 }
 
+TEST_F(RepositoryTest, SelectsRestoreChangesWithTheBuiltinEditor) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("tracked.txt", "changed\n");
+  write("extra.txt", "extra\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const std::filesystem::path selector = path_ / "restore-selector";
+  {
+    std::ofstream script(selector);
+    script << "#!/bin/sh\nsed -i '/tracked.txt/d' \"$1\"\n";
+  }
+  std::filesystem::permissions(
+      selector, std::filesystem::perms::owner_exec |
+                    std::filesystem::perms::owner_read |
+                    std::filesystem::perms::owner_write);
+  const char* old_visual = std::getenv("VISUAL");
+  const std::string saved_visual = old_visual == nullptr ? "" : old_visual;
+  ASSERT_EQ(setenv("VISUAL", selector.string().c_str(), 1), 0);
+  const Result restored = invoke({"restore", "--interactive"});
+  if (saved_visual.empty()) {
+    unsetenv("VISUAL");
+  } else {
+    setenv("VISUAL", saved_visual.c_str(), 1);
+  }
+  ASSERT_EQ(restored.code, 0) << restored.error;
+  EXPECT_EQ(invoke({"file", "show", "tracked.txt"}).output, "changed\n");
+  EXPECT_EQ(invoke({"file", "show", "extra.txt"}).code, 2);
+
+  ASSERT_EQ(setenv("VISUAL", "/bin/true", 1), 0);
+  const Result selected_path =
+      invoke({"restore", "tracked.txt", "--interactive"});
+  if (saved_visual.empty()) {
+    unsetenv("VISUAL");
+  } else {
+    setenv("VISUAL", saved_visual.c_str(), 1);
+  }
+  ASSERT_EQ(selected_path.code, 0) << selected_path.error;
+  EXPECT_EQ(invoke({"file", "show", "tracked.txt"}).output, "base\n");
+
+  write("tracked.txt", "again\n");
+  const Result external =
+      invoke({"restore", "tracked.txt", "--tool", "/bin/true"});
+  ASSERT_EQ(external.code, 0) << external.error;
+  EXPECT_EQ(invoke({"file", "show", "tracked.txt"}).output, "base\n");
+  EXPECT_EQ(invoke({"restore", "missing", "--interactive"}).output,
+            "Nothing changed.\n");
+}
+
 TEST_F(RepositoryTest, RebasesDescendantChangesByDefaultWhenRestoring) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   write("parent.txt", "parent\n");
@@ -85,8 +132,7 @@ TEST_F(RepositoryTest, ValidatesRestoreRequests) {
   EXPECT_EQ(invoke({"restore", "--changes-in", "@", "--from", "main"})
                 .code,
             2);
-  EXPECT_EQ(invoke({"restore", "--interactive"}).code, 2);
-  EXPECT_EQ(invoke({"restore", "--tool", "meld"}).code, 2);
+  EXPECT_EQ(invoke({"restore", "--tool", "missing-gg-diff-editor"}).code, 2);
   EXPECT_EQ(invoke({"restore", ""}).code, 2);
   EXPECT_EQ(invoke({"restore", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"restore", "../outside"}).code, 2);

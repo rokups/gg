@@ -352,9 +352,6 @@ void command_commit(Repository& repo,
                     const CommitCommand& options,
                     std::ostream& output) {
   repo.sync_workspace();
-  if (options.interactive || !options.tool.empty()) {
-    throw UserError("interactive commit selection is not supported yet");
-  }
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
@@ -383,10 +380,17 @@ void command_commit(Repository& repo,
   const std::vector<git_oid> parents = repo.parents(*workspace);
   const git_oid base_tree = combined_tree(repo, parents);
   const git_oid full_tree = *git_commit_tree_id(current.get());
-  const git_oid selected_tree =
+  git_oid selected_tree =
       options.paths.empty() || select_all
           ? full_tree
           : repo.selected_tree(base_tree, full_tree, paths);
+  if (options.interactive || !options.tool.empty()) {
+    selected_tree = select_diff_tree(
+        repo, base_tree, selected_tree,
+        options.paths.empty() || select_all ? std::vector<std::string>{}
+                                            : paths,
+        options.tool);
+  }
   const char* old_message = git_commit_message(current.get());
   std::string message = options.message_provided
                             ? options.message

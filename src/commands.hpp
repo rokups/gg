@@ -55,6 +55,8 @@ void render_revision_diff(Repository&, const git_oid&,
 void render_tree_diff(Repository&, const git_oid&, const git_oid&,
                       const std::vector<std::string>&,
                       const DiffFormatOptions&, std::ostream&);
+git_oid select_diff_tree(Repository&, const git_oid&, const git_oid&,
+                         const std::vector<std::string>&, std::string_view);
 void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
