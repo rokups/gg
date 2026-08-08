@@ -9,6 +9,9 @@ namespace gg::test {
 TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   EXPECT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "create", "forward", "-r", "main"}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "set", "forward", "-r", "@"}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "set", "forward", "-r", "@"}).code, 0);
   EXPECT_EQ(invoke({"bookmark", "create", "one", "two", "--to", "main"})
                 .code,
             0);
@@ -22,12 +25,49 @@ TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
   EXPECT_FALSE(has_ref("refs/heads/valid"));
   EXPECT_EQ(invoke({"bookmark", "set", "topic", "three", "-r", "main"})
                 .code,
+            2);
+  EXPECT_EQ(invoke({"bookmark", "set", "topic", "three", "-B", "-r", "main"})
+                .code,
             0);
   EXPECT_TRUE(has_ref("refs/heads/three"));
   EXPECT_EQ(invoke({"bookmark", "delete", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "delete", "topic", "one", "two", "three"})
+  EXPECT_EQ(invoke({"bookmark", "delete", "topic", "one", "two", "three",
+                    "forward"})
                 .code,
             0);
+}
+
+TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "old", "occupied", "plain"}).code,
+            0);
+  ASSERT_EQ(invoke({"bookmark", "rename", "plain", "renamed"}).code, 0);
+  EXPECT_EQ(invoke({"bookmark", "rename", "old", "old"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "rename", "missing", "new"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "rename", "old", "bad name"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "rename", "old", "occupied"}).code, 2);
+  ASSERT_EQ(invoke({"bookmark", "rename", "old", "occupied",
+                    "--overwrite-existing"})
+                .code,
+            0);
+  EXPECT_FALSE(has_ref("refs/heads/old"));
+  EXPECT_TRUE(has_ref("refs/heads/occupied"));
+
+  const git_oid target = ref("refs/heads/occupied");
+  set_ref("refs/remotes/origin/occupied", target);
+  set_ref("refs/remotes/origin/other", target);
+  ASSERT_EQ(invoke({"bookmark", "forget", "occupied"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/heads/occupied"));
+  EXPECT_TRUE(has_ref("refs/remotes/origin/occupied"));
+
+  set_ref("refs/heads/occupied", target);
+  ASSERT_EQ(invoke({"bookmark", "forget", "occupied", "--include-remotes"})
+                .code,
+            0);
+  EXPECT_FALSE(has_ref("refs/heads/occupied"));
+  EXPECT_FALSE(has_ref("refs/remotes/origin/occupied"));
+  EXPECT_TRUE(has_ref("refs/remotes/origin/other"));
+  EXPECT_EQ(invoke({"bookmark", "forget", "missing"}).code, 2);
 }
 
 TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {

@@ -97,11 +97,28 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* set = bookmark->add_subcommand("set", "Set a bookmark");
   set->add_option("names", bookmark_set.names, "Bookmark names")->required();
   set->add_option("-r,--revision,--to", bookmark_set.revision, "Revision");
+  set->add_flag("-B,--allow-backwards", bookmark_set.allow_backwards,
+                "Allow moving bookmarks backwards");
   BookmarkCommand bookmark_delete;
   bookmark_delete.action = BookmarkAction::erase;
   auto* erase = bookmark->add_subcommand("delete", "Delete bookmarks");
   erase->add_option("names", bookmark_delete.names, "Bookmark names")
       ->required();
+  BookmarkCommand bookmark_forget;
+  bookmark_forget.action = BookmarkAction::forget;
+  auto* forget = bookmark->add_subcommand("forget", "Forget bookmarks");
+  forget->add_option("names", bookmark_forget.names, "Bookmark names")
+      ->required();
+  forget->add_flag("--include-remotes", bookmark_forget.include_remotes,
+                   "Also forget matching remote bookmarks");
+  BookmarkCommand bookmark_rename;
+  bookmark_rename.action = BookmarkAction::rename;
+  auto* rename = bookmark->add_subcommand("rename", "Rename a bookmark");
+  rename->add_option("names", bookmark_rename.names, "Old and new names")
+      ->required()
+      ->expected(2);
+  rename->add_flag("--overwrite-existing", bookmark_rename.overwrite_existing,
+                   "Overwrite the destination bookmark");
   BookmarkCommand bookmark_list;
   auto* list = bookmark->add_subcommand("list", "List bookmarks");
 
@@ -264,6 +281,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(bookmark_set)};
   } else if (erase->parsed()) {
     command = RepositoryCommand{std::move(bookmark_delete)};
+  } else if (forget->parsed()) {
+    command = RepositoryCommand{std::move(bookmark_forget)};
+  } else if (rename->parsed()) {
+    command = RepositoryCommand{std::move(bookmark_rename)};
   } else if (list->parsed() || bookmark->parsed()) {
     command = RepositoryCommand{std::move(bookmark_list)};
   } else if (clone->parsed()) {

@@ -24,6 +24,8 @@ gg rebase -s REV -d REV
 gg bookmark create NAME... [-r REV]
 gg bookmark set NAME... [-r REV]
 gg bookmark delete NAME...
+gg bookmark forget [--include-remotes] NAME...
+gg bookmark rename [--overwrite-existing] OLD NEW
 gg bookmark list
 gg init [DESTINATION]
 gg clone URL [DESTINATION]

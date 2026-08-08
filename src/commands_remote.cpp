@@ -56,7 +56,8 @@ void command_bookmark(Repository& repo,
     }
     return;
   }
-  if (options.action == BookmarkAction::erase) {
+  if (options.action == BookmarkAction::erase ||
+      options.action == BookmarkAction::forget) {
     std::set<std::string> deletes;
     for (const std::string& name : options.names) {
       const std::string reference = "refs/heads/" + name;
@@ -64,9 +65,48 @@ void command_bookmark(Repository& repo,
         throw UserError("bookmark not found: " + name);
       }
       deletes.insert(reference);
+      if (options.include_remotes) {
+        const std::string suffix = "/" + name;
+        for (const auto& [remote, oid] : repo.data_refs()) {
+          (void)oid;
+          if (starts_with(remote, "refs/remotes/") &&
+              remote.ends_with(suffix)) {
+            deletes.insert(remote);
+          }
+        }
+      }
     }
-    repo.record({}, deletes, repo.head_state(), "gg bookmark delete");
-    output << "Deleted " << deletes.size() << " bookmark(s).\n";
+    repo.record({}, deletes, repo.head_state(),
+                options.action == BookmarkAction::erase ? "gg bookmark delete"
+                                                        : "gg bookmark forget");
+    output << (options.action == BookmarkAction::erase ? "Deleted " : "Forgot ")
+           << deletes.size() << " bookmark ref(s).\n";
+    return;
+  }
+  if (options.action == BookmarkAction::rename) {
+    if (options.names[0] == options.names[1]) {
+      throw UserError("bookmark names must differ");
+    }
+    const std::string old_reference = "refs/heads/" + options.names[0];
+    const std::string new_reference = "refs/heads/" + options.names[1];
+    const auto target = repo.ref_target(old_reference);
+    if (!target.has_value()) {
+      throw UserError("bookmark not found: " + options.names[0]);
+    }
+    int valid = 0;
+    check(git_reference_name_is_valid(&valid, new_reference.c_str()),
+          "validate bookmark name");
+    if (valid == 0) {
+      throw UserError("invalid bookmark name: " + options.names[1]);
+    }
+    if (!options.overwrite_existing &&
+        repo.ref_target(new_reference).has_value()) {
+      throw UserError("bookmark already exists: " + options.names[1]);
+    }
+    repo.record({{new_reference, *target}}, {old_reference}, repo.head_state(),
+                "gg bookmark rename");
+    output << "Renamed " << options.names[0] << " to " << options.names[1]
+           << ".\n";
     return;
   }
   const git_oid target =
@@ -83,6 +123,16 @@ void command_bookmark(Repository& repo,
     if (options.action == BookmarkAction::create &&
         repo.ref_target(reference).has_value()) {
       throw UserError("bookmark already exists: " + name);
+    }
+    const auto current = repo.ref_target(reference);
+    if (options.action == BookmarkAction::set && current.has_value() &&
+        !(*current == target) && !options.allow_backwards) {
+      const int is_descendant =
+          git_graph_descendant_of(repo.raw(), &target, &*current);
+      check(is_descendant, "check bookmark movement");
+      if (is_descendant == 0) {
+        throw UserError("refusing to move bookmark backwards: " + name);
+      }
     }
     updates.emplace(reference, target);
   }

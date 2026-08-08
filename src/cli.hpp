@@ -49,11 +49,14 @@ struct AbandonCommand {
   std::string revision;
 };
 
-enum class BookmarkAction { list, create, set, erase };
+enum class BookmarkAction { list, create, set, erase, forget, rename };
 struct BookmarkCommand {
   BookmarkAction action{BookmarkAction::list};
   std::string revision;
   std::vector<std::string> names;
+  bool allow_backwards{false};
+  bool include_remotes{false};
+  bool overwrite_existing{false};
 };
 
 struct GitCloneCommand {

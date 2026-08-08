@@ -92,9 +92,24 @@ std::vector<std::string> repository_replay_arguments(
               case BookmarkAction::erase:
                 result.emplace_back("delete");
                 break;
+              case BookmarkAction::forget:
+                result.emplace_back("forget");
+                break;
+              case BookmarkAction::rename:
+                result.emplace_back("rename");
+                break;
             }
             result.insert(result.end(), value.names.begin(), value.names.end());
             add_option(result, "-r", value.revision);
+            if (value.allow_backwards) {
+              result.emplace_back("--allow-backwards");
+            }
+            if (value.include_remotes) {
+              result.emplace_back("--include-remotes");
+            }
+            if (value.overwrite_existing) {
+              result.emplace_back("--overwrite-existing");
+            }
             return result;
           },
           [](const GitFetchCommand& value) {

@@ -71,6 +71,9 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"bookmark", "delete", "-r", "@", "topic"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "create"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "move", "x"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "forget"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "rename", "one"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "rename", "one", "two", "three"}).code, 2);
   EXPECT_EQ(invoke({"git"}).code, 2);
   EXPECT_EQ(invoke({"git", "wat"}).code, 2);
   EXPECT_EQ(run({"git", "fetch"}).code, 2);
