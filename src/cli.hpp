@@ -251,10 +251,11 @@ struct UtilGcCommand {
 };
 struct UtilSnapshotCommand {};
 
-enum class WorkspaceAction { list, root };
+enum class WorkspaceAction { list, root, forget, rename };
 struct WorkspaceCommand {
   WorkspaceAction action{WorkspaceAction::list};
   std::string name;
+  std::vector<std::string> names;
   std::string template_value;
 };
 

@@ -263,7 +263,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
              description.empty() ? "gg restore operation" : description);
   if (restore_repository) {
     set_head(target.head);
-    const auto workspace = ref_target(kWorkspaceRef);
+    const auto workspace = this->workspace();
     if (workspace.has_value()) {
       checkout(*workspace);
     } else {

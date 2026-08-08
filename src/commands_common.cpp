@@ -197,7 +197,7 @@ std::map<std::string, std::string> revision_template_values(
     if (bookmarks.tellp() != 0) bookmarks << ' ';
     bookmarks << bookmark;
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   return {{"commit_id", oid_string(oid)},
           {"change_id", change_id.value_or("")},
           {"description", description},
@@ -317,7 +317,7 @@ void finish_workspace(Repository& repo,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation) {
-  updates[std::string(kWorkspaceRef)] = workspace;
+  updates[repo.workspace_ref().value_or(std::string(kWorkspaceRef))] = workspace;
   const HeadState head = repo.head_for_workspace(workspace);
   repo.record(std::move(updates), std::move(deletes), head, operation);
   repo.set_head(head);
@@ -460,15 +460,58 @@ void command_workspace(Repository& repo,
                        std::ostream& output) {
   const std::filesystem::path root =
       std::filesystem::weakly_canonical(git_repository_workdir(repo.raw()));
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace_reference = repo.workspace_ref();
+  const auto workspace = repo.workspace();
+  const std::string workspace_name =
+      workspace_reference.has_value()
+          ? workspace_reference->substr(kWorkspacePrefix.size())
+          : "";
   if (options.action == WorkspaceAction::root) {
-    if (!options.name.empty() && options.name != "default") {
-      throw UserError("workspace not found: " + options.name);
-    }
-    if (!options.name.empty() && !workspace.has_value()) {
+    if (!options.name.empty() && options.name != workspace_name) {
       throw UserError("workspace not found: " + options.name);
     }
     output << root.string() << '\n';
+    return;
+  }
+  if (options.action == WorkspaceAction::rename) {
+    if (!workspace_reference.has_value()) {
+      throw UserError("this command requires a working-copy change");
+    }
+    if (options.name == workspace_name) {
+      output << "Nothing changed.\n";
+      return;
+    }
+    const std::string renamed = std::string(kWorkspacePrefix) + options.name;
+    int valid = 0;
+    check(git_reference_name_is_valid(&valid, renamed.c_str()),
+          "validate workspace name");
+    if (valid == 0) throw UserError("invalid workspace name: " + options.name);
+    repo.record({{renamed, *workspace}}, {*workspace_reference},
+                repo.head_state(),
+                "gg workspace rename " + workspace_name + " " + options.name);
+    return;
+  }
+  if (options.action == WorkspaceAction::forget) {
+    const std::vector<std::string> names =
+        options.names.empty()
+            ? std::vector<std::string>{workspace_reference.has_value()
+                                           ? workspace_name
+                                           : "default"}
+            : options.names;
+    bool found = false;
+    for (const std::string& name : names) {
+      if (workspace_reference.has_value() && name == workspace_name) {
+        found = true;
+      } else {
+        output << "No such workspace: " << name << '\n';
+      }
+    }
+    if (!found) {
+      output << "Nothing changed.\n";
+      return;
+    }
+    repo.record({}, {*workspace_reference}, repo.head_state(),
+                "gg workspace forget " + workspace_name);
     return;
   }
   if (!workspace.has_value()) {
@@ -490,13 +533,13 @@ void command_workspace(Repository& repo,
   }
   if (!options.template_value.empty()) {
     auto values = revision_template_values(repo, *workspace);
-    values["name"] = "default";
+    values["name"] = workspace_name;
     values["target"] = oid_string(*workspace);
     values["root"] = root.string();
     output << render_template(options.template_value, values);
   } else {
     const auto id = repo.change_id(*workspace);
-    output << "default: "
+    output << workspace_name << ": "
            << (id.has_value() ? repo.short_change_id(*id) : "--------") << ' '
            << oid_string(*workspace, 8) << ' ' << root.string() << '\n';
   }

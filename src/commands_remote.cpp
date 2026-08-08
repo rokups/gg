@@ -1453,7 +1453,7 @@ int init_command(const GitInitCommand& options, std::ostream& output) {
   Repository repo(destination);
   output << "Initialized repository at "
          << std::filesystem::weakly_canonical(destination).string() << '\n';
-  if (!repo.ref_target(kWorkspaceRef).has_value()) {
+  if (!repo.workspace().has_value()) {
     command_new(repo, NewCommand{}, output);
   }
   return 0;

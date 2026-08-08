@@ -157,6 +157,50 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   EXPECT_EQ(invoke({"workspace", "list", "-T", "unknown"}).code, 2);
 }
 
+TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
+  const std::string root = std::filesystem::weakly_canonical(path_).string();
+  EXPECT_EQ(invoke({"workspace", "rename", "topic"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "forget"}).output,
+            "No such workspace: default\nNothing changed.\n");
+
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  const git_oid original = ref(detail::kWorkspaceRef);
+  ASSERT_EQ(invoke({"workspace", "rename", "topic"}).code, 0);
+  EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
+  ASSERT_TRUE(has_ref("refs/gg/workspaces/topic"));
+  const git_oid renamed = ref("refs/gg/workspaces/topic");
+  EXPECT_EQ(git_oid_equal(&original, &renamed), 1);
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("topic: "),
+            std::string::npos);
+  EXPECT_EQ(invoke({"workspace", "list", "-T", "name ++ \"\\n\""}).output,
+            "topic\n");
+  EXPECT_EQ(invoke({"workspace", "root", "--name", "topic"}).output,
+            root + "\n");
+  EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "rename", "topic"}).output,
+            "Nothing changed.\n");
+  EXPECT_EQ(invoke({"workspace", "rename", "bad..name"}).code, 2);
+
+  ASSERT_EQ(invoke({"describe", "-m", "renamed workspace"}).code, 0);
+  EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/topic"));
+  EXPECT_EQ(invoke({"workspace", "forget", "missing"}).output,
+            "No such workspace: missing\nNothing changed.\n");
+  ASSERT_EQ(invoke({"workspace", "forget"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/topic"));
+  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/topic"));
+  EXPECT_EQ(invoke({"log", "-r", "@", "--no-graph", "-T", "description"})
+                .output,
+            "renamed workspace");
+
+  set_ref("refs/gg/workspaces/duplicate",
+          ref("refs/gg/workspaces/topic"));
+  EXPECT_EQ(invoke({"workspace", "list"}).code, 2);
+}
+
 TEST_F(RepositoryTest, ReportsRenamedFiles) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   std::filesystem::rename(path_ / "tracked.txt", path_ / "renamed.txt");

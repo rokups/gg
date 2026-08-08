@@ -238,7 +238,7 @@ void chmod_files(Repository& repo,
                  const git_oid& old,
                  const std::vector<const FileEntry*>& entries,
                  std::ostream& output) {
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }
@@ -296,7 +296,7 @@ void command_file(Repository& repo,
     normalized_paths.push_back(normalize_selector(path));
   }
   if (options.action == FileAction::track) {
-    if (!repo.ref_target(kWorkspaceRef).has_value()) {
+    if (!repo.workspace().has_value()) {
       throw UserError("this command requires a working-copy change");
     }
     repo.track_paths(normalized_paths, options.include_ignored);

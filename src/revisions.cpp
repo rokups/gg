@@ -202,7 +202,7 @@ std::optional<std::string> Repository::change_id(const git_oid& oid) const {
 
 git_oid Repository::resolve_atom(std::string_view revision) const {
   if (revision == "@" || starts_with(revision, "@-")) {
-    const auto workspace = ref_target(kWorkspaceRef);
+    const auto workspace = this->workspace();
     if (!workspace.has_value()) {
       throw UserError("no gg working-copy change; run `gg new` first");
     }

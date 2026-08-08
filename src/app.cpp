@@ -62,10 +62,12 @@ bool has_primary_output(const Command& command) {
                               std::is_same_v<RepositoryValue, DiffCommand> ||
                               std::is_same_v<RepositoryValue, ShowCommand> ||
                               std::is_same_v<RepositoryValue,
-                                             OperationLogCommand> ||
-                              std::is_same_v<RepositoryValue,
-                                             WorkspaceCommand>) {
+                                             OperationLogCommand>) {
                   return true;
+                } else if constexpr (std::is_same_v<RepositoryValue,
+                                                    WorkspaceCommand>) {
+                  return repository_value.action == WorkspaceAction::list ||
+                         repository_value.action == WorkspaceAction::root;
                 } else if constexpr (std::is_same_v<RepositoryValue,
                                                     FileCommand>) {
                   return repository_value.action == FileAction::list ||

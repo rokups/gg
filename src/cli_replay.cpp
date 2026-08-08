@@ -463,9 +463,16 @@ std::vector<std::string> repository_replay_arguments(
             if (value.action == WorkspaceAction::list) {
               result.emplace_back("list");
               add_option(result, "--template", value.template_value);
-            } else {
+            } else if (value.action == WorkspaceAction::root) {
               result.emplace_back("root");
               add_option(result, "--name", value.name);
+            } else if (value.action == WorkspaceAction::forget) {
+              result.emplace_back("forget");
+              result.insert(result.end(), value.names.begin(),
+                            value.names.end());
+            } else {
+              result.emplace_back("rename");
+              result.push_back(value.name);
             }
             return result;
           },

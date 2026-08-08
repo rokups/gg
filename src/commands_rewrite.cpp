@@ -33,7 +33,7 @@ void command_rebase(Repository& repo,
                                    *git_commit_tree_id(source_commit.get()));
   const git_oid rewritten = repo.rewrite_commit(old, {parent}, tree);
   RewritePlan plan = repo.descendants({{old, rewritten}});
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   const git_oid new_workspace = plan.commits.contains(*workspace)
                                     ? plan.commits.at(*workspace)
                                     : *workspace;
@@ -81,7 +81,7 @@ void command_split(Repository& repo,
     }
   }
   plan.updates[std::string(kChangePrefix) + remainder_id] = remainder;
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   const git_oid new_workspace = *workspace == old
                                     ? remainder
                                     : (plan.commits.contains(*workspace)
@@ -138,7 +138,7 @@ void command_squash(Repository& repo,
       deletes.insert(name);
     }
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   git_oid new_workspace = *workspace;
   if (*workspace == source_oid) {
     new_workspace = repo.create_commit(
@@ -236,7 +236,9 @@ void command_abandon(Repository& repo,
       plan.updates[name] = rewritten->second;
       continue;
     }
-    if (!selected.contains(target) || name == kWorkspaceRef) continue;
+    if (!selected.contains(target) || starts_with(name, kWorkspacePrefix)) {
+      continue;
+    }
     if (starts_with(name, kChangePrefix) ||
         (!options.retain_bookmarks && starts_with(name, "refs/heads/"))) {
       deletes.insert(name);
@@ -244,7 +246,7 @@ void command_abandon(Repository& repo,
       plan.updates[name] = replacements.at(target).front();
     }
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     git_oid new_workspace = *workspace;
     if (selected.contains(*workspace)) {
@@ -271,7 +273,7 @@ void command_restore(Repository& repo,
   if (options.interactive || !options.tool.empty()) {
     throw UserError("interactive restore selection is not supported yet");
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }
@@ -334,7 +336,7 @@ void command_simplify_parents(Repository& repo,
                               const SimplifyParentsCommand& options,
                               std::ostream& output) {
   repo.sync_workspace();
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }

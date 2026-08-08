@@ -221,7 +221,7 @@ void command_new(Repository& repo,
                  const NewCommand& options,
                  std::ostream& output) {
   repo.sync_workspace();
-  const auto old_workspace = repo.ref_target(kWorkspaceRef);
+  const auto old_workspace = repo.workspace();
   std::vector<git_oid> parents;
   const std::vector<git_oid> after =
       resolve_revision_arguments(repo, options.insert_after);
@@ -355,7 +355,7 @@ void command_commit(Repository& repo,
   if (options.interactive || !options.tool.empty()) {
     throw UserError("interactive commit selection is not supported yet");
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }
@@ -425,7 +425,7 @@ void command_status(Repository& repo,
       paths.push_back(normalized);
     }
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     output << "No working-copy change. Run `gg new` to create one.\n";
     return;
@@ -528,7 +528,7 @@ void command_log(Repository& repo,
       check(git_revwalk_push(walk.get(), &oid), "walk revisions");
     }
   } else {
-    const auto workspace = repo.ref_target(kWorkspaceRef);
+    const auto workspace = repo.workspace();
     if (workspace.has_value()) {
       check(git_revwalk_push(walk.get(), &*workspace), "walk revisions");
     }
@@ -538,7 +538,7 @@ void command_log(Repository& repo,
       }
     }
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   std::vector<git_oid> revisions;
   git_oid oid{};
   while (revisions.size() < options.limit &&
@@ -778,7 +778,7 @@ void command_metaedit(Repository& repo,
       plan.updates[std::string(kChangePrefix) + repo.new_change_id()] = target;
     }
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     const git_oid next = plan.commits.contains(*workspace)
                              ? plan.commits.at(*workspace)
@@ -903,7 +903,7 @@ void command_describe(Repository& repo,
       plan.updates.emplace(name, replacement->second);
     }
   }
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     const git_oid next = plan.commits.contains(*workspace)
                              ? plan.commits.at(*workspace)
@@ -919,7 +919,7 @@ void command_move(Repository& repo,
                   const MovementCommand& options,
                   std::ostream& output) {
   repo.sync_workspace();
-  const auto workspace = repo.ref_target(kWorkspaceRef);
+  const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }

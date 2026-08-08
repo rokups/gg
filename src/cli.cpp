@@ -844,6 +844,19 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       workspace->add_subcommand("root", "Show the workspace root");
   workspace_root->add_option("--name", workspace_root_value.name,
                              "Workspace name");
+  WorkspaceCommand workspace_forget_value;
+  workspace_forget_value.action = WorkspaceAction::forget;
+  auto* workspace_forget =
+      workspace->add_subcommand("forget", "Stop tracking workspaces");
+  workspace_forget->add_option("workspaces", workspace_forget_value.names,
+                               "Workspace names");
+  WorkspaceCommand workspace_rename_value;
+  workspace_rename_value.action = WorkspaceAction::rename;
+  auto* workspace_rename =
+      workspace->add_subcommand("rename", "Rename the current workspace");
+  workspace_rename
+      ->add_option("name", workspace_rename_value.name, "New workspace name")
+      ->required();
   MovementCommand next_value;
   auto* next = app.add_subcommand("next", "Move to a child revision");
   CLI::Option* next_offset =
@@ -1126,6 +1139,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(workspace_list_value)};
   } else if (workspace_root->parsed()) {
     command = RepositoryCommand{std::move(workspace_root_value)};
+  } else if (workspace_forget->parsed()) {
+    command = RepositoryCommand{std::move(workspace_forget_value)};
+  } else if (workspace_rename->parsed()) {
+    command = RepositoryCommand{std::move(workspace_rename_value)};
   } else if (next->parsed()) {
     command = RepositoryCommand{next_value};
   } else if (previous->parsed()) {  // GG_COV_EXCL_BRANCH

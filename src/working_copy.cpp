@@ -229,10 +229,11 @@ void Repository::checkout(const git_oid& oid) const {
 
 bool Repository::sync_workspace() const {
   if (ignore_working_copy_) return false;
-  const auto workspace = ref_target(kWorkspaceRef);
-  if (!workspace.has_value()) {
+  const auto workspace_reference = workspace_ref();
+  if (!workspace_reference.has_value()) {
     return false;
   }
+  const auto workspace = ref_target(*workspace_reference);
   CommitPtr current = commit(*workspace);
   const auto current_parents = parents(*workspace);
   const auto head = head_oid();
@@ -252,7 +253,7 @@ bool Repository::sync_workspace() const {
       id = new_change_id();
     } while (missing_ids.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
     std::map<std::string, git_oid> updates{
-        {std::string(kWorkspaceRef), imported},
+        {*workspace_reference, imported},
         {std::string(kChangePrefix) + id, imported}};
     updates.merge(missing_ids);
     record(updates, {}, head_for_workspace(imported), "gg import Git state");
@@ -314,6 +315,5 @@ void Repository::untrack_paths(const std::vector<std::string>& paths) const {
   }
   write_tracking(*this, state);
 }
-
 
 }  // namespace gg::detail

@@ -171,11 +171,29 @@ std::map<std::string, git_oid> Repository::data_refs() const {
         starts_with(name, kRemoteTagPrefix) ||
         starts_with(name, kBookmarkTrackingPrefix) ||
         starts_with(name, kTagTrackingPrefix) ||
-        starts_with(name, "refs/gg/workspaces/")) {
+        starts_with(name, kWorkspacePrefix)) {
       refs.emplace(name, *git_reference_target(resolved.get()));
     }
   }
   return refs;
+}
+
+std::optional<std::string> Repository::workspace_ref() const {
+  std::optional<std::string> result;
+  for (const auto& [name, oid] : data_refs()) {
+    (void)oid;
+    if (!starts_with(name, kWorkspacePrefix)) continue;
+    if (result.has_value()) {
+      throw UserError("multiple gg workspaces are not supported yet");
+    }
+    result = name;
+  }
+  return result;
+}
+
+std::optional<git_oid> Repository::workspace() const {
+  const auto reference = workspace_ref();
+  return reference.has_value() ? ref_target(*reference) : std::nullopt;
 }
 
 std::map<std::string, git_oid> Repository::rewrite_refs() const {
