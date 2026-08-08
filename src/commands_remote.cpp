@@ -178,12 +178,141 @@ void render_operation_diff(Repository& repo,
   }
 }
 
+enum class TrackedRefKind { bookmark, tag };
+
+struct TrackingCandidate {
+  std::string name;
+  std::string remote;
+  git_oid target;
+};
+
+std::string tracking_reference(TrackedRefKind kind,
+                               std::string_view remote,
+                               std::string_view name) {
+  const std::string_view prefix = kind == TrackedRefKind::bookmark
+                                      ? kBookmarkTrackingPrefix
+                                      : kTagTrackingPrefix;
+  return std::string(prefix) + std::string(remote) + "/" + std::string(name);
+}
+
+std::vector<TrackingCandidate> tracking_candidates(Repository& repo,
+                                                   TrackedRefKind kind,
+                                                   bool tracked) {
+  std::vector<TrackingCandidate> candidates;
+  const std::string_view prefix =
+      tracked ? (kind == TrackedRefKind::bookmark ? kBookmarkTrackingPrefix
+                                                   : kTagTrackingPrefix)
+              : (kind == TrackedRefKind::bookmark ? "refs/remotes/"
+                                                   : kRemoteTagPrefix);
+  for (const auto& [reference, oid] : repo.data_refs()) {
+    if (!starts_with(reference, prefix)) continue;
+    const std::string suffix = reference.substr(prefix.size());
+    if (kind == TrackedRefKind::bookmark) {
+      const std::size_t slash = suffix.find('/');
+      if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
+      const std::string remote = suffix.substr(0, slash);
+      const std::string name = suffix.substr(slash + 1);
+      if (!tracked && name == "HEAD") continue;
+      candidates.push_back({name, remote, oid});
+    } else if (tracked) {
+      const std::size_t slash = suffix.find('/');
+      if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
+      candidates.push_back(
+          {suffix.substr(slash + 1), suffix.substr(0, slash), oid});
+    } else {
+      constexpr std::string_view marker = "/tags/";
+      const std::size_t separator = suffix.find(marker);
+      if (separator == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
+      candidates.push_back({suffix.substr(separator + marker.size()),
+                            suffix.substr(0, separator), oid});
+    }
+  }
+  return candidates;
+}
+
+void command_tracking(Repository& repo,
+                      const std::vector<std::string>& names,
+                      const std::vector<std::string>& remotes,
+                      TrackedRefKind kind,
+                      bool track,
+                      std::ostream& output) {
+  bool has_symbols = false;
+  bool has_patterns = false;
+  for (const std::string& name : names) {
+    const std::size_t at = name.rfind('@');
+    const bool symbol =  // GG_COV_EXCL_BRANCH
+        name.find(':') == std::string::npos && at != 0 &&  // GG_COV_EXCL_BRANCH
+        at != std::string::npos && at + 1 < name.size();
+    has_symbols = has_symbols || symbol;  // GG_COV_EXCL_BRANCH
+    has_patterns = has_patterns || !symbol;  // GG_COV_EXCL_BRANCH
+  }
+  if (has_symbols && has_patterns) {
+    throw UserError("cannot mix name patterns and name@remote symbols");
+  }
+  if (has_symbols && !remotes.empty()) {
+    throw UserError("--remote cannot be used with name@remote symbols");
+  }
+
+  const std::vector<TrackingCandidate> candidates =
+      tracking_candidates(repo, kind, !track);
+  std::vector<TrackingCandidate> matches;
+  for (const TrackingCandidate& candidate : candidates) {
+    bool selected = false;
+    if (has_symbols) {
+      const std::string symbol = candidate.name + "@" + candidate.remote;
+      selected = std::ranges::find(names, symbol) != names.end();
+    } else {
+      selected =  // GG_COV_EXCL_BRANCH
+          any_string_pattern_matches(names, candidate.name) &&
+          (remotes.empty() ||  // GG_COV_EXCL_BRANCH
+           any_string_pattern_matches(remotes,  // GG_COV_EXCL_BRANCH
+                                      candidate.remote));  // GG_COV_EXCL_BRANCH
+    }
+    if (selected) matches.push_back(candidate);
+  }
+  if (matches.empty()) {
+    throw UserError(std::string("no remote ") +
+                    (kind == TrackedRefKind::bookmark ? "bookmarks" : "tags") +
+                    " matched");
+  }
+
+  std::map<std::string, git_oid> updates;
+  std::set<std::string> deletes;
+  for (const TrackingCandidate& candidate : matches) {
+    const std::string tracking =
+        tracking_reference(kind, candidate.remote, candidate.name);
+    if (track) {
+      updates.emplace(tracking, candidate.target);
+      const std::string local =
+          std::string(kind == TrackedRefKind::bookmark ? "refs/heads/"
+                                                        : "refs/tags/") +
+          candidate.name;
+      if (!repo.ref_target(local).has_value()) {
+        updates.emplace(local, candidate.target);
+      }
+    } else {
+      deletes.insert(tracking);
+    }
+    output << (track ? "Tracked " : "Untracked ") << candidate.name << '@'
+           << candidate.remote << ".\n";
+  }
+  repo.record(std::move(updates), std::move(deletes), repo.head_state(),
+              track ? "gg track remote ref" : "gg untrack remote ref");
+}
+
 }  // namespace
 
 void command_bookmark(Repository& repo,
                       const BookmarkCommand& options,
                       std::ostream& output) {
   repo.sync_workspace();
+  if (options.action == BookmarkAction::track ||
+      options.action == BookmarkAction::untrack) {
+    command_tracking(repo, options.names, options.remotes,
+                     TrackedRefKind::bookmark,
+                     options.action == BookmarkAction::track, output);
+    return;
+  }
   if (options.action == BookmarkAction::list) {
     if (options.conflicted) return;
     if (!options.template_value.empty()) {
@@ -219,6 +348,12 @@ void command_bookmark(Repository& repo,
         const std::string remote = remote_bookmark.substr(0, slash);
         name = remote_bookmark.substr(slash + 1);
         if (name == "HEAD") continue;
+        if (options.tracked &&
+            !repo.ref_target(tracking_reference(
+                                 TrackedRefKind::bookmark, remote, name))
+                 .has_value()) {
+          continue;
+        }
         if (!options.remotes.empty() &&
             !any_string_pattern_matches(options.remotes, remote)) {
           continue;
@@ -273,6 +408,18 @@ void command_bookmark(Repository& repo,
           if (starts_with(remote, "refs/remotes/") &&
               remote.ends_with(suffix)) {
             deletes.insert(remote);
+          }
+        }
+      }
+    }
+    if (options.action == BookmarkAction::forget) {
+      for (const std::string& name : matched_names) {
+        const std::string suffix = "/" + name;
+        for (const auto& [reference, oid] : repo.data_refs()) {
+          (void)oid;
+          if (starts_with(reference, kBookmarkTrackingPrefix) &&  // GG_COV_EXCL_BRANCH
+              reference.ends_with(suffix)) {
+            deletes.insert(reference);
           }
         }
       }
@@ -420,6 +567,12 @@ void command_tag(Repository& repo,
                  const TagCommand& options,
                  std::ostream& output) {
   repo.sync_workspace();
+  if (options.action == TagAction::track ||
+      options.action == TagAction::untrack) {
+    command_tracking(repo, options.names, options.remotes, TrackedRefKind::tag,
+                     options.action == TagAction::track, output);
+    return;
+  }
   const auto tag_target = [&](std::string_view reference)
       -> std::optional<git_oid> {
     git_object* raw_object = nullptr;
@@ -472,6 +625,12 @@ void command_tag(Repository& repo,
         if (separator == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
         const std::string remote = remote_tag.substr(0, separator);
         name = remote_tag.substr(separator + marker.size());
+        if (options.tracked &&
+            !repo.ref_target(
+                     tracking_reference(TrackedRefKind::tag, remote, name))
+                 .has_value()) {
+          continue;
+        }
         if (!options.remotes.empty() &&
             !any_string_pattern_matches(options.remotes, remote)) {
           continue;
@@ -656,24 +815,38 @@ void command_fetch(Repository& repo,
     const AdvertisedRemoteRefs advertised = advertised_remote_refs(remote.get());
     std::vector<std::string> branches = matching_names(
         options.branches, advertised.branches, "branch");
+    const std::string remote_prefix = "refs/remotes/" + name + "/";
     const std::string remote_tag_prefix =
         std::string(kRemoteTagPrefix) + name + "/tags/";
+    const std::string bookmark_tracking_prefix =
+        std::string(kBookmarkTrackingPrefix) + name + "/";
+    const std::string tag_tracking_prefix =
+        std::string(kTagTrackingPrefix) + name + "/";
+    std::set<std::string> known_tags;
     std::set<std::string> tracked_tags;
     for (const auto& [reference, oid] : repo.data_refs()) {
       (void)oid;
       if (starts_with(reference, remote_tag_prefix)) {
-        tracked_tags.insert(reference.substr(remote_tag_prefix.size()));
+        known_tags.insert(reference.substr(remote_tag_prefix.size()));
+      } else if (starts_with(reference, tag_tracking_prefix)) {
+        tracked_tags.insert(reference.substr(tag_tracking_prefix.size()));
       }
     }
     if (options.tracked) {
-      const std::string prefix = "refs/remotes/" + name + "/";
       for (const auto& [reference, oid] : repo.data_refs()) {
         (void)oid;
-        if (starts_with(reference, prefix) && reference != prefix + "HEAD") {
-          branches.push_back(reference.substr(prefix.size()));
+        if (!starts_with(reference, bookmark_tracking_prefix)) continue;
+        const std::string branch =
+            reference.substr(bookmark_tracking_prefix.size());
+        if (std::ranges::find(advertised.branches, branch) !=
+            advertised.branches.end()) {
+          branches.push_back(branch);
+        } else {
+          tracking_deletes.insert(reference);
+          tracking_deletes.insert(remote_prefix + branch);
         }
       }
-      if (branches.empty() && tracked_tags.empty()) {
+      if (branches.empty() && tracked_tags.empty()) {  // GG_COV_EXCL_BRANCH
         output << "No tracked refs to fetch from " << name << '\n';
         continue;
       }
@@ -694,6 +867,7 @@ void command_fetch(Repository& repo,
           tags.push_back(tag);
         } else {
           tracking_deletes.insert(remote_tag_prefix + tag);
+          tracking_deletes.insert(tag_tracking_prefix + tag);
         }
       }
     }
@@ -714,16 +888,17 @@ void command_fetch(Repository& repo,
     if (!storage.empty()) {
       fetch_options.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE;
     }
-    if (!options.tracked || !storage.empty()) {
+    if (!options.tracked || !storage.empty()) {  // GG_COV_EXCL_BRANCH
       check(git_remote_fetch(remote.get(),
                              storage.empty() ? nullptr : &refspecs,
                              &fetch_options, "gg fetch"),
             "fetch remote");
     }
     if (default_selection) {
-      for (const std::string& tag : tracked_tags) {
+      for (const std::string& tag : known_tags) {
         if (!remote_tags.contains(tag)) {
           tracking_deletes.insert(remote_tag_prefix + tag);
+          tracking_deletes.insert(tag_tracking_prefix + tag);
         }
       }
       tags.clear();
@@ -738,10 +913,33 @@ void command_fetch(Repository& repo,
       if (!local.has_value()) continue;
       if (!(*local == advertised)) continue;
       tracking_updates[remote_tag_prefix + tag] = advertised;
+      tracking_updates[tag_tracking_prefix + tag] = advertised;
+    }
+    if (!options.tracked) {
+      std::vector<std::string> fetched_branches = branches;
+      if (default_selection) {
+        fetched_branches.clear();
+        for (const auto& [reference, oid] : repo.data_refs()) {
+          (void)oid;
+          if (starts_with(reference, remote_prefix) &&  // GG_COV_EXCL_BRANCH
+              reference != remote_prefix + "HEAD") {  // GG_COV_EXCL_BRANCH
+            fetched_branches.push_back(reference.substr(remote_prefix.size()));
+          }
+        }
+      }
+      for (const std::string& branch : fetched_branches) {
+        tracking_updates[bookmark_tracking_prefix + branch] =
+            *repo.ref_target(remote_prefix + branch);
+      }
+    } else {
+      for (const std::string& branch : branches) {
+        tracking_updates[bookmark_tracking_prefix + branch] =
+            *repo.ref_target(remote_prefix + branch);
+      }
     }
     output << "Fetched " << name << '\n';
   }
-  repo.apply_refs(tracking_updates, tracking_deletes, "track fetched tags");
+  repo.apply_refs(tracking_updates, tracking_deletes, "track fetched refs");
   repo.record(repo.missing_change_ids(), {}, repo.head_state(), "gg fetch");
 }
 
@@ -845,16 +1043,24 @@ void command_push(Repository& repo,
   const std::string remote_prefix = "refs/remotes/" + name + "/";
   const std::string remote_tag_prefix =
       std::string(kRemoteTagPrefix) + name + "/tags/";
+  const std::string bookmark_tracking_prefix =
+      std::string(kBookmarkTrackingPrefix) + name + "/";
+  const std::string tag_tracking_prefix =
+      std::string(kTagTrackingPrefix) + name + "/";
   if (options.tracked || options.deleted) {
     for (const auto& [reference, oid] : refs) {
       (void)oid;
       std::string local;
-      if (starts_with(reference, remote_prefix)) {
-        const std::string bookmark = reference.substr(remote_prefix.size());
-        if (bookmark == "HEAD") continue;
+      std::string remote_tracking;
+      if (starts_with(reference, bookmark_tracking_prefix)) {
+        const std::string bookmark =
+            reference.substr(bookmark_tracking_prefix.size());
         local = "refs/heads/" + bookmark;
-      } else if (starts_with(reference, remote_tag_prefix)) {
-        local = "refs/tags/" + reference.substr(remote_tag_prefix.size());
+        remote_tracking = remote_prefix + bookmark;
+      } else if (starts_with(reference, tag_tracking_prefix)) {
+        const std::string tag = reference.substr(tag_tracking_prefix.size());
+        local = "refs/tags/" + tag;
+        remote_tracking = remote_tag_prefix + tag;
       } else {
         continue;
       }
@@ -864,6 +1070,7 @@ void command_push(Repository& repo,
       if (options.deleted && !repo.ref_target(local).has_value()) {
         updates.emplace(local, "");
         remote_deletes.insert(reference);
+        remote_deletes.insert(remote_tracking);
       }
     }
   }
@@ -914,12 +1121,16 @@ void command_push(Repository& repo,
     constexpr std::string_view head_prefix = "refs/heads/";
     constexpr std::string_view tag_prefix = "refs/tags/";
     if (starts_with(destination, head_prefix)) {
+      const std::string bookmark = destination.substr(head_prefix.size());
       local_updates.emplace(
-          remote_prefix + destination.substr(head_prefix.size()), target);
+          remote_prefix + bookmark, target);
+      local_updates.emplace(bookmark_tracking_prefix + bookmark, target);
     } else {
+      const std::string tag = destination.substr(tag_prefix.size());
+      const git_oid tag_target = *repo.ref_target(destination);
       local_updates.emplace(
-          remote_tag_prefix + destination.substr(tag_prefix.size()),
-          *repo.ref_target(destination));
+          remote_tag_prefix + tag, tag_target);
+      local_updates.emplace(tag_tracking_prefix + tag, tag_target);
     }
   }
   repo.record(std::move(local_updates), std::move(remote_deletes),
@@ -1112,17 +1323,26 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
         repo.set_head({true, "refs/heads/" + selected_branches.front()});
       }
     }
-    std::map<std::string, git_oid> tracked_tags;
+    std::map<std::string, git_oid> tracked_refs;
     for (const auto& [reference, oid] : repo.data_refs()) {
       constexpr std::string_view tag_prefix = "refs/tags/";
-      if (starts_with(reference, tag_prefix)) {
-        tracked_tags.emplace(std::string(kRemoteTagPrefix) + options.remote +
-                                 "/tags/" +
-                                 reference.substr(tag_prefix.size()),
+      if (starts_with(reference, remote_prefix) &&  // GG_COV_EXCL_BRANCH
+          reference != remote_prefix + "HEAD") {  // GG_COV_EXCL_BRANCH
+        tracked_refs.emplace(std::string(kBookmarkTrackingPrefix) +
+                                 options.remote + "/" +
+                                 reference.substr(remote_prefix.size()),
+                             oid);
+      } else if (starts_with(reference, tag_prefix)) {
+        const std::string tag = reference.substr(tag_prefix.size());
+        tracked_refs.emplace(std::string(kRemoteTagPrefix) + options.remote +
+                                 "/tags/" + tag,
+                             oid);
+        tracked_refs.emplace(std::string(kTagTrackingPrefix) + options.remote +
+                                 "/" + tag,
                              oid);
       }
     }
-    repo.apply_refs(tracked_tags, {}, "track cloned tags");
+    repo.apply_refs(tracked_refs, {}, "track cloned refs");
     command_new(repo, NewCommand{}, output);
   } catch (...) {
     std::error_code error;

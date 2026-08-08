@@ -219,7 +219,9 @@ void Repository::restore_operation(const git_oid& operation_oid,
   }
   for (auto iterator = target.refs.begin(); iterator != target.refs.end();) {
     const bool remote = starts_with(iterator->first, "refs/remotes/") ||
-                        starts_with(iterator->first, kRemoteTagPrefix);
+                        starts_with(iterator->first, kRemoteTagPrefix) ||
+                        starts_with(iterator->first, kBookmarkTrackingPrefix) ||
+                        starts_with(iterator->first, kTagTrackingPrefix);
     if ((remote && restore_remote_tracking) ||
         (!remote && restore_repository)) {
       iterator = target.refs.erase(iterator);
@@ -229,7 +231,9 @@ void Repository::restore_operation(const git_oid& operation_oid,
   }
   for (const auto& [name, oid] : source.refs) {
     const bool remote = starts_with(name, "refs/remotes/") ||
-                        starts_with(name, kRemoteTagPrefix);
+                        starts_with(name, kRemoteTagPrefix) ||
+                        starts_with(name, kBookmarkTrackingPrefix) ||
+                        starts_with(name, kTagTrackingPrefix);
     if ((remote && restore_remote_tracking) ||
         (!remote && restore_repository)) {
       target.refs[name] = oid;

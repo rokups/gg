@@ -275,6 +275,12 @@ std::vector<std::string> repository_replay_arguments(
               case BookmarkAction::rename:
                 result.emplace_back("rename");
                 break;
+              case BookmarkAction::track:
+                result.emplace_back("track");
+                break;
+              case BookmarkAction::untrack:
+                result.emplace_back("untrack");
+                break;
             }
             result.insert(result.end(), value.names.begin(), value.names.end());
             for (const std::string& remote : value.remotes) {
@@ -320,6 +326,10 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("set");
             } else if (value.action == TagAction::erase) {
               result.emplace_back("delete");
+            } else if (value.action == TagAction::track) {
+              result.emplace_back("track");
+            } else if (value.action == TagAction::untrack) {
+              result.emplace_back("untrack");
             } else {
               result.emplace_back("list");
             }

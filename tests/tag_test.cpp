@@ -45,6 +45,7 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
   const git_oid base = ref("refs/tags/base");
   const git_oid current = ref("refs/tags/v1");
   set_ref("refs/gg/remotes/origin/tags/v1", current);
+  set_ref("refs/gg/remotes/origin/tags/remote-only", current);
   set_ref("refs/gg/remotes/backup/tags/base", base);
   EXPECT_EQ(invoke({"tag", "list"}).output.find("@origin"),
             std::string::npos);
@@ -56,6 +57,11 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
   EXPECT_NE(origin.output.find("v1@origin:"), std::string::npos);
   EXPECT_EQ(origin.output.find("base@backup:"), std::string::npos);
   EXPECT_EQ(origin.output.find("v1:"), std::string::npos);
+  ASSERT_EQ(invoke({"tag", "track", "v1@origin"}).code, 0);
+  ASSERT_EQ(invoke({"tag", "track", "glob:b*", "--remote", "backup"}).code,
+            0);
+  ASSERT_EQ(invoke({"tag", "track", "glob:remote-*"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/tags/remote-only"));
   const Result tracked = invoke({"tag", "list", "--tracked"});
   EXPECT_NE(tracked.output.find("v1@origin:"), std::string::npos);
   EXPECT_NE(tracked.output.find("base@backup:"), std::string::npos);
@@ -64,6 +70,20 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
       invoke({"tag", "list", "--tracked", "--remote", "origin"});
   EXPECT_NE(tracked_origin.output.find("v1@origin:"), std::string::npos);
   EXPECT_EQ(tracked_origin.output.find("base@backup:"), std::string::npos);
+
+  EXPECT_TRUE(has_ref("refs/gg/tracking/tags/origin/v1"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/tags/backup/base"));
+  EXPECT_NE(invoke({"tag", "list", "--tracked"})
+                .output.find("base@backup:"),
+            std::string::npos);
+  ASSERT_EQ(invoke({"tag", "untrack", "glob:v*", "--remote", "origin"})
+                .code,
+            0);
+  EXPECT_FALSE(has_ref("refs/gg/tracking/tags/origin/v1"));
+  EXPECT_EQ(invoke({"tag", "list", "--tracked", "--remote", "origin"})
+                .output.find("v1@origin:"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"tag", "untrack", "v1@origin"}).code, 2);
 
   ASSERT_EQ(invoke({"tag", "set", "v1"}).code, 0);
   ASSERT_EQ(invoke({"new"}).code, 0);

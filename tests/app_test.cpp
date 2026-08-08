@@ -97,6 +97,10 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"bookmark", "forget"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "rename", "one"}).code, 2);
   EXPECT_EQ(invoke({"bookmark", "rename", "one", "two", "three"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "track"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "untrack"}).code, 2);
+  EXPECT_EQ(invoke({"tag", "track"}).code, 2);
+  EXPECT_EQ(invoke({"tag", "untrack"}).code, 2);
   EXPECT_EQ(invoke({"git"}).code, 2);
   EXPECT_EQ(invoke({"git", "wat"}).code, 2);
   EXPECT_EQ(run({"git", "fetch"}).code, 2);

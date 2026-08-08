@@ -561,6 +561,22 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->expected(2);
   rename->add_flag("--overwrite-existing", bookmark_rename.overwrite_existing,
                    "Overwrite the destination bookmark");
+  BookmarkCommand bookmark_track;
+  bookmark_track.action = BookmarkAction::track;
+  auto* track = bookmark->add_subcommand("track", "Track remote bookmarks");
+  track->add_option("names", bookmark_track.names, "Bookmark patterns or symbols")
+      ->required();
+  track->add_option("--remote", bookmark_track.remotes, "Remote pattern");
+  BookmarkCommand bookmark_untrack;
+  bookmark_untrack.action = BookmarkAction::untrack;
+  auto* untrack =
+      bookmark->add_subcommand("untrack", "Stop tracking remote bookmarks");
+  untrack
+      ->add_option("names", bookmark_untrack.names,
+                   "Bookmark patterns or symbols")
+      ->required();
+  untrack->add_option("--remote", bookmark_untrack.remotes,
+                      "Remote pattern");
   BookmarkCommand bookmark_list;
   auto* list = bookmark->add_subcommand("list", "List bookmarks");
   list->add_option("names", bookmark_list.names, "Bookmark names");
@@ -607,6 +623,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* tag_delete = tag->add_subcommand("delete", "Delete tags");
   tag_delete->add_option("names", tag_delete_value.names, "Tag names")
       ->required();
+  TagCommand tag_track_value;
+  tag_track_value.action = TagAction::track;
+  auto* tag_track = tag->add_subcommand("track", "Track remote tags");
+  tag_track->add_option("names", tag_track_value.names, "Tag patterns or symbols")
+      ->required();
+  tag_track->add_option("--remote", tag_track_value.remotes, "Remote pattern");
+  TagCommand tag_untrack_value;
+  tag_untrack_value.action = TagAction::untrack;
+  auto* tag_untrack = tag->add_subcommand("untrack", "Stop tracking remote tags");
+  tag_untrack
+      ->add_option("names", tag_untrack_value.names, "Tag patterns or symbols")
+      ->required();
+  tag_untrack->add_option("--remote", tag_untrack_value.remotes,
+                          "Remote pattern");
   TagCommand tag_list_value;
   auto* tag_list = tag->add_subcommand("list", "List tags");
   tag_list->add_option("names", tag_list_value.names, "Tag names");
@@ -1019,12 +1049,20 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(bookmark_forget)};
   } else if (rename->parsed()) {
     command = RepositoryCommand{std::move(bookmark_rename)};
+  } else if (track->parsed()) {
+    command = RepositoryCommand{std::move(bookmark_track)};
+  } else if (untrack->parsed()) {
+    command = RepositoryCommand{std::move(bookmark_untrack)};
   } else if (list->parsed() || bookmark->parsed()) {
     command = RepositoryCommand{std::move(bookmark_list)};
   } else if (tag_set->parsed()) {
     command = RepositoryCommand{std::move(tag_set_value)};
   } else if (tag_delete->parsed()) {
     command = RepositoryCommand{std::move(tag_delete_value)};
+  } else if (tag_track->parsed()) {
+    command = RepositoryCommand{std::move(tag_track_value)};
+  } else if (tag_untrack->parsed()) {
+    command = RepositoryCommand{std::move(tag_untrack_value)};
   } else if (tag_list->parsed()) {
     command = RepositoryCommand{std::move(tag_list_value)};
   } else if (clone->parsed()) {

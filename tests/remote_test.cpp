@@ -47,6 +47,7 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   const git_oid second = ref("refs/heads/beta");
   set_ref("refs/remotes/origin/alpha", first);
   set_ref("refs/remotes/origin/HEAD", second);
+  set_ref("refs/remotes/origin/remote-only", second);
   set_ref("refs/remotes/backup/beta", second);
 
   const Result local = invoke({"bookmark", "list"});
@@ -116,6 +117,13 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   EXPECT_EQ(invoke({"bookmark", "list", "--sort", all_sort_keys}).code, 0);
   EXPECT_EQ(invoke({"bookmark", "list", "--sort", "unknown"}).code, 2);
 
+  ASSERT_EQ(invoke({"bookmark", "track", "alpha@origin"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "track", "glob:b*", "--remote",
+                    "glob:back*"})
+                .code,
+            0);
+  ASSERT_EQ(invoke({"bookmark", "track", "glob:remote-*"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/heads/remote-only"));
   const Result tracked = invoke({"bookmark", "list", "--tracked"});
   ASSERT_EQ(tracked.code, 0) << tracked.error;
   EXPECT_NE(tracked.output.find("alpha@origin:"), std::string::npos);
@@ -139,6 +147,28 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--conflicted"})
                 .code,
             2);
+
+  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/origin/alpha"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/backup/beta"));
+  const Result explicitly_tracked = invoke({"bookmark", "list", "--tracked"});
+  EXPECT_NE(explicitly_tracked.output.find("alpha@origin:"),
+            std::string::npos);
+  EXPECT_NE(explicitly_tracked.output.find("beta@backup:"),
+            std::string::npos);
+  ASSERT_EQ(invoke({"bookmark", "untrack", "alpha@origin"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/tracking/bookmarks/origin/alpha"));
+  EXPECT_EQ(invoke({"bookmark", "list", "--tracked", "--remote", "origin"})
+                .output.find("alpha@origin:"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"bookmark", "untrack", "alpha@origin"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "track", "@origin"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "track", "alpha@"}).code, 2);
+  EXPECT_EQ(invoke({"bookmark", "track", "alpha@origin", "glob:b*"}).code,
+            2);
+  EXPECT_EQ(invoke({"bookmark", "track", "alpha@origin", "--remote",
+                    "origin"})
+                .code,
+            2);
 }
 
 TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
@@ -160,9 +190,11 @@ TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
   const git_oid target = ref("refs/heads/occupied");
   set_ref("refs/remotes/origin/occupied", target);
   set_ref("refs/remotes/origin/other", target);
+  set_ref("refs/gg/tracking/bookmarks/origin/occupied", target);
   ASSERT_EQ(invoke({"bookmark", "forget", "glob:occup*"}).code, 0);
   EXPECT_FALSE(has_ref("refs/heads/occupied"));
   EXPECT_TRUE(has_ref("refs/remotes/origin/occupied"));
+  EXPECT_FALSE(has_ref("refs/gg/tracking/bookmarks/origin/occupied"));
 
   set_ref("refs/heads/occupied", target);
   ASSERT_EQ(invoke({"bookmark", "forget", "occupied", "--include-remotes"})
@@ -278,9 +310,11 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   ASSERT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
   ASSERT_EQ(invoke({"push", "--bookmark", "topic"}).code, 0);
   EXPECT_TRUE(has_ref("refs/remotes/origin/topic"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/origin/topic"));
   const git_oid topic_target = ref("refs/heads/topic");
   set_ref("refs/remotes/origin/HEAD", topic_target);
   set_ref("refs/remotes/origin/ghost", topic_target);
+  set_ref("refs/gg/tracking/bookmarks/origin/ghost", topic_target);
   const Result tracked = invoke({"push", "--tracked", "--dry-run"});
   EXPECT_NE(tracked.output.find("refs/heads/topic"), std::string::npos);
   EXPECT_EQ(tracked.output.find("refs/heads/ghost"), std::string::npos);
@@ -354,6 +388,8 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   ASSERT_EQ(invoke({"push", "--deleted"}).code, 0);
   EXPECT_FALSE(has_ref("refs/remotes/origin/gone"));
   EXPECT_FALSE(has_ref("refs/gg/remotes/origin/tags/gone-tag"));
+  EXPECT_FALSE(has_ref("refs/gg/tracking/bookmarks/origin/gone"));
+  EXPECT_FALSE(has_ref("refs/gg/tracking/tags/origin/gone-tag"));
   EXPECT_NE(invoke({"push", "--deleted"}).output.find("No refs to push."),
             std::string::npos);
   const Result dry_run =
@@ -418,6 +454,12 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
     EXPECT_TRUE(cloned_repo
                     .ref_target("refs/gg/remotes/upstream/tags/release")
                     .has_value());
+    EXPECT_TRUE(cloned_repo
+                    .ref_target("refs/gg/tracking/bookmarks/upstream/topic")
+                    .has_value());
+    EXPECT_TRUE(cloned_repo
+                    .ref_target("refs/gg/tracking/tags/upstream/release")
+                    .has_value());
     EXPECT_FALSE(cloned_repo.ref_target("refs/tags/ignored").has_value());
     EXPECT_FALSE(cloned_repo
                      .ref_target("refs/gg/remotes/upstream/tags/ignored")
@@ -454,6 +496,9 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
     EXPECT_TRUE(tag_repo.ref_target("refs/tags/release").has_value());
     EXPECT_TRUE(tag_repo
                     .ref_target("refs/gg/remotes/origin/tags/release")
+                    .has_value());
+    EXPECT_TRUE(tag_repo
+                    .ref_target("refs/gg/tracking/tags/origin/release")
                     .has_value());
     EXPECT_FALSE(tag_repo.ref_target("refs/tags/ignored").has_value());
     EXPECT_FALSE(tag_repo.ref_target("refs/heads/topic").has_value());
@@ -593,6 +638,7 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
 
   ASSERT_EQ(invoke({"fetch", "--remote", "origin", "-b", "one"}).code, 0);
   EXPECT_TRUE(has_ref("refs/remotes/origin/one"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/origin/one"));
   EXPECT_FALSE(has_ref("refs/remotes/origin/two"));
   EXPECT_FALSE(has_ref("refs/tags/release"));
   remove_ref("refs/remotes/origin/one");
@@ -631,6 +677,8 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   EXPECT_TRUE(has_ref("refs/tags/stable"));
   EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/release"));
   EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/stable"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/tags/origin/release"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/tags/origin/stable"));
   EXPECT_NE(invoke({"tag", "list", "--tracked", "--remote", "origin"})
                 .output.find("release@origin:"),
             std::string::npos);
@@ -661,6 +709,8 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   ASSERT_EQ(invoke({"fetch", "--tracked", "--remote", "backup"}).code, 0);
   EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/release"));
   EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/stable"));
+  ASSERT_EQ(invoke({"bookmark", "untrack", "one@backup"}).code, 0);
+  remove_ref("refs/remotes/backup/one");
   const Result no_tracked = invoke({"fetch", "--tracked", "--remote", "backup"});
   EXPECT_NE(no_tracked.output.find("No tracked refs to fetch"),
             std::string::npos);

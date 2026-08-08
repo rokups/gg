@@ -150,6 +150,8 @@ std::map<std::string, git_oid> Repository::data_refs() const {
         starts_with(name, "refs/remotes/") ||
         starts_with(name, "refs/gg/changes/") ||
         starts_with(name, kRemoteTagPrefix) ||
+        starts_with(name, kBookmarkTrackingPrefix) ||
+        starts_with(name, kTagTrackingPrefix) ||
         starts_with(name, "refs/gg/workspaces/")) {
       refs.emplace(name, *git_reference_target(resolved.get()));
     }
@@ -161,7 +163,11 @@ std::map<std::string, git_oid> Repository::rewrite_refs() const {
   auto refs = data_refs();
   for (auto iterator = refs.begin(); iterator != refs.end();) {
     if (starts_with(iterator->first, "refs/remotes/") ||
-        starts_with(iterator->first, kRemoteTagPrefix)) {
+        starts_with(iterator->first, kRemoteTagPrefix) ||
+        starts_with(iterator->first,  // GG_COV_EXCL_BRANCH
+                    kBookmarkTrackingPrefix) ||  // GG_COV_EXCL_BRANCH
+        starts_with(iterator->first,  // GG_COV_EXCL_BRANCH
+                    kTagTrackingPrefix)) {  // GG_COV_EXCL_BRANCH
       iterator = refs.erase(iterator);
     } else {
       ++iterator;

@@ -152,7 +152,9 @@ enum class BookmarkAction {
   move,
   erase,
   forget,
-  rename
+  rename,
+  track,
+  untrack
 };
 struct BookmarkCommand {
   BookmarkAction action{BookmarkAction::list};
@@ -171,7 +173,7 @@ struct BookmarkCommand {
   bool overwrite_existing{false};
 };
 
-enum class TagAction { list, set, erase };
+enum class TagAction { list, set, erase, track, untrack };
 struct TagCommand {
   TagAction action{TagAction::list};
   std::vector<std::string> names;
