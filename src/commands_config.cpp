@@ -4,10 +4,12 @@
 
 #include "commands.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -22,6 +24,9 @@ enum class ConfigScope { user, repository, workspace };
 const std::map<std::string, std::string> kDefaultValues{
     {"revsets.bookmark-advance-to", "@"},
     {"ui.movement.edit", "false"}};
+const std::map<std::string, std::string> kEmptyTemplateValues{
+    {"name", ""},       {"value", ""},  {"overridden", ""},
+    {"source", ""},     {"path", ""}};  // GG_COV_EXCL_BRANCH
 
 std::string trim(std::string_view value) {
   const std::size_t first = value.find_first_not_of(" \t\r\n");
@@ -223,6 +228,11 @@ bool name_matches(std::string_view name, std::string_view filter) {
   return name.starts_with(std::string(filter) + ".");
 }
 
+void validate_config_template(std::string_view template_value) {
+  if (template_value.empty()) return;
+  (void)render_template(template_value, kEmptyTemplateValues);
+}
+
 }  // namespace
 
 std::optional<std::string> config_value(Repository& repo,
@@ -251,9 +261,6 @@ void command_config(Repository& repo,
                               (options.action == ConfigAction::set) |
                               (options.action == ConfigAction::unset);
   const std::optional<ConfigScope> scope = selected_scope(options, scope_required);
-  if (!options.template_value.empty()) {
-    throw UserError("config templates are not supported yet");
-  }
   const bool name_required = (options.action == ConfigAction::get) |
                              (options.action == ConfigAction::set) |
                              (options.action == ConfigAction::unset);
@@ -288,6 +295,8 @@ void command_config(Repository& repo,
     return;
   }
 
+  validate_config_template(options.template_value);
+
   const std::array<ConfigScope, 3> scopes{
       ConfigScope::user, ConfigScope::repository, ConfigScope::workspace};
   std::map<std::string, std::string> merged;
@@ -311,17 +320,30 @@ void command_config(Repository& repo,
       layered.push_back(entry);
     }
   }
-  const auto print = [&](const auto& entries) {
-    for (const auto& [name, value] : entries) {
-      if (name_matches(name, options.name)) {
+  const auto print = [&](std::string_view name, std::string_view value,
+                         bool overridden) {
+    if (name_matches(name, options.name)) {
+      if (options.template_value.empty()) {
         output << name << " = " << value << '\n';
+      } else {
+        auto values = kEmptyTemplateValues;
+        values["name"] = name;
+        values["value"] = value;
+        values["overridden"] = overridden ? "true" : "false";
+        output << render_template(options.template_value, values);
       }
     }
   };
   if (options.include_overridden) {
-    print(layered);
+    for (auto entry = layered.begin(); entry != layered.end(); ++entry) {
+      const bool overridden = std::ranges::any_of(
+          std::next(entry), layered.end(), [&](const auto& later) {
+            return later.first == entry->first;
+          });
+      print(entry->first, entry->second, overridden);
+    }
   } else {
-    print(merged);
+    for (const auto& [name, value] : merged) print(name, value, false);
   }
 }
 

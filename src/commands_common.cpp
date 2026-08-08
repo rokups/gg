@@ -471,17 +471,35 @@ void command_workspace(Repository& repo,
     output << root.string() << '\n';
     return;
   }
-  if (!options.template_value.empty()) {
-    throw UserError("workspace templates are not supported yet");
-  }
   if (!workspace.has_value()) {
+    if (!options.template_value.empty()) {
+      static const std::map<std::string, std::string> values{
+          {"name", ""},      {"target", ""},
+          {"root", ""},      {"commit_id", ""},
+          {"change_id", ""}, {"description", ""},
+          {"subject", ""},   {"author.name", ""},
+          {"author.email", ""},
+          {"committer.name", ""},
+          {"committer.email", ""},
+          {"bookmarks", ""},
+          {"working_copy", ""}};  // GG_COV_EXCL_BRANCH
+      (void)render_template(options.template_value, values);
+    }
     output << "No workspaces.\n";
     return;
   }
-  const auto id = repo.change_id(*workspace);
-  output << "default: "
-         << (id.has_value() ? repo.short_change_id(*id) : "--------") << ' '
-         << oid_string(*workspace, 8) << ' ' << root.string() << '\n';
+  if (!options.template_value.empty()) {
+    auto values = revision_template_values(repo, *workspace);
+    values["name"] = "default";
+    values["target"] = oid_string(*workspace);
+    values["root"] = root.string();
+    output << render_template(options.template_value, values);
+  } else {
+    const auto id = repo.change_id(*workspace);
+    output << "default: "
+           << (id.has_value() ? repo.short_change_id(*id) : "--------") << ' '
+           << oid_string(*workspace, 8) << ' ' << root.string() << '\n';
+  }
 }
 
 }  // namespace gg::detail

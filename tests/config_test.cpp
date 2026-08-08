@@ -27,6 +27,11 @@ TEST_F(RepositoryTest, SetsGetsListsAndUnsetsLayeredConfiguration) {
   EXPECT_EQ(std::count(default_override.output.begin(),
                        default_override.output.end(), '\n'),
             2);
+  EXPECT_EQ(invoke({"config", "list", "--include-defaults",
+                    "--include-overridden", "ui.movement.edit", "-T",
+                    "overridden ++ \"\\n\""})
+                .output,
+            "true\nfalse\n");
   ASSERT_EQ(invoke({"config", "unset", "--repo", "ui.movement.edit"}).code,
             0);
 
@@ -52,6 +57,11 @@ TEST_F(RepositoryTest, SetsGetsListsAndUnsetsLayeredConfiguration) {
   const Result listed = invoke({"config", "list", "ui"});
   EXPECT_NE(listed.output.find("ui.color = \"blue\""), std::string::npos);
   EXPECT_NE(listed.output.find("ui.number = 42"), std::string::npos);
+  EXPECT_EQ(invoke({"config", "list", "ui.number", "-T",
+                    "name ++ '=' ++ value ++ ':' ++ overridden ++ ':' ++ "
+                    "source ++ ':' ++ path ++ \"\\n\""})
+                .output,
+            "ui.number=42:false::\n");
   const Result overridden =
       invoke({"config", "list", "--include-overridden", "ui.color"});
   EXPECT_EQ(std::count(overridden.output.begin(), overridden.output.end(), '\n'),
@@ -84,7 +94,7 @@ TEST_F(RepositoryTest, ReportsConfigPathsAndValidatesRequests) {
   EXPECT_EQ(invoke({"config", "set", "--repo", "key", "1bad"}).code, 2);
   EXPECT_EQ(invoke({"config", "set", "--repo", "key", " "}).code, 2);
   EXPECT_EQ(invoke({"config", "unset", "--repo", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"config", "list", "-T", "name"}).code, 2);
+  EXPECT_EQ(invoke({"config", "list", "-T", "unknown"}).code, 2);
   EXPECT_EQ(invoke({"config", "path", "--repo", "--user"}).code, 2);
 }
 

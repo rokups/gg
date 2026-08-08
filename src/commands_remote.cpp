@@ -166,6 +166,27 @@ std::string operation_timestamp(const git_commit* operation) {
   return output.str();
 }
 
+std::map<std::string, std::string> operation_template_values(
+    Repository& repo,
+    const git_oid& oid,
+    const git_oid& newest,
+    const git_commit* operation,
+    std::string_view description) {
+  const std::optional<git_oid> previous = repo.operation_previous(oid);
+  const git_signature* author = git_commit_author(operation);
+  return {{"current_operation", oid == newest ? "true" : "false"},
+          {"description", std::string(description)},
+          {"id", oid_string(oid)},
+          {"attributes", ""},
+          {"tags", ""},
+          {"snapshot", "false"},
+          {"workspace_name", "default@"},
+          {"time", operation_timestamp(operation)},
+          {"user", std::string(author->name) + "@" + author->email},
+          {"root", previous.has_value() ? "false" : "true"},
+          {"parents", previous.has_value() ? oid_string(*previous) : ""}};
+}
+
 std::string head_text(const HeadState& head) {
   return std::string(head.symbolic ? "symbolic " : "detached ") + head.value;
 }
@@ -1239,9 +1260,6 @@ void command_operation_log(Repository& repo,
     output << "No operations.\n";
     return;
   }
-  if (!options.template_value.empty()) {
-    throw UserError("operation templates are not supported yet");
-  }
   const git_oid newest = *current;
   std::vector<git_oid> operations;
   while (current.has_value() && operations.size() < options.limit) {
@@ -1261,13 +1279,20 @@ void command_operation_log(Repository& repo,
                                      : OutputStyle::change_id)
              << ' ';
     }
-    output << styled(output, oid_string(oid, 8),
-                     oid == newest ? OutputStyle::current_operation_id
-                                   : OutputStyle::operation_id)
-           << ' '
-           << styled(output, operation_timestamp(operation.get()),
-                     OutputStyle::timestamp)
-           << ' ' << description << '\n';
+    if (!options.template_value.empty()) {
+      output << render_template(
+          options.template_value,
+          operation_template_values(repo, oid, newest, operation.get(),
+                                    description));
+    } else {
+      output << styled(output, oid_string(oid, 8),
+                       oid == newest ? OutputStyle::current_operation_id
+                                     : OutputStyle::operation_id)
+             << ' '
+             << styled(output, operation_timestamp(operation.get()),
+                       OutputStyle::timestamp)
+             << ' ' << description << '\n';
+    }
     if (options.op_diff) render_operation_diff(repo, oid, output);
     if (!options.no_graph && index + 1 < operations.size()) {
       output << "│\n";

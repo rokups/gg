@@ -136,6 +136,8 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   const std::string root = std::filesystem::weakly_canonical(path_).string();
   EXPECT_EQ(invoke({"workspace", "root"}).output, root + "\n");
   EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+  EXPECT_EQ(invoke({"workspace", "list", "-T", "name"}).output,
+            "No workspaces.\n");
   EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).code, 2);
 
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
@@ -144,8 +146,15 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   const Result listed = invoke({"workspace", "list"});
   EXPECT_NE(listed.output.find("default: "), std::string::npos);
   EXPECT_NE(listed.output.find(root), std::string::npos);
+  const Result templated = invoke(
+      {"workspace", "list", "-T",
+       "name ++ \" \" ++ target.short() ++ \" \" ++ root ++ \" \" ++ "
+       "working_copy ++ \"\\n\""});
+  ASSERT_EQ(templated.code, 0) << templated.error;
+  EXPECT_TRUE(templated.output.starts_with("default "));
+  EXPECT_TRUE(templated.output.ends_with(" " + root + " true\n"));
   EXPECT_EQ(invoke({"workspace", "root", "--name", "other"}).code, 2);
-  EXPECT_EQ(invoke({"workspace", "list", "-T", "name"}).code, 2);
+  EXPECT_EQ(invoke({"workspace", "list", "-T", "unknown"}).code, 2);
 }
 
 TEST_F(RepositoryTest, ReportsRenamedFiles) {
@@ -622,7 +631,25 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   const Result reversed = invoke({"operation", "log", "--reversed"});
   EXPECT_LT(reversed.output.find("initialize repository"),
             reversed.output.find("redo: restore to operation "));
-  EXPECT_EQ(invoke({"operation", "log", "-T", "description"}).code, 2);
+  const git_oid current = ref("refs/gg/operations/current");
+  const std::string current_id = git_oid_tostr_s(&current);
+  const Result templated = invoke(
+      {"operation", "log", "--limit", "1", "--no-graph", "-T",
+       "id.short(12) ++ \" \" ++ current_operation ++ \" \" ++ "
+       "description.first_line() ++ \" \" ++ snapshot ++ \" \" ++ "
+       "workspace_name ++ \" \" ++ time ++ \" \" ++ user ++ \" \" ++ "
+       "root ++ \" \" ++ parents.short() ++ \" \" ++ attributes ++ "
+       "tags ++ \"\\n\""});
+  ASSERT_EQ(templated.code, 0) << templated.error;
+  EXPECT_TRUE(templated.output.starts_with(current_id.substr(0, 12) +
+                                           " true redo: restore"));
+  const Result templated_states =
+      invoke({"operation", "log", "--no-graph", "-T",
+              "current_operation ++ \" \" ++ root ++ \" \" ++ "
+              "parents.short() ++ \"\\n\""});
+  EXPECT_NE(templated_states.output.find("true false "), std::string::npos);
+  EXPECT_NE(templated_states.output.find("false true \n"), std::string::npos);
+  EXPECT_EQ(invoke({"operation", "log", "-T", "unknown"}).code, 2);
   EXPECT_EQ(invoke({"operation", "log", "--limit", "word"}).code, 2);
 }
 
