@@ -172,14 +172,21 @@ class Repository {
   OperationState state() const;
 
   std::string serialize(const OperationState& state,
-                          std::optional<git_oid> previous) const;
+                          std::optional<git_oid> previous,
+                          std::string_view description) const;
 
   OperationState parse_operation(const git_oid& oid) const;
 
   std::optional<git_oid> operation_previous(const git_oid& oid) const;
 
+  std::string operation_description(const git_oid& oid) const;
+
+  std::optional<git_oid> operation_target(const git_oid& oid,
+                                            std::string_view prefix) const;
+
   git_oid create_operation(const OperationState& state,
-                             std::optional<git_oid> previous) const;
+                             std::optional<git_oid> previous,
+                             std::string_view description) const;
 
   std::optional<git_oid> operation() const;
 
@@ -207,7 +214,8 @@ class Repository {
                 const HeadState& head,
                 std::string_view description) const;
 
-  void restore_operation(const git_oid& operation_oid) const;
+  void restore_operation(const git_oid& operation_oid,
+                            std::string_view description = {}) const;
 
   std::map<std::string, git_oid> changes() const;
 

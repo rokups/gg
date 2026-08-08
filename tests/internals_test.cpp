@@ -69,7 +69,8 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
 
   detail::OperationState state = repo.state();
   state.refs["refs/heads/non-commit"] = tree_oid;
-  EXPECT_NO_THROW(repo.create_operation(state, std::nullopt));
+  EXPECT_NO_THROW(repo.create_operation(state, std::nullopt, "test operation"));
+  EXPECT_THROW(repo.create_operation(state, std::nullopt, ""), detail::GitError);
 }
 
 TEST_F(RepositoryTest, ReportsWorkspaceWithoutAStableChangeId) {
@@ -110,25 +111,72 @@ TEST_F(RepositoryTest, RejectsMalformedOperationSnapshots) {
   EXPECT_THROW(repo.parse_operation(raw_commit("")), detail::GitError);
 
   const git_oid bad_previous = raw_commit(
-      "gg-operation-v1\nwrong -\nhead S refs/heads/main\n");
+      "gg-operation-v2\nwrong -\ndescription test\nhead S refs/heads/main\n");
   EXPECT_THROW(repo.parse_operation(bad_previous), detail::GitError);
-  EXPECT_THROW(repo.parse_operation(raw_commit("gg-operation-v1\n")),
+  EXPECT_THROW(repo.parse_operation(raw_commit("gg-operation-v2\n")),
                detail::GitError);
+  const git_oid missing_description_line =
+      raw_commit("gg-operation-v2\nprevious -\n");
+  EXPECT_THROW(repo.parse_operation(missing_description_line), detail::GitError);
 
   const git_oid bad_head = raw_commit(
-      "gg-operation-v1\nprevious -\nhead X refs/heads/main\n");
+      "gg-operation-v2\nprevious -\ndescription test\nhead X refs/heads/main\n");
   EXPECT_THROW(repo.parse_operation(bad_head), detail::GitError);
   EXPECT_THROW(repo.parse_operation(raw_commit(
-                   "gg-operation-v1\nprevious -\n")),
+                   "gg-operation-v2\nprevious -\ndescription test\n")),
                detail::GitError);
 
   const git_oid bad_ref = raw_commit(
-      "gg-operation-v1\nprevious -\nhead S refs/heads/main\nwrong 0000000000000000000000000000000000000000 ref\n");
+      "gg-operation-v2\nprevious -\ndescription test\nhead S refs/heads/main\nwrong 0000000000000000000000000000000000000000 ref\n");
   EXPECT_THROW(repo.parse_operation(bad_ref), detail::GitError);
+  EXPECT_THROW(repo.parse_operation(raw_commit(
+                   "gg-operation-v2\nprevious -\ndescription test\n"
+                   "head S refs/heads/main\nref")),
+               detail::GitError);
   EXPECT_THROW(repo.operation_previous(bad_header), detail::GitError);
   EXPECT_THROW(repo.operation_previous(raw_commit(
-                   "gg-operation-v1\nwrong -\n")),
+                   "gg-operation-v2\nwrong -\n")),
                detail::GitError);
+
+  const git_oid empty_description = raw_commit(
+      "gg-operation-v2\nprevious -\ndescription \nhead S refs/heads/main\n");
+  EXPECT_THROW(repo.parse_operation(empty_description), detail::GitError);
+  const git_oid missing_description = raw_commit(
+      "gg-operation-v2\nprevious -\nhead S refs/heads/main\n");
+  EXPECT_THROW(repo.parse_operation(missing_description), detail::GitError);
+  const git_oid duplicate_description = raw_commit(
+      "gg-operation-v2\nprevious -\ndescription first\n"
+      "head S refs/heads/main\ndescription second\n");
+  EXPECT_THROW(repo.parse_operation(duplicate_description), detail::GitError);
+  const git_oid invalid_target = raw_commit(
+      "gg-operation-v2\nprevious -\n"
+      "description undo: restore to operation invalid\n"
+      "head S refs/heads/main\n");
+  EXPECT_THROW(repo.operation_target(invalid_target,
+                                     "undo: restore to operation "),
+               detail::GitError);
+  EXPECT_THROW(repo.operation_description(bad_header), detail::GitError);
+  EXPECT_THROW(repo.operation_description(raw_commit("")), detail::GitError);
+  EXPECT_THROW(repo.operation_description(raw_commit("gg-operation-v2\n")),
+               detail::GitError);
+  EXPECT_THROW(repo.operation_description(raw_commit(
+                   "gg-operation-v2\nwrong -\ndescription test\n")),
+               detail::GitError);
+  EXPECT_THROW(repo.operation_description(missing_description_line),
+               detail::GitError);
+  EXPECT_THROW(repo.operation_description(empty_description), detail::GitError);
+  EXPECT_THROW(repo.operation_description(missing_description), detail::GitError);
+  EXPECT_THROW(repo.parse_operation(raw_commit(
+                   "gg-operation-v1\nprevious -\ndescription legacy\n"
+                   "head S refs/heads/main\n")),
+               detail::GitError);
+
+  detail::OperationState state = repo.state();
+  const git_oid invalid_undo = repo.create_operation(
+      state, std::nullopt,
+      "undo: restore to operation " + detail::oid_string(ref("HEAD")));
+  set_ref(detail::kOperationRef, invalid_undo);
+  EXPECT_EQ(invoke({"redo"}).code, 1);
 }
 
 TEST_F(RepositoryTest, RejectsMalformedPendingRewrites) {
@@ -194,7 +242,8 @@ TEST_F(RepositoryTest, RestoresAnUnbornOperationWithoutAWorkspace) {
   detail::Repository repo(path_);
   detail::OperationState state;
   state.head = {true, "refs/heads/does-not-exist"};
-  const git_oid operation = repo.create_operation(state, std::nullopt);
+  const git_oid operation =
+      repo.create_operation(state, std::nullopt, "test operation");
   EXPECT_NO_THROW(repo.restore_operation(operation));
   EXPECT_FALSE(repo.head_oid().has_value());
 }

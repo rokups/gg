@@ -119,6 +119,12 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       app.add_subcommand("continue", "Continue a paused rewrite");
   auto* abort_rewrite = app.add_subcommand("abort", "Abort a paused rewrite");
   auto* undo = app.add_subcommand("undo", "Restore the previous operation");
+  auto* redo = app.add_subcommand("redo", "Redo the most recently undone operation");
+  auto* operation = app.add_subcommand("operation", "Manage operation history");
+  operation->alias("op");
+  operation->require_subcommand(1);
+  auto* operation_log =
+      operation->add_subcommand("log", "Show the operation log");
   auto* help = app.add_subcommand("help", "Print help");
   auto* version = app.add_subcommand("version", "Print version");
 
@@ -199,6 +205,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = AbortCommand{};
   } else if (undo->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UndoCommand{}};
+  } else if (redo->parsed()) {
+    command = RepositoryCommand{RedoCommand{}};
+  } else if (operation_log->parsed()) {  // GG_COV_EXCL_BRANCH
+    command = RepositoryCommand{OperationLogCommand{}};
   }
 
   Invocation invocation{repository, std::move(command), {}};

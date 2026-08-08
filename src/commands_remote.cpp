@@ -6,10 +6,41 @@
 
 #include <git2.h>
 
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <iomanip>
+#include <sstream>
 #include <utility>
 
 namespace gg::detail {
+namespace {
+
+constexpr std::string_view kUndoPrefix = "undo: restore to operation ";
+constexpr std::string_view kRedoPrefix = "redo: restore to operation ";
+
+std::string operation_timestamp(const git_commit* operation) {
+  const int offset = git_commit_time_offset(operation);
+  const std::chrono::sys_seconds local_time{
+      std::chrono::seconds{git_commit_time(operation) + offset * 60}};
+  const std::chrono::sys_days day = std::chrono::floor<std::chrono::days>(local_time);
+  const std::chrono::year_month_day date{day};
+  const std::chrono::hh_mm_ss clock{local_time - day};
+  const int absolute_offset = std::abs(offset);
+  std::ostringstream output;
+  output << std::setfill('0') << std::setw(4) << static_cast<int>(date.year())
+         << '-' << std::setw(2) << static_cast<unsigned>(date.month()) << '-'
+         << std::setw(2) << static_cast<unsigned>(date.day()) << 'T'
+         << std::setw(2) << clock.hours().count() << ':' << std::setw(2)
+         << clock.minutes().count() << ':' << std::setw(2)
+         << clock.seconds().count()
+         << (offset < 0 ? '-' : '+')  // GG_COV_EXCL_BRANCH
+         << std::setw(2)  // GG_COV_EXCL_BRANCH
+         << absolute_offset / 60 << ':' << std::setw(2) << absolute_offset % 60;
+  return output.str();
+}
+
+}  // namespace
 
 void command_bookmark(Repository& repo,
                       const BookmarkCommand& options,
@@ -122,12 +153,59 @@ void command_undo(Repository& repo, std::ostream& output) {
   if (!current.has_value()) {
     throw UserError("nothing to undo");
   }
-  const auto previous = repo.operation_previous(*current);
+  const git_oid target =
+      repo.operation_target(*current, kUndoPrefix).value_or(*current);
+  auto previous = repo.operation_previous(target);
   if (!previous.has_value()) {
     throw UserError("nothing to undo");
   }
-  repo.restore_operation(*previous);
+  previous = repo.operation_target(*previous, kUndoPrefix).value_or(*previous);
+  repo.restore_operation(
+      *previous, std::string(kUndoPrefix) + oid_string(*previous));
   output << "Undid operation.\n";
+}
+
+void command_redo(Repository& repo, std::ostream& output) {
+  repo.sync_workspace();
+  const auto current = repo.operation();
+  if (!current.has_value()) {
+    throw UserError("nothing to redo");
+  }
+  const git_oid target =
+      repo.operation_target(*current, kRedoPrefix).value_or(*current);
+  if (!repo.operation_target(target, kUndoPrefix).has_value()) {
+    throw UserError("nothing to redo");
+  }
+  auto restored = repo.operation_previous(target);
+  if (!restored.has_value()) {  // GG_COV_EXCL_BRANCH
+    throw GitError("undo operation has no predecessor");
+  }
+  restored = repo.operation_target(*restored, kRedoPrefix).value_or(*restored);
+  repo.restore_operation(
+      *restored, std::string(kRedoPrefix) + oid_string(*restored));
+  output << "Redid operation.\n";
+}
+
+void command_operation_log(Repository& repo, std::ostream& output) {
+  repo.sync_workspace();
+  auto current = repo.operation();
+  if (!current.has_value()) {
+    output << "No operations.\n";
+    return;
+  }
+  bool first = true;
+  while (current.has_value()) {
+    CommitPtr operation = repo.commit(*current);
+    const std::string description = repo.operation_description(*current);
+    const auto previous = repo.operation_previous(*current);
+    output << (first ? "@ " : "○ ") << oid_string(*current, 8) << ' '
+           << operation_timestamp(operation.get()) << ' ' << description << '\n';
+    if (previous.has_value()) {
+      output << "│\n";
+    }
+    first = false;
+    current = previous;
+  }
 }
 
 int clone_command(const GitCloneCommand& options, std::ostream& output) {

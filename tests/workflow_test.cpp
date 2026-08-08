@@ -112,6 +112,55 @@ TEST_F(RepositoryTest, AbandonsChangesAndUndoRestoresOperations) {
   EXPECT_TRUE(has_ref("refs/heads/topic"));
 }
 
+TEST_F(RepositoryTest, SupportsEditorStyleUndoAndRedo) {
+  constexpr std::string_view workspace = "refs/gg/workspaces/default";
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  const git_oid first = ref(workspace);
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  const git_oid second = ref(workspace);
+
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  git_oid actual = ref(workspace);
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_FALSE(has_ref(workspace));
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+  actual = ref(workspace);
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+  actual = ref(workspace);
+  EXPECT_NE(git_oid_equal(&actual, &second), 0);
+
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  actual = ref(workspace);
+  EXPECT_NE(git_oid_equal(&actual, &first), 0);
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+  actual = ref(workspace);
+  EXPECT_NE(git_oid_equal(&actual, &second), 0);
+
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "after-undo"}).code, 0);
+  EXPECT_EQ(invoke({"redo"}).code, 2);
+}
+
+TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+
+  const Result log = invoke({"operation", "log"});
+  ASSERT_EQ(log.code, 0) << log.error;
+  EXPECT_EQ(log.output.front(), '@');
+  EXPECT_NE(log.output.find("redo: restore to operation "), std::string::npos);
+  EXPECT_NE(log.output.find("undo: restore to operation "), std::string::npos);
+  EXPECT_NE(log.output.find("gg new"), std::string::npos);
+  EXPECT_NE(log.output.find("initialize repository"), std::string::npos);
+  EXPECT_NE(log.output.find("T"), std::string::npos);
+  EXPECT_NE(log.output.find("○ "), std::string::npos);
+  EXPECT_NE(log.output.find("│\n"), std::string::npos);
+  EXPECT_EQ(invoke({"op", "log"}).output, log.output);
+}
+
 TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
   EXPECT_NE(invoke({"status"}).output.find("No working-copy"), std::string::npos);
   ASSERT_EQ(git_reference_remove(repository_.get(), "refs/heads/main"), 0);

@@ -70,7 +70,11 @@ int execute(Repository& repository,
             [&](const GitPushCommand& value) {
               command_push(repository, value, output);
             },
-            [&](const UndoCommand&) { command_undo(repository, output); }},
+            [&](const UndoCommand&) { command_undo(repository, output); },
+            [&](const RedoCommand&) { command_redo(repository, output); },
+            [&](const OperationLogCommand&) {
+              command_operation_log(repository, output);
+            }},
         command);
     return 0;
   } catch (MergeConflict& conflict) {

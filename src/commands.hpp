@@ -37,6 +37,8 @@ void command_bookmark(Repository&, const BookmarkCommand&, std::ostream&);
 void command_fetch(Repository&, const GitFetchCommand&, std::ostream&);
 void command_push(Repository&, const GitPushCommand&, std::ostream&);
 void command_undo(Repository&, std::ostream&);
+void command_redo(Repository&, std::ostream&);
+void command_operation_log(Repository&, std::ostream&);
 int clone_command(const GitCloneCommand&, std::ostream&);
 
 }  // namespace gg::detail

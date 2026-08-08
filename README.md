@@ -31,6 +31,8 @@ gg push --bookmark NAME [--remote REMOTE]
 gg continue
 gg abort
 gg undo
+gg redo
+gg operation log
 ```
 
 Revisions use JJ names: `@`, `@-`, stable change-ID prefixes, bookmarks, or
@@ -39,6 +41,11 @@ refs together. If libgit2 reports a merge conflict, the rewrite pauses before
 moving its refs and writes conflict markers into the working tree. Resolve the
 files and run `gg continue`, or run `gg abort` to restore the pre-rewrite
 operation. First-class conflicted commits are intentionally outside this MVP.
+
+`gg undo` and `gg redo` behave like editor history: each restoration is itself
+recorded, repeated commands move backward or forward, and a new operation after
+an undo clears the redo path. `gg operation log` (also `gg op log`) shows the
+newest-first operation graph with IDs, timestamps, and descriptions.
 
 ## Project structure
 

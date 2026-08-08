@@ -69,12 +69,15 @@ struct GitPushCommand {
 struct ContinueCommand {};
 struct AbortCommand {};
 struct UndoCommand {};
+struct RedoCommand {};
+struct OperationLogCommand {};
 
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
                  AbandonCommand, BookmarkCommand, GitFetchCommand,
-                 GitPushCommand, UndoCommand>;
+                 GitPushCommand, UndoCommand, RedoCommand,
+                 OperationLogCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand,
                              ContinueCommand, AbortCommand>;
 

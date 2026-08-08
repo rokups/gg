@@ -108,7 +108,11 @@ std::vector<std::string> repository_replay_arguments(
             add_option(result, "--remote", value.remote);
             return result;
           },
-          [](const UndoCommand&) { return std::vector<std::string>{"undo"}; }},
+          [](const UndoCommand&) { return std::vector<std::string>{"undo"}; },
+          [](const RedoCommand&) { return std::vector<std::string>{"redo"}; },
+          [](const OperationLogCommand&) {
+            return std::vector<std::string>{"operation", "log"};
+          }},
       command);
 }
 

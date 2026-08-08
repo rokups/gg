@@ -73,6 +73,10 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(run({"clone"}).code, 2);
   EXPECT_EQ(run({"clone", "one", "two", "three"}).code, 2);
   EXPECT_EQ(invoke({"undo", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"redo", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"operation"}).code, 2);
+  EXPECT_EQ(invoke({"operation", "log", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"op", "log", "extra"}).code, 2);
   EXPECT_EQ(invoke({"unknown"}).code, 2);
   EXPECT_EQ(invoke({"continue"}).code, 2);
   EXPECT_EQ(invoke({"abort"}).code, 2);
@@ -86,6 +90,8 @@ TEST_F(RepositoryTest, ReportsBareRepositoriesAndEmptyUndoHistory) {
   git_repository_free(bare);
   EXPECT_EQ(run({"-R", bare_path.string(), "status"}).code, 2);
   EXPECT_EQ(invoke({"undo"}).code, 2);
+  EXPECT_EQ(invoke({"redo"}).code, 2);
+  EXPECT_EQ(invoke({"operation", "log"}).output, "No operations.\n");
   std::filesystem::remove_all(bare_path);
 }
 
