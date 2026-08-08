@@ -115,6 +115,7 @@ HeadState Repository::head_for_workspace(const git_oid& workspace) const {
 }
 
 void Repository::checkout(const git_oid& oid) const {
+  if (ignore_working_copy_) return;
   CommitPtr target = commit(oid);
   git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
   options.checkout_strategy = GIT_CHECKOUT_FORCE |
@@ -128,6 +129,7 @@ void Repository::checkout(const git_oid& oid) const {
 }
 
 bool Repository::sync_workspace() const {
+  if (ignore_working_copy_) return false;
   const auto workspace = ref_target(kWorkspaceRef);
   if (!workspace.has_value()) {
     return false;

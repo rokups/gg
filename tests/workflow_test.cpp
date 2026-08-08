@@ -295,6 +295,19 @@ TEST_F(RepositoryTest, NavigationUsesLayeredEditConfiguration) {
   EXPECT_EQ(invoke({"prev", "--edit"}).code, 0);
 }
 
+TEST_F(RepositoryTest, CanIgnoreWorkingCopySynchronization) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("tracked.txt", "unsnapshotted\n");
+  const Result stale = invoke({"--ignore-working-copy", "status"});
+  ASSERT_EQ(stale.code, 0) << stale.error;
+  EXPECT_EQ(stale.output.find("M tracked.txt"), std::string::npos);
+  EXPECT_NE(invoke({"status"}).output.find("M tracked.txt"),
+            std::string::npos);
+
+  ASSERT_EQ(invoke({"--ignore-working-copy", "edit", "main"}).code, 0);
+  EXPECT_EQ(file(), "unsnapshotted\n");
+}
+
 TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
   const Result first = invoke({"new", "-m", "first", "main"});
   ASSERT_EQ(first.code, 0) << first.error;

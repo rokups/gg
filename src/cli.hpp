@@ -296,6 +296,7 @@ struct Invocation {
   std::vector<std::string> replay_arguments;
   std::vector<std::string> config_values;
   std::vector<std::filesystem::path> config_files;
+  bool ignore_working_copy{false};
 };
 
 struct ParseResult {

@@ -200,6 +200,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   std::string repository = ".";
   app.add_option("-R,--repository", repository, "Repository path");
+  bool ignore_working_copy = false;
+  app.add_flag("--ignore-working-copy", ignore_working_copy,
+               "Do not snapshot or update the working copy");
   bool ignore_immutable = false;
   app.add_flag("--ignore-immutable", ignore_immutable,
                "Allow rewriting any non-root revision");
@@ -1070,7 +1073,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   }
 
   Invocation invocation{repository, std::move(command), {},
-                        std::move(config_values), std::move(config_files)};
+                        std::move(config_values), std::move(config_files),
+                        ignore_working_copy};
   invocation.replay_arguments = replay_arguments(invocation.command);
   return {-1, std::move(invocation)};
 }

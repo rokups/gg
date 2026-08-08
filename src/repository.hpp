@@ -111,7 +111,8 @@ class Repository {
   explicit Repository(
       const std::filesystem::path& path,
       std::vector<std::string> config_values = {},
-      std::vector<std::filesystem::path> config_files = {});
+      std::vector<std::filesystem::path> config_files = {},
+      bool ignore_working_copy = false);
 
   git_repository* raw() const;
 
@@ -256,6 +257,7 @@ class Repository {
   RepositoryPtr repo_;
   std::vector<std::string> config_values_;
   std::vector<std::filesystem::path> config_files_;
+  bool ignore_working_copy_{false};
 };
 
 }  // namespace gg::detail

@@ -151,7 +151,8 @@ int dispatch(std::span<const std::string_view> arguments,
   }
 
   Repository repository(invocation.repository, std::move(invocation.config_values),
-                        std::move(invocation.config_files));
+                        std::move(invocation.config_files),
+                        invocation.ignore_working_copy);
   if (repository.pending().has_value()) {
     const auto* repository_command =
         std::get_if<RepositoryCommand>(&invocation.command);

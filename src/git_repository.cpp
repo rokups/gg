@@ -50,9 +50,11 @@ return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix
 }
 Repository::Repository(const std::filesystem::path& path,
                        std::vector<std::string> config_values,
-                       std::vector<std::filesystem::path> config_files)
+                       std::vector<std::filesystem::path> config_files,
+                       bool ignore_working_copy)
     : config_values_(std::move(config_values)),
-      config_files_(std::move(config_files)) {
+      config_files_(std::move(config_files)),
+      ignore_working_copy_(ignore_working_copy) {
   git_repository* repository = nullptr;
   check(git_repository_open_ext(&repository, path.string().c_str(),
                                 GIT_REPOSITORY_OPEN_CROSS_FS, nullptr),
