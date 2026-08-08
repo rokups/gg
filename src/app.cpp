@@ -109,6 +109,9 @@ int execute(Repository& repository,
             },
             [&](const MovementCommand& value) {
               command_move(repository, value, output);
+            },
+            [&](const ConfigCommand& value) {
+              command_config(repository, value, output);
             }},
         command);
     return 0;

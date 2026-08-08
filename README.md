@@ -54,6 +54,12 @@ gg workspace list
 gg workspace root [--name default]
 gg next [--edit|--no-edit] [OFFSET]
 gg prev [--edit|--no-edit] [OFFSET]
+gg config get NAME
+gg config list [--user|--repo|--workspace] [NAME]
+gg config path (--user|--repo|--workspace)
+gg config set (--user|--repo|--workspace) NAME VALUE
+gg config unset (--user|--repo|--workspace) NAME
+gg config edit (--user|--repo|--workspace)
 ```
 
 Revisions use JJ names: `@`, `@-`, stable change-ID prefixes, bookmarks, or

@@ -327,6 +327,42 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("--conflict");
             }
             return result;
+          },
+          [](const ConfigCommand& value) {
+            std::vector<std::string> result{"config"};
+            switch (value.action) {
+              case ConfigAction::edit:
+                result.emplace_back("edit");
+                break;
+              case ConfigAction::get:
+                result.emplace_back("get");
+                break;
+              case ConfigAction::list:
+                result.emplace_back("list");
+                break;
+              case ConfigAction::path:
+                result.emplace_back("path");
+                break;
+              case ConfigAction::set:
+                result.emplace_back("set");
+                break;
+              case ConfigAction::unset:
+                result.emplace_back("unset");
+                break;
+            }
+            if (!value.name.empty()) result.push_back(value.name);
+            if (value.action == ConfigAction::set) result.push_back(value.value);
+            if (value.user) result.emplace_back("--user");
+            if (value.repository) result.emplace_back("--repo");
+            if (value.workspace) result.emplace_back("--workspace");
+            if (value.include_defaults) {
+              result.emplace_back("--include-defaults");
+            }
+            if (value.include_overridden) {
+              result.emplace_back("--include-overridden");
+            }
+            add_option(result, "--template", value.template_value);
+            return result;
           }},
       command);
 }

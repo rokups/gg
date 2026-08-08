@@ -437,6 +437,59 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   previous->add_flag("--conflict", previous_value.conflict,
                      "Jump to the previous conflicted ancestor")
       ->excludes(previous_offset);
+  auto* config = app.add_subcommand("config", "Manage gg configuration");
+  config->require_subcommand(1);
+  const auto add_config_scopes = [](CLI::App* command, ConfigCommand& value) {
+    CLI::Option* user =
+        command->add_flag("--user", value.user, "Use user configuration");
+    CLI::Option* repository = command->add_flag(
+        "--repo", value.repository, "Use repository configuration");
+    CLI::Option* workspace = command->add_flag(
+        "--workspace", value.workspace, "Use workspace configuration");
+    user->excludes(repository)->excludes(workspace);
+    repository->excludes(workspace);
+  };
+  ConfigCommand config_edit_value;
+  config_edit_value.action = ConfigAction::edit;
+  auto* config_edit = config->add_subcommand("edit", "Edit configuration");
+  add_config_scopes(config_edit, config_edit_value);
+  ConfigCommand config_get_value;
+  config_get_value.action = ConfigAction::get;
+  auto* config_get = config->add_subcommand("get", "Get a configuration value");
+  config_get->add_option("name", config_get_value.name, "Configuration key")
+      ->required();
+  ConfigCommand config_list_value;
+  auto* config_list = config->add_subcommand("list", "List configuration");
+  config_list->add_option("name", config_list_value.name, "Key prefix")
+      ->expected(0, 1);
+  config_list->add_flag("--include-defaults",
+                        config_list_value.include_defaults,
+                        "Include built-in defaults");
+  config_list->add_flag("--include-overridden",
+                        config_list_value.include_overridden,
+                        "Include overridden values");
+  config_list->add_option("-T,--template", config_list_value.template_value,
+                          "Configuration template");
+  add_config_scopes(config_list, config_list_value);
+  ConfigCommand config_path_value;
+  config_path_value.action = ConfigAction::path;
+  auto* config_path = config->add_subcommand("path", "Print a configuration path");
+  add_config_scopes(config_path, config_path_value);
+  ConfigCommand config_set_value;
+  config_set_value.action = ConfigAction::set;
+  auto* config_set = config->add_subcommand("set", "Set a configuration value");
+  config_set->add_option("name", config_set_value.name, "Configuration key")
+      ->required();
+  config_set->add_option("value", config_set_value.value, "TOML value")
+      ->required();
+  add_config_scopes(config_set, config_set_value);
+  ConfigCommand config_unset_value;
+  config_unset_value.action = ConfigAction::unset;
+  auto* config_unset =
+      config->add_subcommand("unset", "Unset a configuration value");
+  config_unset->add_option("name", config_unset_value.name, "Configuration key")
+      ->required();
+  add_config_scopes(config_unset, config_unset_value);
   std::vector<std::string> help_commands;
   auto* help = app.add_subcommand("help", "Print help");
   help->add_option("commands", help_commands, "Command path");
@@ -582,6 +635,18 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{next_value};
   } else if (previous->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{previous_value};
+  } else if (config_edit->parsed()) {
+    command = RepositoryCommand{std::move(config_edit_value)};
+  } else if (config_get->parsed()) {
+    command = RepositoryCommand{std::move(config_get_value)};
+  } else if (config_list->parsed()) {
+    command = RepositoryCommand{std::move(config_list_value)};
+  } else if (config_path->parsed()) {
+    command = RepositoryCommand{std::move(config_path_value)};
+  } else if (config_set->parsed()) {
+    command = RepositoryCommand{std::move(config_set_value)};
+  } else if (config_unset->parsed()) {  // GG_COV_EXCL_BRANCH
+    command = RepositoryCommand{std::move(config_unset_value)};
   }
 
   Invocation invocation{repository, std::move(command), {}};

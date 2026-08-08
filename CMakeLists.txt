@@ -47,6 +47,7 @@ add_library(
   src/commands_change.cpp
   src/commands_diff.cpp
   src/commands_file.cpp
+  src/commands_config.cpp
   src/commands_rewrite.cpp
   src/commands_remote.cpp
 )
@@ -80,6 +81,7 @@ if(GG_BUILD_TESTS)
     tests/workflow_test.cpp
     tests/diff_test.cpp
     tests/file_test.cpp
+    tests/config_test.cpp
     tests/rewrite_workflow_test.cpp
     tests/restore_test.cpp
     tests/simplify_parents_test.cpp

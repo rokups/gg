@@ -195,6 +195,19 @@ struct MovementCommand {
   bool conflict{false};
 };
 
+enum class ConfigAction { edit, get, list, path, set, unset };
+struct ConfigCommand {
+  ConfigAction action{ConfigAction::list};
+  std::string name;
+  std::string value;
+  std::string template_value;
+  bool user{false};
+  bool repository{false};
+  bool workspace{false};
+  bool include_defaults{false};
+  bool include_overridden{false};
+};
+
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
                  EditCommand, RebaseCommand, SplitCommand, SquashCommand,
@@ -203,7 +216,8 @@ using RepositoryCommand =
                  BookmarkCommand, TagCommand,
                  GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
-                 UtilSnapshotCommand, WorkspaceCommand, MovementCommand>;
+                 UtilSnapshotCommand, WorkspaceCommand, MovementCommand,
+                 ConfigCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,
                              ContinueCommand, AbortCommand>;
 
