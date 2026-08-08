@@ -200,6 +200,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   std::string repository = ".";
   app.add_option("-R,--repository", repository, "Repository path");
+  bool ignore_immutable = false;
+  app.add_flag("--ignore-immutable", ignore_immutable,
+               "Allow rewriting any non-root revision");
+  bool no_pager = false;
+  app.add_flag("--no-pager", no_pager, "Disable the pager");
 
   StatusCommand status_value;
   auto* status = app.add_subcommand("status", "Show the working-copy change");

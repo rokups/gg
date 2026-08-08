@@ -46,6 +46,7 @@ TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_EQ(run({"help", "status", "-k", "tutorial"}).code, 2);
   EXPECT_EQ(run({"help", "missing"}).code, 2);
   EXPECT_EQ(run({"version"}).output, "gg 0.1.0\n");
+  EXPECT_EQ(run({"--ignore-immutable", "--no-pager", "version"}).code, 0);
 }
 
 TEST(AppTest, ReportsUserAndGitErrors) {
