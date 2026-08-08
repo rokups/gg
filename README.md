@@ -53,6 +53,7 @@ gg undo
 gg redo
 gg operation log
 gg operation restore [--what repo|remote-tracking] OPERATION
+gg util completion (bash|elvish|fish|nushell|power-shell|zsh)
 gg util exec -- COMMAND [ARG...]
 gg util install-man-pages PATH
 gg util markdown-help

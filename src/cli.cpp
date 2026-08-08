@@ -12,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <ostream>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -23,11 +24,27 @@ std::vector<const CLI::App*> schema_children(const CLI::App& command) {
       std::function<bool(const CLI::App*)>{});
 }
 
+std::string stable_help(const CLI::App& command, std::string_view path) {
+  const std::size_t separator = path.rfind(' ');
+  const std::string parent = separator == std::string_view::npos
+                                 ? ""
+                                 : std::string(path.substr(0, separator));
+  std::istringstream raw(command.help(parent));
+  std::ostringstream stable;
+  std::string line;
+  while (std::getline(raw, line)) {
+    const std::size_t excludes = line.find(" Excludes:");
+    if (excludes != std::string::npos) line.erase(excludes);
+    stable << line << '\n';
+  }
+  return stable.str();
+}
+
 void write_markdown_command(const CLI::App& command,
                             const std::string& path,
                             std::ostream& output) {
   output << "## `" << path << "`\n\n" << command.get_description()
-         << "\n\n```text\n" << command.help(path) << "```\n\n";
+         << "\n\n```text\n" << stable_help(command, path) << "```\n\n";
   for (const CLI::App* child : schema_children(command)) {
     write_markdown_command(*child, path + " " + child->get_name(), output);
   }
@@ -57,7 +74,7 @@ void write_man_pages(const CLI::App& command,
   page << ".TH \"" << title << "\" \"1\"\n.SH NAME\n" << name
        << " \\- " << command.get_description()
        << "\n.SH SYNOPSIS\n.nf\n";
-  std::istringstream help(command.help(path));
+  std::istringstream help(stable_help(command, path));
   std::string line;
   while (std::getline(help, line)) page << "\\&" << line << '\n';
   page << ".fi\n";
@@ -71,6 +88,64 @@ void install_man_pages(const CLI::App& app,
   const std::filesystem::path man1 = destination / "man1";
   std::filesystem::create_directories(man1);
   write_man_pages(app, "gg", man1);
+}
+
+void collect_completion_words(const CLI::App& command,
+                              std::set<std::string>& words) {
+  for (const CLI::Option* option : command.get_options()) {
+    for (const std::string& name : option->get_lnames()) {
+      words.insert("--" + name);
+    }
+    for (const std::string& name : option->get_snames()) {
+      words.insert("-" + name);
+    }
+  }
+  for (const CLI::App* child : schema_children(command)) {
+    words.insert(child->get_name());
+    words.insert(child->get_aliases().begin(), child->get_aliases().end());
+    collect_completion_words(*child, words);
+  }
+}
+
+std::string joined_words(const std::set<std::string>& words) {
+  std::ostringstream output;
+  for (const std::string& word : words) output << word << ' ';
+  return output.str();
+}
+
+void write_completion(const CLI::App& app,
+                      std::string_view shell,
+                      std::ostream& output) {
+  std::set<std::string> words;
+  collect_completion_words(app, words);
+  const std::string joined = joined_words(words);
+  if (shell == "bash") {
+    output << "_gg() {\n"
+              "  local cur=\"${COMP_WORDS[COMP_CWORD]}\"\n"
+              "  COMPREPLY=( $(compgen -W '"
+           << joined << "' -- \"$cur\") )\n}\ncomplete -F _gg gg\n";
+  } else if (shell == "elvish") {
+    output << "edit:completion:arg-completer[gg] = {|@words|\n  put";
+    for (const std::string& word : words) output << " '" << word << "'";
+    output << "\n}\n";
+  } else if (shell == "fish") {
+    output << "complete -c gg -f -a '" << joined << "'\n";
+  } else if (shell == "nushell") {
+    output << "def \"nu-complete gg\" [] { [";
+    for (const std::string& word : words) output << " '" << word << "'";
+    output << " ] }\nexport extern \"gg\" [command?: string@\"nu-complete gg\", "
+              "...args: string]\n";
+  } else if (shell == "power-shell" || shell == "powershell") {
+    output << "Register-ArgumentCompleter -Native -CommandName gg -ScriptBlock "
+              "{ param($wordToComplete)\n  @(";
+    for (const std::string& word : words) output << "'" << word << "',";
+    output << ") | Where-Object { $_ -like \"$wordToComplete*\" }\n}\n";
+  } else {
+    output << "#compdef gg\n_gg() {\n  local -a candidates\n  candidates=(";
+    for (const std::string& word : words) output << " '" << word << "'";
+    output << " )\n  _describe 'gg command or option' candidates\n}\n"
+              "compdef _gg gg\n";
+  }
 }
 
 }  // namespace
@@ -519,6 +594,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   util_exec->add_option("command", util_exec_value.command, "Command")
       ->required();
   util_exec->add_option("args", util_exec_value.arguments, "Command arguments");
+  std::string util_completion_shell;
+  auto* util_completion =
+      util->add_subcommand("completion", "Print a shell completion script");
+  util_completion
+      ->add_option("shell", util_completion_shell, "Target shell")
+      ->required()
+      ->check(CLI::IsMember({"bash", "elvish", "fish", "nushell",
+                             "power-shell", "powershell", "zsh"}));
   std::string util_man_path;
   auto* util_install_man =
       util->add_subcommand("install-man-pages", "Install generated man pages");
@@ -660,12 +743,21 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     return {2, std::monostate{}};
   }
 
+  if (util_completion->parsed()) {
+    const std::string shell = util_completion_shell;
+    app.clear();
+    write_completion(app, shell, output);
+    return {0, std::monostate{}};
+  }
   if (util_markdown->parsed()) {
+    app.clear();
     write_markdown_help(app, output);
     return {0, std::monostate{}};
   }
   if (util_install_man->parsed()) {
-    install_man_pages(app, util_man_path);
+    const std::string path = util_man_path;
+    app.clear();
+    install_man_pages(app, path);
     return {0, std::monostate{}};
   }
   if (help->parsed()) {

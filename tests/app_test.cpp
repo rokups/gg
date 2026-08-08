@@ -196,4 +196,25 @@ TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
   EXPECT_EQ(run({"util", "install-man-pages"}).code, 2);
 }
 
+TEST(AppTest, GeneratesShellCompletionsFromTheCommandSchema) {
+  const std::vector<std::pair<std::string, std::string>> shells{
+      {"bash", "complete -F _gg gg"},
+      {"elvish", "edit:completion:arg-completer[gg]"},
+      {"fish", "complete -c gg"},
+      {"nushell", "nu-complete gg"},
+      {"power-shell", "Register-ArgumentCompleter"},
+      {"powershell", "Register-ArgumentCompleter"},
+      {"zsh", "#compdef gg"}};
+  for (const auto& [shell, marker] : shells) {
+    const Result completion = run({"util", "completion", shell});
+    ASSERT_EQ(completion.code, 0) << shell << ": " << completion.error;
+    EXPECT_NE(completion.output.find(marker), std::string::npos) << shell;
+    EXPECT_NE(completion.output.find("bookmark"), std::string::npos) << shell;
+    EXPECT_NE(completion.output.find("--repository"), std::string::npos)
+        << shell;
+  }
+  EXPECT_EQ(run({"util", "completion"}).code, 2);
+  EXPECT_EQ(run({"util", "completion", "tcsh"}).code, 2);
+}
+
 }  // namespace gg::test
