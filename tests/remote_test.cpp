@@ -344,6 +344,12 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
             0);
   EXPECT_EQ(git_reference_name_to_id(&pushed, bare_check, "refs/heads/empty"),
             0);
+  git_reference* ignored_tag = nullptr;
+  ASSERT_EQ(git_reference_create(&ignored_tag, bare_check, "refs/tags/ignored",
+                                 &topic_target, 0, "test tag"),
+            0);
+  git_reference_free(ignored_tag);
+  ASSERT_EQ(git_repository_set_head(bare_check, "refs/heads/topic"), 0);
   git_repository_free(bare_check);
 
   const auto shallow_path = clone_path.string() + "-shallow";
@@ -354,8 +360,9 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   EXPECT_NE(shallow.error.find("shallow fetch is not supported"),
             std::string::npos);
   const Result cloned =
-      run({"clone", "--remote", "upstream", "--object-hash", "sha1",
-           remote_path.string(), clone_path.string()});
+      run({"clone", "--remote", "upstream", "--branch", "topic", "-t",
+           "release", "--object-hash", "sha1", remote_path.string(),
+           clone_path.string()});
   EXPECT_EQ(cloned.code, 0) << cloned.error;
   EXPECT_TRUE(std::filesystem::exists(clone_path / ".git"));
   {
@@ -364,6 +371,10 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
         cloned_repo.ref_target(detail::kWorkspaceRef);
     ASSERT_TRUE(workspace.has_value());
     EXPECT_TRUE(cloned_repo.change_id(*workspace).has_value());
+    EXPECT_TRUE(cloned_repo.ref_target("refs/heads/topic").has_value());
+    EXPECT_TRUE(cloned_repo.ref_target("refs/tags/release").has_value());
+    EXPECT_FALSE(cloned_repo.ref_target("refs/tags/ignored").has_value());
+    EXPECT_FALSE(cloned_repo.ref_target("refs/remotes/upstream/named").has_value());
     std::optional<git_oid> cursor =
         cloned_repo.ref_target("refs/remotes/upstream/topic");
     std::size_t revisions = 0;
@@ -381,7 +392,42 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
     EXPECT_GE(revisions, 2U);
     EXPECT_TRUE(cloned_repo.missing_change_ids().empty());
   }
+
+  const auto tag_clone_path = clone_path.string() + "-tag";
+  std::filesystem::remove_all(tag_clone_path);
+  const Result tag_clone = run(
+      {"clone", "--tag", "release", remote_path.string(), tag_clone_path});
+  ASSERT_EQ(tag_clone.code, 0) << tag_clone.error;
+  {
+    detail::Repository tag_repo(tag_clone_path);
+    const auto tag_workspace = tag_repo.ref_target(detail::kWorkspaceRef);
+    ASSERT_TRUE(tag_workspace.has_value());
+    EXPECT_TRUE(tag_repo.parents(*tag_workspace).empty());
+    EXPECT_TRUE(tag_repo.ref_target("refs/tags/release").has_value());
+    EXPECT_FALSE(tag_repo.ref_target("refs/tags/ignored").has_value());
+    EXPECT_FALSE(tag_repo.ref_target("refs/heads/topic").has_value());
+    EXPECT_FALSE(tag_repo.ref_target("refs/remotes/origin/topic").has_value());
+  }
+
+  const auto missing_branch_path = clone_path.string() + "-missing-branch";
+  std::filesystem::remove_all(missing_branch_path);
+  EXPECT_EQ(run({"clone", "-b", "topic", "-b", "missing",
+                 remote_path.string(), missing_branch_path})
+                .code,
+            2);
+  const auto missing_tag_path = clone_path.string() + "-missing-tag";
+  std::filesystem::remove_all(missing_tag_path);
+  std::filesystem::create_directories(missing_tag_path);
+  EXPECT_EQ(run({"clone", "-b", "topic", "-t", "missing",
+                 remote_path.string(), missing_tag_path})
+                .code,
+            2);
+  EXPECT_TRUE(std::filesystem::is_empty(missing_tag_path));
+
   std::filesystem::remove_all(shallow_path);
+  std::filesystem::remove_all(tag_clone_path);
+  std::filesystem::remove_all(missing_branch_path);
+  std::filesystem::remove_all(missing_tag_path);
   std::filesystem::remove_all(clone_path);
   std::filesystem::remove_all(remote_path);
 }

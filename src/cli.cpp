@@ -621,6 +621,13 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   clone->add_option("--remote", clone_value.remote, "Remote name");
   clone->add_option("--depth", clone_value.depth, "Shallow clone depth")
       ->check(CLI::PositiveNumber);
+  clone->add_option("-b,--branch,--bookmark", clone_value.branches,
+                    "Branch name")
+      ->type_size(1)
+      ->allow_extra_args(false);
+  clone->add_option("-t,--tag", clone_value.tags, "Tag name")
+      ->type_size(1)
+      ->allow_extra_args(false);
   clone->add_option("--object-hash", clone_value.object_hash, "Object hash")
       ->check(CLI::IsMember({"sha1", "sha256"}));
   GitInitCommand init_value;

@@ -515,6 +515,14 @@ std::vector<std::string> replay_arguments(const Command& command) {
               result.emplace_back("--depth");
               result.push_back(std::to_string(value.depth));
             }
+            for (const std::string& branch : value.branches) {
+              result.emplace_back("--branch");
+              result.push_back(branch);
+            }
+            for (const std::string& tag : value.tags) {
+              result.emplace_back("--tag");
+              result.push_back(tag);
+            }
             if (value.object_hash != "sha1") {
               result.emplace_back("--object-hash");
               result.push_back(value.object_hash);

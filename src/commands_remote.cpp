@@ -802,6 +802,21 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
   if (options.object_hash == "sha256") {
     throw UserError("gg does not support SHA-256 repositories");
   }
+  const auto validate_names = [](const std::vector<std::string>& names,
+                                 std::string_view prefix,
+                                 std::string_view kind) {
+    for (const std::string& name : names) {
+      int valid = 0;
+      const std::string reference = std::string(prefix) + name;
+      check(git_reference_name_is_valid(&valid, reference.c_str()),
+            "validate clone selector");
+      if (valid == 0) {
+        throw UserError("invalid " + std::string(kind) + " name: " + name);
+      }
+    }
+  };
+  validate_names(options.branches, "refs/heads/", "branch");
+  validate_names(options.tags, "refs/tags/", "tag");
   std::string destination = options.destination;
   if (destination.empty()) {
     destination = std::filesystem::path(options.url).filename().string();
@@ -809,10 +824,15 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
       destination.resize(destination.size() - 4);
     }
   }
+  const bool destination_existed = std::filesystem::exists(destination);
   git_clone_options clone_options = GIT_CLONE_OPTIONS_INIT;
+  clone_options.checkout_opts.checkout_strategy = GIT_CHECKOUT_NONE;
   clone_options.fetch_opts.callbacks = remote_callbacks();
   clone_options.fetch_opts.depth = options.depth;
   if (options.depth != 0) clone_options.local = GIT_CLONE_NO_LOCAL;
+  if (!options.branches.empty()) {
+    clone_options.checkout_branch = options.branches.front().c_str();
+  }
   std::string remote = options.remote;
   clone_options.remote_cb = create_clone_remote;
   clone_options.remote_cb_payload = &remote;
@@ -822,8 +842,61 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
         "clone repository");
   RepositoryPtr repository(raw_repository);
   repository.reset();
-  Repository repo(destination);
-  command_new(repo, NewCommand{}, output);
+  try {
+    Repository repo(destination);
+    const std::string remote_prefix = "refs/remotes/" + options.remote + "/";
+    for (const std::string& branch : options.branches) {
+      if (!repo.ref_target(remote_prefix + branch).has_value()) {
+        throw UserError("branch not found in clone source: " + branch);
+      }
+    }
+    for (const std::string& tag : options.tags) {
+      if (!repo.ref_target("refs/tags/" + tag).has_value()) {
+        throw UserError("tag not found in clone source: " + tag);
+      }
+    }
+    if (!options.branches.empty() || !options.tags.empty()) {
+      std::set<std::string> deletes;
+      for (const auto& [reference, oid] : repo.data_refs()) {
+        (void)oid;
+        if (starts_with(reference, remote_prefix)) {
+          const std::string name = reference.substr(remote_prefix.size());
+          if (name == "HEAD" ||
+              std::find(options.branches.begin(), options.branches.end(), name) ==
+                  options.branches.end()) {
+            deletes.insert(reference);
+          }
+        } else if (starts_with(reference, "refs/heads/")) {
+          const std::string name =
+              reference.substr(std::string_view("refs/heads/").size());
+          if (std::find(options.branches.begin(), options.branches.end(), name) ==
+              options.branches.end()) {
+            deletes.insert(reference);
+          }
+        } else {
+          // Before gg initialization, the only remaining clone refs are tags.
+          const std::string name =
+              reference.substr(std::string_view("refs/tags/").size());
+          if (std::find(options.tags.begin(), options.tags.end(), name) ==
+              options.tags.end()) {
+            deletes.insert(reference);
+          }
+        }
+      }
+      repo.apply_refs({}, deletes, "filter clone refs");
+      if (options.branches.empty()) {
+        repo.set_head({true, "refs/heads/main"});
+      }
+    }
+    command_new(repo, NewCommand{}, output);
+  } catch (...) {
+    std::error_code error;
+    std::filesystem::remove_all(destination, error);
+    if (destination_existed) {
+      std::filesystem::create_directories(destination, error);
+    }
+    throw;
+  }
   output << "Cloned into " << destination << '\n';
   return 0;
 }

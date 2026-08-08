@@ -130,6 +130,8 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(run({"clone", "--depth", "0", "one"}).code, 2);
   EXPECT_EQ(run({"clone", "--object-hash", "invalid", "one"}).code, 2);
   EXPECT_EQ(run({"clone", "--object-hash", "sha256", "one"}).code, 2);
+  EXPECT_EQ(run({"clone", "--branch", "bad name", "one"}).code, 2);
+  EXPECT_EQ(run({"clone", "--tag", "bad name", "one"}).code, 2);
   EXPECT_EQ(run({"init", "one", "two"}).code, 2);
   EXPECT_EQ(run({"init", "--object-hash", "invalid"}).code, 2);
   EXPECT_EQ(invoke({"undo", "extra"}).code, 2);
