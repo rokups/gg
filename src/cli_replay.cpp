@@ -224,11 +224,17 @@ std::vector<std::string> repository_replay_arguments(
               case BookmarkAction::list:
                 result.emplace_back("list");
                 break;
+              case BookmarkAction::advance:
+                result.emplace_back("advance");
+                break;
               case BookmarkAction::create:
                 result.emplace_back("create");
                 break;
               case BookmarkAction::set:
                 result.emplace_back("set");
+                break;
+              case BookmarkAction::move:
+                result.emplace_back("move");
                 break;
               case BookmarkAction::erase:
                 result.emplace_back("delete");
@@ -241,7 +247,16 @@ std::vector<std::string> repository_replay_arguments(
                 break;
             }
             result.insert(result.end(), value.names.begin(), value.names.end());
-            add_option(result, "-r", value.revision);
+            add_option(result,
+                       value.action == BookmarkAction::advance ||
+                               value.action == BookmarkAction::move
+                           ? "-t"
+                           : "-r",
+                       value.revision);
+            for (const std::string& revision : value.from) {
+              result.emplace_back("--from");
+              result.push_back(revision);
+            }
             if (value.allow_backwards) {
               result.emplace_back("--allow-backwards");
             }

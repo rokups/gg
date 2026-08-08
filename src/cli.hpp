@@ -130,11 +130,21 @@ struct ShowCommand {
   bool no_patch{false};
 };
 
-enum class BookmarkAction { list, create, set, erase, forget, rename };
+enum class BookmarkAction {
+  list,
+  advance,
+  create,
+  set,
+  move,
+  erase,
+  forget,
+  rename
+};
 struct BookmarkCommand {
   BookmarkAction action{BookmarkAction::list};
   std::string revision;
   std::vector<std::string> names;
+  std::vector<std::string> from;
   bool allow_backwards{false};
   bool include_remotes{false};
   bool overwrite_existing{false};

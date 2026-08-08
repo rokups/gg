@@ -31,8 +31,10 @@ gg file search [-r REV] -p PATTERN [--name-only | --line-number] [PATH...]
 gg file chmod [-r REV] (n|normal|x|executable) PATH...
 gg diff [-r REV | --from REV] [--to REV] [PATH...]
 gg show [--no-patch] [REV...]
+gg bookmark advance [NAME...] [-t REV]
 gg bookmark create NAME... [-r REV]
 gg bookmark set NAME... [-r REV]
+gg bookmark move [NAME...] [-f REV]... [-t REV] [-B]
 gg bookmark delete NAME...
 gg bookmark forget [--include-remotes] NAME...
 gg bookmark rename [--overwrite-existing] OLD NEW

@@ -286,6 +286,13 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   auto* bookmark = app.add_subcommand("bookmark", "Manage Git-backed bookmarks");
   bookmark->require_subcommand(0, 1);
+  BookmarkCommand bookmark_advance;
+  bookmark_advance.action = BookmarkAction::advance;
+  auto* advance =
+      bookmark->add_subcommand("advance", "Advance the closest bookmarks");
+  advance->add_option("names", bookmark_advance.names, "Bookmark names");
+  advance->add_option("-t,--to", bookmark_advance.revision,
+                      "Target revision");
   BookmarkCommand bookmark_create;
   bookmark_create.action = BookmarkAction::create;
   auto* create = bookmark->add_subcommand("create", "Create a bookmark");
@@ -300,6 +307,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   set->add_option("-r,--revision,--to", bookmark_set.revision, "Revision");
   set->add_flag("-B,--allow-backwards", bookmark_set.allow_backwards,
                 "Allow moving bookmarks backwards");
+  BookmarkCommand bookmark_move;
+  bookmark_move.action = BookmarkAction::move;
+  auto* move = bookmark->add_subcommand("move", "Move existing bookmarks");
+  move->add_option("names", bookmark_move.names, "Bookmark names");
+  move->add_option("-f,--from", bookmark_move.from, "Source revisions");
+  move->add_option("-t,--to", bookmark_move.revision, "Target revision");
+  move->add_flag("-B,--allow-backwards", bookmark_move.allow_backwards,
+                 "Allow moving bookmarks backwards or sideways");
   BookmarkCommand bookmark_delete;
   bookmark_delete.action = BookmarkAction::erase;
   auto* erase = bookmark->add_subcommand("delete", "Delete bookmarks");
@@ -605,10 +620,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(diff_value)};
   } else if (show->parsed()) {
     command = RepositoryCommand{std::move(show_value)};
+  } else if (advance->parsed()) {
+    command = RepositoryCommand{std::move(bookmark_advance)};
   } else if (create->parsed()) {
     command = RepositoryCommand{std::move(bookmark_create)};
   } else if (set->parsed()) {
     command = RepositoryCommand{std::move(bookmark_set)};
+  } else if (move->parsed()) {
+    command = RepositoryCommand{std::move(bookmark_move)};
   } else if (erase->parsed()) {
     command = RepositoryCommand{std::move(bookmark_delete)};
   } else if (forget->parsed()) {

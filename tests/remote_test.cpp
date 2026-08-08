@@ -70,6 +70,90 @@ TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
   EXPECT_EQ(invoke({"bookmark", "forget", "missing"}).code, 2);
 }
 
+TEST_F(RepositoryTest, MovesBookmarksByNameAndSourceRevision) {
+  const auto points_to = [&](std::string_view name, const git_oid& target) {
+    const git_oid actual = ref(name);
+    return git_oid_equal(&actual, &target) != 0;
+  };
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  const git_oid first = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"bookmark", "create", "one", "two"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  const git_oid second = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"bookmark", "create", "tip"}).code, 0);
+
+  ASSERT_EQ(invoke({"bookmark", "move", "one", "--to", "@"}).code, 0);
+  EXPECT_TRUE(points_to("refs/heads/one", second));
+  EXPECT_TRUE(points_to("refs/heads/two", first));
+
+  ASSERT_EQ(
+      invoke({"bookmark", "move", "--from", "two", "--to", "@"}).code,
+      0);
+  EXPECT_TRUE(points_to("refs/heads/two", second));
+  EXPECT_NE(invoke({"bookmark", "move", "one", "--to", "@"})
+                .output.find("No bookmarks to update."),
+            std::string::npos);
+  EXPECT_NE(invoke({"bookmark", "move", "missing", "--to", "@"})
+                .output.find("No bookmarks to update."),
+            std::string::npos);
+
+  EXPECT_EQ(invoke({"bookmark", "move", "one", "--to",
+                    git_oid_tostr_s(&first)})
+                .code,
+            2);
+  ASSERT_EQ(invoke({"bookmark", "move", "one", "--to",
+                    git_oid_tostr_s(&first), "--allow-backwards"})
+                .code,
+            0);
+  EXPECT_TRUE(points_to("refs/heads/one", first));
+
+  ASSERT_EQ(invoke({"bookmark", "move", "--from", "one", "--from", "two",
+                    "--to", "main", "-B"})
+                .code,
+            0);
+  const git_oid main = ref("refs/heads/main");
+  EXPECT_TRUE(points_to("refs/heads/one", main));
+  EXPECT_TRUE(points_to("refs/heads/two", main));
+  EXPECT_TRUE(points_to("refs/heads/tip", main));
+}
+
+TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
+  const auto points_to = [&](std::string_view name, const git_oid& target) {
+    const git_oid actual = ref(name);
+    return git_oid_equal(&actual, &target) != 0;
+  };
+  ASSERT_EQ(invoke({"new", "-m", "old", "main"}).code, 0);
+  const git_oid old = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"bookmark", "create", "old"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "near"}).code, 0);
+  const git_oid near = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"bookmark", "create", "near", "alias"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "target"}).code, 0);
+  const git_oid target = ref("refs/gg/workspaces/default");
+  const git_oid side = raw_commit("side", {ref("refs/heads/main")});
+  set_ref("refs/heads/side", side);
+
+  const Result advanced = invoke({"bookmark", "advance"});
+  ASSERT_EQ(advanced.code, 0) << advanced.error;
+  EXPECT_NE(advanced.output.find("Advanced 2 bookmark(s)"),
+            std::string::npos);
+  EXPECT_TRUE(points_to("refs/heads/near", target));
+  EXPECT_TRUE(points_to("refs/heads/alias", target));
+  EXPECT_TRUE(points_to("refs/heads/old", old));
+  EXPECT_TRUE(points_to("refs/heads/side", side));
+
+  ASSERT_EQ(invoke({"bookmark", "advance", "old", "--to", "@"}).code,
+            0);
+  EXPECT_TRUE(points_to("refs/heads/old", target));
+  EXPECT_NE(invoke({"bookmark", "advance", "near"})
+                .output.find("No bookmarks to update."),
+            std::string::npos);
+  EXPECT_EQ(invoke({"bookmark", "advance", "near", "--to",
+                    git_oid_tostr_s(&near)})
+                .code,
+            2);
+}
+
 TEST_F(RepositoryTest, PushesFetchesAndClonesOrdinaryGitBookmarks) {
   const auto remote_path = path_.parent_path() / (path_.filename().string() + "-bare");
   const auto clone_path = path_.parent_path() / (path_.filename().string() + "-clone");

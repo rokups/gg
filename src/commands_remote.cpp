@@ -110,6 +110,78 @@ void command_bookmark(Repository& repo,
            << ".\n";
     return;
   }
+  if (options.action == BookmarkAction::advance ||
+      options.action == BookmarkAction::move) {
+    if (options.action == BookmarkAction::move && options.names.empty() &&
+        options.from.empty()) {
+      throw UserError("bookmark move requires a name or --from revision");
+    }
+    const git_oid target =
+        repo.resolve(options.revision.empty() ? "@" : options.revision);
+    std::set<git_oid, OidLess> sources;
+    for (const std::string& revision : options.from) {
+      sources.insert(repo.resolve(revision));
+    }
+    std::vector<std::pair<std::string, git_oid>> matches;
+    for (const auto& [reference, oid] : repo.data_refs()) {
+      constexpr std::string_view prefix = "refs/heads/";
+      if (!starts_with(reference, prefix) || oid == target) continue;
+      const std::string name = reference.substr(prefix.size());
+      if (!options.names.empty() &&
+          std::ranges::find(options.names, name) == options.names.end()) {
+        continue;
+      }
+      if (!sources.empty() && !sources.contains(oid)) continue;
+      if (options.action == BookmarkAction::advance &&
+          options.names.empty()) {
+        const int ancestor = git_graph_descendant_of(repo.raw(), &target, &oid);
+        check(ancestor, "select bookmarks to advance");
+        if (ancestor == 0) continue;
+      }
+      matches.emplace_back(name, oid);
+    }
+    if (options.action == BookmarkAction::advance && options.names.empty()) {
+      std::vector<std::pair<std::string, git_oid>> closest;
+      for (const auto& candidate : matches) {
+        const bool shadowed =
+            std::ranges::any_of(matches, [&](const auto& other) {
+              if (candidate.second == other.second) return false;
+              const int closer = git_graph_descendant_of(
+                  repo.raw(), &other.second, &candidate.second);
+              check(closer, "select closest bookmarks");
+              return closer != 0;
+            });
+        if (!shadowed) closest.push_back(candidate);
+      }
+      matches = std::move(closest);
+    }
+    if (matches.empty()) {
+      output << "No bookmarks to update.\n";
+      return;
+    }
+    if (!options.allow_backwards) {
+      for (const auto& [name, oid] : matches) {
+        const int forward =
+            git_graph_descendant_of(repo.raw(), &target, &oid);
+        check(forward, "check bookmark movement");
+        if (forward == 0) {
+          throw UserError("refusing to move bookmark backwards or sideways: " +
+                          name);
+        }
+      }
+    }
+    std::map<std::string, git_oid> updates;
+    for (const auto& [name, oid] : matches) {
+      (void)oid;
+      updates.emplace("refs/heads/" + name, target);
+    }
+    const bool advancing = options.action == BookmarkAction::advance;
+    repo.record(std::move(updates), {}, repo.head_state(),
+                advancing ? "gg bookmark advance" : "gg bookmark move");
+    output << (advancing ? "Advanced " : "Moved ") << matches.size()
+           << " bookmark(s) to " << oid_string(target, 8) << '\n';
+    return;
+  }
   const git_oid target =
       repo.resolve(options.revision.empty() ? "@" : options.revision);
   std::map<std::string, git_oid> updates;
