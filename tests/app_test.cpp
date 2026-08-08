@@ -26,6 +26,24 @@ TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_NE(run({"help", "operation", "restore"})
                 .output.find("gg operation restore [OPTIONS]"),
             std::string::npos);
+  EXPECT_NE(run({"help", "-k", "bookmarks"}).output.find("# Bookmarks"),
+            std::string::npos);
+  EXPECT_NE(run({"help", "--keyword", "config"})
+                .output.find("# Configuration"),
+            std::string::npos);
+  EXPECT_NE(run({"help", "-k", "filesets"}).output.find("# Filesets"),
+            std::string::npos);
+  EXPECT_NE(run({"help", "-k", "glossary"}).output.find("# Glossary"),
+            std::string::npos);
+  EXPECT_NE(run({"help", "-k", "revsets"})
+                .output.find("# Revision selection"),
+            std::string::npos);
+  EXPECT_NE(run({"help", "-k", "templates"}).output.find("# Templates"),
+            std::string::npos);
+  EXPECT_NE(run({"help", "-k", "tutorial"}).output.find("# Tutorial"),
+            std::string::npos);
+  EXPECT_EQ(run({"help", "-k", "missing"}).code, 2);
+  EXPECT_EQ(run({"help", "status", "-k", "tutorial"}).code, 2);
   EXPECT_EQ(run({"help", "missing"}).code, 2);
   EXPECT_EQ(run({"version"}).output, "gg 0.1.0\n");
 }

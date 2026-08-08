@@ -24,6 +24,32 @@ std::vector<const CLI::App*> schema_children(const CLI::App& command) {
       std::function<bool(const CLI::App*)>{});
 }
 
+const std::map<std::string, std::string_view> kHelpKeywords{
+    {"bookmarks",
+     "# Bookmarks\n\nBookmarks are ordinary local Git branches. Use `gg bookmark` "
+     "to create, move, list, rename, forget, or delete them.\n"},
+    {"config",
+     "# Configuration\n\n`gg config` reads and writes flat dotted keys in user, "
+     "repository, or workspace layers.\n"},
+    {"filesets",
+     "# Filesets\n\ngg currently accepts literal repository-relative files and "
+     "directories where Jujutsu accepts filesets.\n"},
+    {"glossary",
+     "# Glossary\n\nA change is a Git commit with a stable gg change ID; a bookmark "
+     "is a Git branch; `@` is the working-copy change.\n"},
+    {"revsets",
+     "# Revision selection\n\ngg accepts `@`, `@-` chains, stable change-ID "
+     "prefixes, bookmarks, and Git revision expressions. Set-valued revsets are "
+     "not yet supported.\n"},
+    {"templates",
+     "# Templates\n\nJujutsu-style output templates are not yet implemented. Commands "
+     "that expose `--template` report that limitation explicitly.\n"},
+    {"tutorial",
+     "# Tutorial\n\nRun `gg new` to start a working change, edit files, inspect them "
+     "with `gg status` and `gg diff`, then use `gg commit` or bookmarks to "
+     "organize and publish the work.\n"},
+};
+
 std::string stable_help(const CLI::App& command, std::string_view path) {
   const std::size_t separator = path.rfind(' ');
   const std::string parent = separator == std::string_view::npos
@@ -813,8 +839,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required();
   add_config_scopes(config_unset, config_unset_value);
   std::vector<std::string> help_commands;
+  std::string help_keyword;
   auto* help = app.add_subcommand("help", "Print help");
-  help->add_option("commands", help_commands, "Command path");
+  CLI::Option* help_command =
+      help->add_option("commands", help_commands, "Command path");
+  help->add_option("-k,--keyword", help_keyword, "Help keyword")
+      ->check(CLI::IsMember({"bookmarks", "config", "filesets", "glossary",
+                            "revsets", "templates", "tutorial"}))
+      ->excludes(help_command);
   auto* version = app.add_subcommand("version", "Print version");
 
   if (arguments.empty()) {
@@ -868,6 +900,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     return {0, std::monostate{}};
   }
   if (help->parsed()) {
+    if (!help_keyword.empty()) {
+      output << kHelpKeywords.at(help_keyword);
+      return {0, std::monostate{}};
+    }
     CLI::App* target = &app;
     std::string parent = "gg";
     for (std::size_t index = 0; index < help_commands.size(); ++index) {
