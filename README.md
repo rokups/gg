@@ -82,6 +82,14 @@ operation. First-class conflicted commits are intentionally outside this MVP.
 Change IDs use Jujutsu's 32-character reverse-hex format (`z` through `k`).
 Commands show the shortest unique prefix with a minimum length of eight.
 
+Set `GG_LEAN=1` to enable lean mode. It keeps gg's change-editing, revision
+graph, operation-history, remote-tracking, workspace, and configuration
+workflows, while hiding and rejecting commands that Git already provides
+directly. Those include status, diff, show, file inspection, ordinary bookmark
+and tag management, clone/init, sparse-checkout helpers, external command
+execution, and garbage collection. Help, generated manuals, and shell
+completions expose the same reduced command set.
+
 `gg undo` and `gg redo` behave like editor history: each restoration is itself
 recorded, repeated commands move backward or forward, and a new operation after
 an undo clears the redo path. `gg operation log` (also `gg op log`) shows the

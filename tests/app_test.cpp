@@ -56,6 +56,84 @@ TEST(AppTest, ReportsUserAndGitErrors) {
   EXPECT_EQ(run({"-R", "."}).code, 2);
 }
 
+TEST(AppTest, LeanModeKeepsOnlyGgValueAddedCommands) {
+  const char* previous_raw = std::getenv("GG_LEAN");
+  const std::optional<std::string> previous =
+      previous_raw == nullptr ? std::nullopt
+                              : std::optional<std::string>(previous_raw);
+
+  EXPECT_EQ(setenv("GG_LEAN", "0", 1), 0);
+  const Result normal_status = run({"status", "--help"});
+  EXPECT_EQ(setenv("GG_LEAN", "1", 1), 0);
+  const Result root_help = run({});
+  const Result file_help = run({"file", "--help"});
+  const Result bookmark_help = run({"bookmark", "--help"});
+  const Result tag_help = run({"tag", "--help"});
+  const Result util_help = run({"util", "--help"});
+  const Result markdown = run({"util", "markdown-help"});
+  const Result completion = run({"util", "completion", "bash"});
+  const Result disabled_status = run({"status"});
+  const Result disabled_status_help = run({"status", "--help"});
+  const Result disabled_file = run({"file", "list"});
+  const Result disabled_bookmark = run({"bookmark", "create", "topic"});
+  const Result disabled_bare_bookmark = run({"bookmark"});
+  const Result disabled_tag = run({"tag", "set", "v1"});
+  const Result disabled_util = run({"util", "gc"});
+  const Result disabled_workspace = run({"workspace", "root"});
+  const Result hidden_help = run({"help", "status"});
+  const Result enabled_log = run({"log", "--help"});
+  const Result enabled_file = run({"file", "chmod", "--help"});
+  const Result enabled_bookmark = run({"bookmark", "advance", "--help"});
+  const Result enabled_tag = run({"tag", "track", "--help"});
+
+  if (previous.has_value()) {
+    EXPECT_EQ(setenv("GG_LEAN", previous->c_str(), 1), 0);
+  } else {
+    EXPECT_EQ(unsetenv("GG_LEAN"), 0);
+  }
+
+  EXPECT_EQ(normal_status.code, 0);
+  EXPECT_EQ(root_help.code, 0);
+  EXPECT_EQ(root_help.output.find("  status, st "), std::string::npos);
+  for (std::string_view command : {"diff", "show", "clone", "init", "sparse"}) {
+    EXPECT_EQ(root_help.output.find("  " + std::string(command) + " "),
+              std::string::npos)
+        << command;
+    EXPECT_EQ(completion.output.find(" " + std::string(command) + " "),
+              std::string::npos)
+        << command;
+  }
+  EXPECT_NE(root_help.output.find("  log "), std::string::npos);
+  EXPECT_NE(completion.output.find(" log "), std::string::npos);
+
+  EXPECT_EQ(file_help.output.find("  list "), std::string::npos);
+  EXPECT_EQ(file_help.output.find("  show "), std::string::npos);
+  EXPECT_EQ(file_help.output.find("  search "), std::string::npos);
+  EXPECT_NE(file_help.output.find("  chmod "), std::string::npos);
+  EXPECT_EQ(bookmark_help.output.find("  create "), std::string::npos);
+  EXPECT_NE(bookmark_help.output.find("  advance "), std::string::npos);
+  EXPECT_EQ(tag_help.output.find("  set "), std::string::npos);
+  EXPECT_NE(tag_help.output.find("  track "), std::string::npos);
+  EXPECT_EQ(util_help.output.find("  gc "), std::string::npos);
+  EXPECT_NE(util_help.output.find("  snapshot "), std::string::npos);
+
+  EXPECT_EQ(markdown.output.find("## `gg status`"), std::string::npos);
+  EXPECT_EQ(markdown.output.find("## `gg bookmark create`"),
+            std::string::npos);
+  EXPECT_NE(markdown.output.find("## `gg bookmark advance`"),
+            std::string::npos);
+  for (const Result* disabled :
+       {&disabled_status, &disabled_file, &disabled_bookmark,
+        &disabled_status_help, &disabled_bare_bookmark, &disabled_tag,
+        &disabled_util, &disabled_workspace, &hidden_help}) {
+    EXPECT_EQ(disabled->code, 2);
+  }
+  for (const Result* enabled :
+       {&enabled_log, &enabled_file, &enabled_bookmark, &enabled_tag}) {
+    EXPECT_EQ(enabled->code, 0) << enabled->error;
+  }
+}
+
 TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"log"}).code, 0);
   EXPECT_EQ(invoke({"log", "-r", "main"}).code, 0);
