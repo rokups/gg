@@ -955,12 +955,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
          {status, diff, show, tag, clone, init, fetch, push, sparse}) {
       command->disabled()->group("");
     }
-    for (CLI::App* command : {file_list, file_show, file_search, create, set,
-                              move, erase, forget, rename, list, tag_set,
-                              tag_delete, tag_list, util_exec, util_gc}) {
-      command->disabled()->group("");
-    }
-    bookmark->require_subcommand(1);
   }
 
   if (arguments.empty()) {

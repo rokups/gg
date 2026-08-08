@@ -34,7 +34,7 @@ TEST(AppTest, ReportsUserAndGitErrors) {
   EXPECT_EQ(run({"-R", "."}).code, 2);
 }
 
-TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
+TEST(AppTest, LeanModeIsDefaultAndFiltersOnlyTopLevelCommands) {
   const char* previous_raw = std::getenv("GG_LEAN");
   const std::optional<std::string> previous =
       previous_raw == nullptr ? std::nullopt
@@ -58,11 +58,11 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   const Result completion = run({"util", "completion", "bash"});
   const Result disabled_status = run({"status"});
   const Result disabled_status_help = run({"status", "--help"});
-  const Result disabled_file = run({"file", "list"});
-  const Result disabled_bookmark = run({"bookmark", "create", "topic"});
-  const Result disabled_bare_bookmark = run({"bookmark"});
+  const Result enabled_file_list = run({"file", "list", "--help"});
+  const Result enabled_bookmark_create =
+      run({"bookmark", "create", "--help"});
   const Result disabled_tag = run({"tag", "set", "v1"});
-  const Result disabled_util = run({"util", "gc"});
+  const Result enabled_util_gc = run({"util", "gc", "--help"});
   const Result enabled_workspace = run({"workspace", "--help"});
   const Result hidden_help = run({"help", "status"});
   const Result enabled_log = run({"log", "--help"});
@@ -91,6 +91,9 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
     EXPECT_EQ(root_help.output.find("  " + std::string(command) + " "),
               std::string::npos)
         << command;
+  }
+  for (std::string_view command :
+       {"diff", "tag", "clone", "init", "fetch", "push", "sparse"}) {
     EXPECT_EQ(completion.output.find(" " + std::string(command) + " "),
               std::string::npos)
         << command;
@@ -98,34 +101,51 @@ TEST(AppTest, LeanModeIsDefaultAndKeepsOnlyGgValueAddedCommands) {
   EXPECT_NE(root_help.output.find("  log "), std::string::npos);
   EXPECT_NE(root_help.output.find("  workspace "), std::string::npos);
   EXPECT_NE(completion.output.find(" log "), std::string::npos);
+  EXPECT_NE(completion.output.find(" show "), std::string::npos);
   EXPECT_NE(completion.output.find(" workspace "), std::string::npos);
 
-  EXPECT_EQ(file_help.output.find("  list "), std::string::npos);
-  EXPECT_EQ(file_help.output.find("  show "), std::string::npos);
-  EXPECT_EQ(file_help.output.find("  search "), std::string::npos);
-  EXPECT_NE(file_help.output.find("  chmod "), std::string::npos);
-  EXPECT_EQ(bookmark_help.output.find("  create "), std::string::npos);
-  EXPECT_NE(bookmark_help.output.find("  advance "), std::string::npos);
+  for (std::string_view command :
+       {"list", "show", "search", "chmod", "track", "untrack"}) {
+    EXPECT_NE(file_help.output.find("  " + std::string(command) + " "),
+              std::string::npos)
+        << command;
+  }
+  for (std::string_view command :
+       {"advance", "create", "set", "move", "delete", "forget", "rename",
+        "track", "untrack", "list"}) {
+    EXPECT_NE(bookmark_help.output.find("  " + std::string(command) + " "),
+              std::string::npos)
+        << command;
+  }
   EXPECT_EQ(tag_help.code, 2);
-  EXPECT_EQ(util_help.output.find("  gc "), std::string::npos);
-  EXPECT_NE(util_help.output.find("  snapshot "), std::string::npos);
+  for (std::string_view command :
+       {"exec", "gc", "completion", "config-schema", "install-man-pages",
+        "markdown-help", "snapshot"}) {
+    EXPECT_NE(util_help.output.find("  " + std::string(command) + " "),
+              std::string::npos)
+        << command;
+  }
 
   EXPECT_EQ(markdown.output.find("## `gg status`"), std::string::npos);
-  EXPECT_EQ(markdown.output.find("## `gg bookmark create`"),
-            std::string::npos);
   EXPECT_EQ(markdown.output.find("## `gg tag"), std::string::npos);
   EXPECT_EQ(markdown.output.find("## `gg fetch`"), std::string::npos);
   EXPECT_EQ(markdown.output.find("## `gg push`"), std::string::npos);
-  EXPECT_NE(markdown.output.find("## `gg bookmark advance`"),
-            std::string::npos);
+  for (std::string_view command :
+       {"advance", "create", "set", "move", "delete", "forget", "rename",
+        "track", "untrack", "list"}) {
+    EXPECT_NE(markdown.output.find("## `gg bookmark " + std::string(command) +
+                                   "`"),
+              std::string::npos)
+        << command;
+  }
   for (const Result* disabled :
-       {&disabled_status, &disabled_file, &disabled_bookmark,
-        &disabled_status_help, &disabled_bare_bookmark, &disabled_tag,
-        &disabled_fetch, &disabled_push, &disabled_util, &hidden_help}) {
+       {&disabled_status, &disabled_status_help, &disabled_tag,
+        &disabled_fetch, &disabled_push, &hidden_help}) {
     EXPECT_EQ(disabled->code, 2);
   }
   for (const Result* enabled :
-       {&enabled_log, &enabled_file, &enabled_bookmark, &enabled_workspace}) {
+       {&enabled_log, &enabled_file, &enabled_file_list, &enabled_bookmark,
+        &enabled_bookmark_create, &enabled_util_gc, &enabled_workspace}) {
     EXPECT_EQ(enabled->code, 0) << enabled->error;
   }
 }
