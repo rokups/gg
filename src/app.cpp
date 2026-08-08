@@ -104,6 +104,9 @@ int execute(Repository& repository,
             [&](const OperationRestoreCommand& value) {
               command_operation_restore(repository, value, output);
             },
+            [&](const UtilGcCommand& value) {
+              command_util_gc(repository, value, output);
+            },
             [&](const UtilSnapshotCommand&) {
               command_util_snapshot(repository, output);
             },

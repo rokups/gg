@@ -351,6 +351,11 @@ std::vector<std::string> repository_replay_arguments(
             result.push_back(value.operation);
             return result;
           },
+          [](const UtilGcCommand& value) {
+            std::vector<std::string> result{"util", "gc"};
+            add_option(result, "--expire", value.expire);
+            return result;
+          },
           [](const UtilSnapshotCommand&) {
             return std::vector<std::string>{"util", "snapshot"};
           },

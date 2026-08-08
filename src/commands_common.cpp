@@ -167,6 +167,22 @@ int command_util_exec(const UtilExecCommand& options,
   throw UserError("external command terminated by a signal");
 }
 
+void command_util_gc(Repository& repo,
+                     const UtilGcCommand& options,
+                     std::ostream& output) {
+  repo.sync_workspace();
+  UtilExecCommand command{
+      "git",
+      {"--git-dir=" + std::string(git_repository_path(repo.raw())), "gc"}};
+  if (!options.expire.empty()) {
+    command.arguments.push_back("--prune=" + options.expire);
+  }
+  const int status =
+      command_util_exec(command, git_repository_path(repo.raw()));
+  if (status != 0) throw UserError("Git garbage collection failed");  // GG_COV_EXCL_BRANCH
+  output << "Garbage collection completed.\n";
+}
+
 void command_util_snapshot(Repository& repo, std::ostream& output) {
   output << (repo.sync_workspace() ? "Created working-copy snapshot.\n"
                                    : "Nothing changed.\n");

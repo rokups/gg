@@ -609,6 +609,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   util_exec->add_option("command", util_exec_value.command, "Command")
       ->required();
   util_exec->add_option("args", util_exec_value.arguments, "Command arguments");
+  UtilGcCommand util_gc_value;
+  auto* util_gc = util->add_subcommand("gc", "Run Git garbage collection");
+  util_gc->add_option("--expire", util_gc_value.expire, "Expiration threshold")
+      ->check(CLI::IsMember({"now"}));
   std::string util_completion_shell;
   auto* util_completion =
       util->add_subcommand("completion", "Print a shell completion script");
@@ -894,6 +898,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(operation_restore_value)};
   } else if (util_exec->parsed()) {
     command = std::move(util_exec_value);
+  } else if (util_gc->parsed()) {
+    command = RepositoryCommand{std::move(util_gc_value)};
   } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UtilSnapshotCommand{}};
   } else if (workspace_list->parsed()) {

@@ -4,6 +4,7 @@
 
 #include "test_support.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <optional>
 
@@ -227,6 +228,39 @@ TEST(AppTest, PrintsTheConfigurationSchema) {
             std::string::npos);
   EXPECT_EQ(run({"util", "config-schema"}).output, schema.output);
   EXPECT_EQ(run({"util", "config-schema", "extra"}).code, 2);
+}
+
+TEST_F(RepositoryTest, PrunesUnreachableGitObjects) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  git_oid orphan{};
+  ASSERT_EQ(git_blob_create_from_buffer(&orphan, repository_.get(),
+                                        "unreachable", 11),
+            0);
+  git_odb* raw_odb = nullptr;
+  ASSERT_EQ(git_repository_odb(&raw_odb, repository_.get()), 0);
+  std::unique_ptr<git_odb, decltype(&git_odb_free)> odb(raw_odb, git_odb_free);
+  EXPECT_NE(git_odb_exists(odb.get(), &orphan), 0);
+  const std::string orphan_text = git_oid_tostr_s(&orphan);
+  const std::filesystem::path orphan_path =
+      path_ / ".git/objects" / orphan_text.substr(0, 2) /
+      orphan_text.substr(2);
+  ASSERT_TRUE(std::filesystem::is_regular_file(orphan_path));
+  std::filesystem::last_write_time(
+      orphan_path, std::filesystem::file_time_type::clock::now() -
+                       std::chrono::hours(1));
+
+  const Result ordinary = invoke({"util", "gc"});
+  ASSERT_EQ(ordinary.code, 0) << ordinary.error;
+  EXPECT_NE(ordinary.output.find("Garbage collection completed."),
+            std::string::npos);
+  EXPECT_NE(git_odb_exists(odb.get(), &orphan), 0);
+
+  const Result immediate = invoke({"util", "gc", "--expire", "now"});
+  ASSERT_EQ(immediate.code, 0) << immediate.error;
+  EXPECT_FALSE(std::filesystem::exists(orphan_path));
+  EXPECT_NE(invoke({"operation", "log"}).output.find("gg new"),
+            std::string::npos);
+  EXPECT_EQ(invoke({"util", "gc", "--expire", "yesterday"}).code, 2);
 }
 
 }  // namespace gg::test

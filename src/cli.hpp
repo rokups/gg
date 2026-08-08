@@ -211,6 +211,9 @@ struct UtilExecCommand {
   std::string command;
   std::vector<std::string> arguments;
 };
+struct UtilGcCommand {
+  std::string expire;
+};
 struct UtilSnapshotCommand {};
 
 enum class WorkspaceAction { list, root };
@@ -251,7 +254,8 @@ using RepositoryCommand =
                  BookmarkCommand, TagCommand,
                  GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
-                 UtilSnapshotCommand, WorkspaceCommand, MovementCommand,
+                 UtilGcCommand, UtilSnapshotCommand, WorkspaceCommand,
+                 MovementCommand,
                  ConfigCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,
                              UtilExecCommand, ContinueCommand, AbortCommand>;

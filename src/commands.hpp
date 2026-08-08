@@ -60,6 +60,7 @@ void command_operation_log(Repository&, const OperationLogCommand&,
 void command_operation_restore(Repository&, const OperationRestoreCommand&,
                                std::ostream&);
 int command_util_exec(const UtilExecCommand&, const std::filesystem::path&);
+void command_util_gc(Repository&, const UtilGcCommand&, std::ostream&);
 void command_util_snapshot(Repository&, std::ostream&);
 void command_workspace(Repository&, const WorkspaceCommand&, std::ostream&);
 void command_move(Repository&, const MovementCommand&, std::ostream&);
