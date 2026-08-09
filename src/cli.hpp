@@ -77,6 +77,12 @@ struct RebaseCommand {
   std::string source;
   std::string destination;
 };
+enum class ReorderPlacement { before, after };
+struct ReorderCommand {
+  std::string source;
+  std::string target;
+  ReorderPlacement placement{ReorderPlacement::before};
+};
 struct SplitCommand {
   std::string revision;
   std::string message;

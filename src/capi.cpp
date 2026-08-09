@@ -45,6 +45,8 @@ using gg::detail::MovementDirection;
 using gg::detail::NewCommand;
 using gg::detail::OperationRestoreCommand;
 using gg::detail::RebaseCommand;
+using gg::detail::ReorderCommand;
+using gg::detail::ReorderPlacement;
 using gg::detail::Repository;
 using gg::detail::RestoreCommand;
 using gg::detail::SimplifyParentsCommand;
@@ -393,6 +395,12 @@ int gg_metaedit_options_init(gg_metaedit_options* options,
 
 int gg_rebase_options_init(gg_rebase_options* options, unsigned int version) {
   return initialize(options, version, gg_rebase_options GG_REBASE_OPTIONS_INIT);
+}
+
+int gg_reorder_options_init(gg_reorder_options* options,
+                            unsigned int version) {
+  return initialize(options, version,
+                    gg_reorder_options GG_REORDER_OPTIONS_INIT);
 }
 
 int gg_split_options_init(gg_split_options* options, unsigned int version) {
@@ -1084,6 +1092,25 @@ int gg_repository_rebase(gg_mutation_result* out,
   return mutate(out, repository, operation, "rebase", [&](Repository& repo, std::ostream& output) {
     const auto& value = required(options);
     command_rebase(repo, RebaseCommand{string(value.source), string(value.destination)}, output);
+  });
+}
+
+int gg_repository_reorder(gg_mutation_result* out,
+                          gg_repository* repository,
+                          const gg_reorder_options* options,
+                          const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "reorder", [&](Repository& repo, std::ostream& output) {
+    const auto& value = required(options);
+    ReorderPlacement placement;
+    switch (value.placement) {
+      case GG_REORDER_BEFORE: placement = ReorderPlacement::before; break;
+      case GG_REORDER_AFTER: placement = ReorderPlacement::after; break;
+      default: throw gg::detail::UserError("invalid reorder placement");
+    }
+    command_reorder(repo,
+                    ReorderCommand{string(value.source), string(value.target),
+                                   placement},
+                    output);
   });
 }
 

@@ -6,9 +6,12 @@
 
 #include <git2.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <map>
 #include <set>
 #include <utility>
+#include <vector>
 
 namespace gg::detail {
 
@@ -45,6 +48,114 @@ void command_rebase(Repository& repo,
   }
   output << "Rebased " << oid_string(old, 8) << " as "
          << oid_string(rewritten, 8) << '\n';
+}
+
+void command_reorder(Repository& repo,
+                     const ReorderCommand& options,
+                     std::ostream& output) {
+  repo.sync_for_command();
+  const git_oid source = repo.resolve(options.source);
+  const git_oid target = repo.resolve(options.target);
+  if (source == target) {
+    throw UserError("reorder source and target must be different");
+  }
+
+  const int source_after_target =
+      git_graph_descendant_of(repo.raw(), &source, &target);
+  check(source_after_target, "compare reorder revisions");
+  const int target_after_source =
+      git_graph_descendant_of(repo.raw(), &target, &source);
+  check(target_after_source, "compare reorder revisions");
+  if (source_after_target == 0 && target_after_source == 0) {
+    throw UserError("reorder revisions must be on the same first-parent stack");
+  }
+
+  const git_oid earliest = source_after_target != 0 ? target : source;
+  const git_oid latest = source_after_target != 0 ? source : target;
+  std::vector<git_oid> segment;
+  for (git_oid current = latest;;) {
+    segment.push_back(current);
+    if (current == earliest) break;
+    const auto parents = repo.parents(current);
+    if (parents.size() != 1) {
+      throw UserError("reorder revisions must be on one non-merge stack");
+    }
+    current = parents.front();
+  }
+  std::reverse(segment.begin(), segment.end());
+
+  const auto base_parents = repo.parents(segment.front());
+  if (base_parents.size() > 1) {
+    throw UserError("reorder cannot move merge changes");
+  }
+  for (std::size_t index = 0; index < segment.size(); ++index) {
+    const auto parents = repo.parents(segment[index]);
+    if (parents.size() > 1 || (index != 0 && parents.size() != 1)) {
+      throw UserError("reorder cannot move merge changes");
+    }
+    if (index + 1 < segment.size()) {
+      const auto children = repo.children(segment[index]);
+      if (children.size() != 1 || !(children.front() == segment[index + 1])) {
+        throw UserError("reorder stack has an ambiguous branch");
+      }
+    }
+  }
+
+  std::vector<git_oid> reordered = segment;
+  const auto oid_is = [](const git_oid& value, const git_oid& expected) {
+    return value == expected;
+  };
+  const auto source_it =
+      std::find_if(reordered.begin(), reordered.end(),
+                   [&](const git_oid& value) { return oid_is(value, source); });
+  reordered.erase(source_it);
+  auto target_it =
+      std::find_if(reordered.begin(), reordered.end(),
+                   [&](const git_oid& value) { return oid_is(value, target); });
+  if (options.placement == ReorderPlacement::after) ++target_it;
+  reordered.insert(target_it, source);
+  if (std::equal(reordered.begin(), reordered.end(), segment.begin(), oid_is)) {
+    output << "Nothing changed.\n";
+    return;
+  }
+
+  std::map<git_oid, git_oid, OidLess> roots;
+  std::vector<git_oid> parents = base_parents;
+  for (const git_oid& old : reordered) {
+    const git_oid rewritten = repo.rewrite_commit(old, parents);
+    roots.emplace(old, rewritten);
+    parents = {rewritten};
+  }
+  const git_oid new_tip = parents.front();
+  for (const git_oid& child : repo.children(latest)) {
+    if (std::find_if(segment.begin(), segment.end(),
+                     [&](const git_oid& value) { return value == child; }) !=
+        segment.end()) {
+      continue;
+    }
+    auto child_parents = repo.parents(child);
+    for (git_oid& old_parent : child_parents) {
+      if (old_parent == latest) {
+        old_parent = new_tip;
+      } else if (const auto rewritten = roots.find(old_parent);
+                 rewritten != roots.end()) {
+        old_parent = rewritten->second;
+      }
+    }
+    roots.emplace(child, repo.rewrite_commit(child, child_parents));
+  }
+  RewritePlan plan = repo.descendants(std::move(roots));
+  const auto workspace = repo.workspace();
+  if (workspace.has_value()) {
+    const git_oid new_workspace = plan.commits.contains(*workspace)
+                                      ? plan.commits.at(*workspace)
+                                      : *workspace;
+    finish_workspace(repo, new_workspace, std::move(plan.updates), {},
+                     "gg reorder");
+  } else {
+    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg reorder");
+  }
+  output << "Reordered " << oid_string(source, 8) << '\n';
 }
 
 void command_split(Repository& repo,

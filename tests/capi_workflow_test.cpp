@@ -17,6 +17,7 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   gg_describe_options describe_options = GG_DESCRIBE_OPTIONS_INIT;
   gg_metaedit_options metaedit_options = GG_METAEDIT_OPTIONS_INIT;
   gg_rebase_options rebase_options = GG_REBASE_OPTIONS_INIT;
+  gg_reorder_options reorder_options = GG_REORDER_OPTIONS_INIT;
   gg_split_options split_options = GG_SPLIT_OPTIONS_INIT;
   gg_squash_options squash_options = GG_SQUASH_OPTIONS_INIT;
   gg_abandon_options abandon_options = GG_ABANDON_OPTIONS_INIT;
@@ -38,6 +39,7 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   EXPECT_EQ(gg_describe_options_init(&describe_options, 1), GIT_OK);
   EXPECT_EQ(gg_metaedit_options_init(&metaedit_options, 1), GIT_OK);
   EXPECT_EQ(gg_rebase_options_init(&rebase_options, 1), GIT_OK);
+  EXPECT_EQ(gg_reorder_options_init(&reorder_options, 1), GIT_OK);
   EXPECT_EQ(gg_split_options_init(&split_options, 1), GIT_OK);
   EXPECT_EQ(gg_squash_options_init(&squash_options, 1), GIT_OK);
   EXPECT_EQ(gg_abandon_options_init(&abandon_options, 1), GIT_OK);
@@ -209,6 +211,113 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   gg_mutation_result_dispose(&mutation);
   gg_transport_plan_dispose(&fetch_plan);
 
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ReordersAStackAsOneCOperation) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  gg_mutation_result mutation{};
+  gg_new_options create = GG_NEW_OPTIONS_INIT;
+  create.message = "first";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  const git_oid first = mutation.working_copy;
+  gg_mutation_result_dispose(&mutation);
+  create.message = "second";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+  create.message = "third";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  const git_oid third = mutation.working_copy;
+  gg_mutation_result_dispose(&mutation);
+
+  gg_operation_array before{};
+  ASSERT_EQ(gg_repository_operations(&before, repository, 100), GIT_OK);
+  const size_t before_count = before.count;
+  gg_operation_array_dispose(&before);
+
+  gg_reorder_options reorder = GG_REORDER_OPTIONS_INIT;
+  const std::string third_text = git_oid_tostr_s(&third);
+  const std::string first_text = git_oid_tostr_s(&first);
+  reorder.source = third_text.c_str();
+  reorder.target = first_text.c_str();
+  reorder.placement = GG_REORDER_BEFORE;
+  ASSERT_EQ(gg_repository_reorder(&mutation, repository, &reorder, nullptr),
+            GIT_OK)
+      << git_error_last()->message;
+  EXPECT_TRUE(mutation.changed);
+  EXPECT_TRUE(mutation.has_operation);
+  EXPECT_GE(mutation.rewrite_count, 3U);
+  gg_mutation_result_dispose(&mutation);
+
+  gg_revision_query_options query = GG_REVISION_QUERY_OPTIONS_INIT;
+  query.revisions = "all()";
+  query.reversed = 1;
+  gg_revision_array revisions{};
+  ASSERT_EQ(gg_repository_revisions(&revisions, repository, &query), GIT_OK);
+  ASSERT_GE(revisions.count, 3U);
+  EXPECT_STREQ(revisions.items[revisions.count - 3].description, "third");
+  EXPECT_STREQ(revisions.items[revisions.count - 2].description, "first");
+  EXPECT_STREQ(revisions.items[revisions.count - 1].description, "second");
+  gg_revision_array_dispose(&revisions);
+
+  gg_operation_array after{};
+  ASSERT_EQ(gg_repository_operations(&after, repository, 100), GIT_OK);
+  EXPECT_EQ(after.count, before_count + 1);
+  gg_operation_array_dispose(&after);
+  ASSERT_EQ(gg_repository_undo(&mutation, repository, nullptr), GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+
+  git_oid working{};
+  ASSERT_EQ(gg_repository_working_copy(&working, repository), GIT_OK);
+  EXPECT_TRUE(git_oid_equal(&working, &third));
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ReordersARootChangeUsingAfterPlacement) {
+  const git_oid base = ref("HEAD");
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  gg_mutation_result mutation{};
+  gg_new_options create = GG_NEW_OPTIONS_INIT;
+  create.message = "first";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  const git_oid first = mutation.working_copy;
+  gg_mutation_result_dispose(&mutation);
+  create.message = "second";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+
+  const std::string base_text = git_oid_tostr_s(&base);
+  const std::string first_text = git_oid_tostr_s(&first);
+  gg_reorder_options reorder = GG_REORDER_OPTIONS_INIT;
+  reorder.source = base_text.c_str();
+  reorder.target = first_text.c_str();
+  reorder.placement = GG_REORDER_AFTER;
+  ASSERT_EQ(gg_repository_reorder(&mutation, repository, &reorder, nullptr),
+            GIT_OK);
+  EXPECT_TRUE(mutation.changed);
+  gg_mutation_result_dispose(&mutation);
+
+  gg_revision_query_options query = GG_REVISION_QUERY_OPTIONS_INIT;
+  query.revisions = "all()";
+  query.reversed = 1;
+  gg_revision_array revisions{};
+  ASSERT_EQ(gg_repository_revisions(&revisions, repository, &query), GIT_OK);
+  ASSERT_GE(revisions.count, 3U);
+  EXPECT_STREQ(revisions.items[revisions.count - 3].description, "first");
+  EXPECT_STREQ(revisions.items[revisions.count - 2].description, "base");
+  EXPECT_STREQ(revisions.items[revisions.count - 1].description, "second");
+  gg_revision_array_dispose(&revisions);
   gg_repository_free(repository);
 }
 

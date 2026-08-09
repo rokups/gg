@@ -205,6 +205,21 @@ typedef struct gg_rebase_options {
 
 #define GG_REBASE_OPTIONS_INIT { GG_OPTIONS_VERSION, NULL, NULL }
 
+typedef enum gg_reorder_placement {
+  GG_REORDER_BEFORE,
+  GG_REORDER_AFTER
+} gg_reorder_placement;
+
+typedef struct gg_reorder_options {
+  unsigned int version;
+  const char *source;
+  const char *target;
+  gg_reorder_placement placement;
+} gg_reorder_options;
+
+#define GG_REORDER_OPTIONS_INIT \
+  { GG_OPTIONS_VERSION, NULL, NULL, GG_REORDER_BEFORE }
+
 typedef struct gg_split_options {
   unsigned int version;
   const char *revision;
@@ -488,6 +503,8 @@ GG_EXTERN int gg_metaedit_options_init(gg_metaedit_options *options,
                                        unsigned int version);
 GG_EXTERN int gg_rebase_options_init(gg_rebase_options *options,
                                      unsigned int version);
+GG_EXTERN int gg_reorder_options_init(gg_reorder_options *options,
+                                      unsigned int version);
 GG_EXTERN int gg_split_options_init(gg_split_options *options,
                                     unsigned int version);
 GG_EXTERN int gg_squash_options_init(gg_squash_options *options,
@@ -584,6 +601,9 @@ GG_EXTERN int gg_repository_move(gg_mutation_result *out,
 GG_EXTERN int gg_repository_rebase(
     gg_mutation_result *out, gg_repository *repository,
     const gg_rebase_options *options, const gg_operation_options *operation);
+GG_EXTERN int gg_repository_reorder(
+    gg_mutation_result *out, gg_repository *repository,
+    const gg_reorder_options *options, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_split(
     gg_mutation_result *out, gg_repository *repository,
     const gg_split_options *options, const gg_operation_options *operation);
