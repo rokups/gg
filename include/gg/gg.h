@@ -489,6 +489,11 @@ typedef struct gg_operation_array {
   size_t count;
 } gg_operation_array;
 
+typedef struct gg_operation_capabilities {
+  int can_undo;
+  int can_redo;
+} gg_operation_capabilities;
+
 typedef struct gg_workspace {
   char *name;
   char *root;
@@ -585,6 +590,8 @@ GG_EXTERN int gg_repository_status(gg_status *out,
 GG_EXTERN int gg_repository_operations(gg_operation_array *out,
                                        gg_repository *repository,
                                        size_t limit);
+GG_EXTERN int gg_repository_operation_capabilities(
+    gg_operation_capabilities *out, gg_repository *repository);
 GG_EXTERN int gg_repository_workspaces(gg_workspace_array *out,
                                        gg_repository *repository);
 GG_EXTERN int gg_repository_sparse_patterns(gg_owned_string_array *out,

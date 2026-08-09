@@ -1173,42 +1173,58 @@ void command_push(Repository& repo,
 }
 
 void command_undo(Repository& repo, std::ostream& output) {
+  const auto previous = operation_undo_target(repo);
+  if (!previous.has_value()) {
+    throw UserError("nothing to undo");
+  }
+  repo.restore_operation(
+      *previous, std::string(kUndoPrefix) + oid_string(*previous));
+  output << "Undid operation.\n";
+}
+
+std::optional<git_oid> operation_undo_target(Repository& repo) {
   repo.sync_for_command();
   if (!repo.operation().has_value()) {
-    throw UserError("nothing to undo");
+    return std::nullopt;
   }
   const git_oid current = repo.ensure_operation();
   const git_oid target =
       repo.operation_target(current, kUndoPrefix).value_or(current);
   auto previous = repo.operation_previous(target);
   if (!previous.has_value()) {
-    throw UserError("nothing to undo");
+    return std::nullopt;
   }
   previous = repo.operation_target(*previous, kUndoPrefix).value_or(*previous);
-  repo.restore_operation(
-      *previous, std::string(kUndoPrefix) + oid_string(*previous));
-  output << "Undid operation.\n";
+  return previous;
 }
 
 void command_redo(Repository& repo, std::ostream& output) {
+  const auto restored = operation_redo_target(repo);
+  if (!restored.has_value()) {
+    throw UserError("nothing to redo");
+  }
+  repo.restore_operation(
+      *restored, std::string(kRedoPrefix) + oid_string(*restored));
+  output << "Redid operation.\n";
+}
+
+std::optional<git_oid> operation_redo_target(Repository& repo) {
   repo.sync_for_command();
   if (!repo.operation().has_value()) {
-    throw UserError("nothing to redo");
+    return std::nullopt;
   }
   const git_oid current = repo.ensure_operation();
   const git_oid target =
       repo.operation_target(current, kRedoPrefix).value_or(current);
   if (!repo.operation_target(target, kUndoPrefix).has_value()) {
-    throw UserError("nothing to redo");
+    return std::nullopt;
   }
   auto restored = repo.operation_previous(target);
   if (!restored.has_value()) {  // GG_COV_EXCL_BRANCH
     throw GitError("undo operation has no predecessor");
   }
   restored = repo.operation_target(*restored, kRedoPrefix).value_or(*restored);
-  repo.restore_operation(
-      *restored, std::string(kRedoPrefix) + oid_string(*restored));
-  output << "Redid operation.\n";
+  return restored;
 }
 
 void command_operation_log(Repository& repo,

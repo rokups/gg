@@ -945,6 +945,19 @@ int gg_repository_operations(gg_operation_array* out,
   });
 }
 
+int gg_repository_operation_capabilities(gg_operation_capabilities* out,
+                                         gg_repository* repository) {
+  return boundary([&] {
+    if (out == nullptr || repository == nullptr) {
+      throw gg::detail::UserError("operation capability arguments must not be null");
+    }
+    Repository& repo = repository->implementation;
+    out->can_undo = gg::detail::operation_undo_target(repo).has_value();
+    out->can_redo = gg::detail::operation_redo_target(repo).has_value();
+    return GIT_OK;
+  });
+}
+
 int gg_repository_workspaces(gg_workspace_array* out,
                              gg_repository* repository) {
   return boundary([&] {

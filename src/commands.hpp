@@ -108,6 +108,8 @@ void command_bookmark(Repository&, const BookmarkCommand&, std::ostream&);
 void command_tag(Repository&, const TagCommand&, std::ostream&);
 void command_fetch(Repository&, const GitFetchCommand&, std::ostream&);
 void command_push(Repository&, const GitPushCommand&, std::ostream&);
+std::optional<git_oid> operation_undo_target(Repository&);
+std::optional<git_oid> operation_redo_target(Repository&);
 void command_undo(Repository&, std::ostream&);
 void command_redo(Repository&, std::ostream&);
 void command_operation_log(Repository&, const OperationLogCommand&,

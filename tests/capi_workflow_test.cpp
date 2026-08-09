@@ -60,6 +60,12 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
   ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
 
+  gg_operation_capabilities capabilities{};
+  ASSERT_EQ(gg_repository_operation_capabilities(&capabilities, repository),
+            GIT_OK);
+  EXPECT_TRUE(capabilities.can_undo);
+  EXPECT_FALSE(capabilities.can_redo);
+
   revision_options.revisions = "HEAD";
   gg_revision_array revisions{};
   ASSERT_EQ(gg_repository_revisions(&revisions, repository, &revision_options),
@@ -87,6 +93,19 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   git_oid queried_working{};
   ASSERT_EQ(gg_repository_working_copy(&queried_working, repository), GIT_OK);
   EXPECT_TRUE(git_oid_equal(&working, &queried_working));
+
+  ASSERT_EQ(gg_repository_undo(&mutation, repository, nullptr), GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+  ASSERT_EQ(gg_repository_operation_capabilities(&capabilities, repository),
+            GIT_OK);
+  EXPECT_TRUE(capabilities.can_undo);
+  EXPECT_TRUE(capabilities.can_redo);
+  ASSERT_EQ(gg_repository_redo(&mutation, repository, nullptr), GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+  ASSERT_EQ(gg_repository_operation_capabilities(&capabilities, repository),
+            GIT_OK);
+  EXPECT_TRUE(capabilities.can_undo);
+  EXPECT_FALSE(capabilities.can_redo);
 
   char* change_id = nullptr;
   ASSERT_EQ(gg_repository_change_id(&change_id, repository, &working), GIT_OK);
