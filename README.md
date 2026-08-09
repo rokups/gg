@@ -88,14 +88,10 @@ gg commit -m "Add the parser" src/parser.cpp include/parser.hpp
 
 ### Using only `gg` commands
 
-Lean mode is the default and hides only clone, init, status, diff, show, and
-sparse commands. Tag, fetch, and push remain available alongside the complete
-bookmark, file, util, and workspace families. Set `GG_LEAN=0` to expose the
-remaining commands. Workspace commands remain available in lean mode because
-they coordinate gg state that Git worktrees do not know about:
+All implemented commands are available by default, including the complete
+bookmark, file, util, and workspace families:
 
 ```sh
-export GG_LEAN=0
 gg clone URL project
 cd project
 gg new -m "Add the parser"
@@ -136,8 +132,7 @@ then `gg workspace forget NAME` if its gg workspace ref is still listed.
 
 ## Command reference
 
-The following is the full implemented command surface. Lean mode exposes the
-smaller default surface through `gg --help`.
+The following is the full implemented command surface shown by `gg --help`.
 
 ```text
 gg status [PATH...]

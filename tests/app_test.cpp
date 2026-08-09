@@ -34,122 +34,22 @@ TEST(AppTest, ReportsUserAndGitErrors) {
   EXPECT_EQ(run({"-R", "."}).code, 2);
 }
 
-TEST(AppTest, LeanModeIsDefaultAndFiltersOnlyTopLevelCommands) {
-  const char* previous_raw = std::getenv("GG_LEAN");
-  const std::optional<std::string> previous =
-      previous_raw == nullptr ? std::nullopt
-                              : std::optional<std::string>(previous_raw);
-
-  EXPECT_EQ(unsetenv("GG_LEAN"), 0);
-  const Result default_help = run({});
-  const Result default_status = run({"status"});
-  EXPECT_EQ(setenv("GG_LEAN", "0", 1), 0);
-  const Result normal_status = run({"status", "--help"});
-  const Result normal_tag = run({"tag", "--help"});
-  const Result normal_fetch = run({"fetch", "--help"});
-  const Result normal_push = run({"push", "--help"});
-  EXPECT_EQ(setenv("GG_LEAN", "1", 1), 0);
-  const Result root_help = run({});
-  const Result file_help = run({"file", "--help"});
-  const Result bookmark_help = run({"bookmark", "--help"});
-  const Result tag_help = run({"tag", "--help"});
-  const Result util_help = run({"util", "--help"});
+TEST(AppTest, ShowsAllTopLevelCommands) {
+  const Result help = run({});
   const Result markdown = run({"util", "markdown-help"});
   const Result completion = run({"util", "completion", "bash"});
-  const Result disabled_status = run({"status"});
-  const Result disabled_status_help = run({"status", "--help"});
-  const Result enabled_file_list = run({"file", "list", "--help"});
-  const Result enabled_bookmark_create =
-      run({"bookmark", "create", "--help"});
-  const Result enabled_tag = run({"tag", "--help"});
-  const Result enabled_util_gc = run({"util", "gc", "--help"});
-  const Result enabled_workspace = run({"workspace", "--help"});
-  const Result hidden_help = run({"help", "status"});
-  const Result enabled_log = run({"log", "--help"});
-  const Result enabled_file = run({"file", "chmod", "--help"});
-  const Result enabled_bookmark = run({"bookmark", "advance", "--help"});
-  const Result enabled_fetch = run({"fetch", "--help"});
-  const Result enabled_push = run({"push", "--help"});
 
-  if (previous.has_value()) {
-    EXPECT_EQ(setenv("GG_LEAN", previous->c_str(), 1), 0);
-  } else {
-    EXPECT_EQ(unsetenv("GG_LEAN"), 0);
-  }
-
-  EXPECT_EQ(normal_status.code, 0);
-  EXPECT_EQ(normal_tag.code, 0);
-  EXPECT_EQ(normal_fetch.code, 0);
-  EXPECT_EQ(normal_push.code, 0);
-  EXPECT_EQ(default_status.code, 2);
-  EXPECT_EQ(default_help.output.find("  status, st "), std::string::npos);
-  EXPECT_EQ(root_help.code, 0);
-  EXPECT_EQ(root_help.output.find("  status, st "), std::string::npos);
+  ASSERT_EQ(help.code, 0);
   for (std::string_view command :
-       {"diff", "show", "clone", "init", "sparse"}) {
-    EXPECT_EQ(root_help.output.find("  " + std::string(command) + " "),
+       {"status", "diff", "show", "clone", "init", "sparse"}) {
+    EXPECT_NE(help.output.find("  " + std::string(command)), std::string::npos)
+        << command;
+    EXPECT_NE(markdown.output.find("## `gg " + std::string(command)),
               std::string::npos)
         << command;
-  }
-  for (std::string_view command :
-       {"diff", "clone", "init", "sparse"}) {
-    EXPECT_EQ(completion.output.find(" " + std::string(command) + " "),
+    EXPECT_NE(completion.output.find(" " + std::string(command) + " "),
               std::string::npos)
         << command;
-  }
-  EXPECT_NE(root_help.output.find("  log "), std::string::npos);
-  EXPECT_NE(root_help.output.find("  workspace "), std::string::npos);
-  EXPECT_NE(completion.output.find(" log "), std::string::npos);
-  EXPECT_NE(completion.output.find(" show "), std::string::npos);
-  EXPECT_NE(completion.output.find(" workspace "), std::string::npos);
-  EXPECT_NE(completion.output.find(" tag "), std::string::npos);
-  EXPECT_NE(completion.output.find(" fetch "), std::string::npos);
-  EXPECT_NE(completion.output.find(" push "), std::string::npos);
-
-  for (std::string_view command :
-       {"list", "show", "search", "chmod", "track", "untrack"}) {
-    EXPECT_NE(file_help.output.find("  " + std::string(command) + " "),
-              std::string::npos)
-        << command;
-  }
-  for (std::string_view command :
-       {"advance", "create", "set", "move", "delete", "forget", "rename",
-        "track", "untrack", "list"}) {
-    EXPECT_NE(bookmark_help.output.find("  " + std::string(command) + " "),
-              std::string::npos)
-        << command;
-  }
-  EXPECT_EQ(tag_help.code, 0);
-  for (std::string_view command :
-       {"exec", "gc", "completion", "config-schema", "install-man-pages",
-        "markdown-help", "snapshot", "install-git-hooks",
-        "check-push-conflicts"}) {
-    EXPECT_NE(util_help.output.find("  " + std::string(command) + " "),
-              std::string::npos)
-        << command;
-  }
-
-  EXPECT_EQ(markdown.output.find("## `gg status`"), std::string::npos);
-  EXPECT_NE(markdown.output.find("## `gg tag"), std::string::npos);
-  EXPECT_NE(markdown.output.find("## `gg fetch`"), std::string::npos);
-  EXPECT_NE(markdown.output.find("## `gg push`"), std::string::npos);
-  for (std::string_view command :
-       {"advance", "create", "set", "move", "delete", "forget", "rename",
-        "track", "untrack", "list"}) {
-    EXPECT_NE(markdown.output.find("## `gg bookmark " + std::string(command) +
-                                   "`"),
-              std::string::npos)
-        << command;
-  }
-  for (const Result* disabled :
-       {&disabled_status, &disabled_status_help, &hidden_help}) {
-    EXPECT_EQ(disabled->code, 2);
-  }
-  for (const Result* enabled :
-       {&enabled_log, &enabled_file, &enabled_file_list, &enabled_bookmark,
-        &enabled_bookmark_create, &enabled_tag, &enabled_fetch, &enabled_push,
-        &enabled_util_gc, &enabled_workspace}) {
-    EXPECT_EQ(enabled->code, 0) << enabled->error;
   }
 }
 

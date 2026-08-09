@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <ostream>
@@ -23,11 +22,6 @@ std::vector<const CLI::App*> schema_children(const CLI::App& command) {
   return command.get_subcommands([](const CLI::App* child) {
     return !child->get_disabled();
   });
-}
-
-bool lean_mode_enabled() {
-  const char* value = std::getenv("GG_LEAN");
-  return value == nullptr || std::string_view(value) != "0";
 }
 
 std::string stable_help(const CLI::App& command, std::string_view path) {
@@ -948,13 +942,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   config_unset->add_option("name", config_unset_value.name, "Configuration key")
       ->required();
   add_config_scopes(config_unset, config_unset_value);
-  const bool lean = lean_mode_enabled();
-  if (lean) {
-    for (CLI::App* command : {status, diff, show, clone, init, sparse}) {
-      command->disabled()->group("");
-    }
-  }
-
   if (arguments.empty()) {
     output << app.help();
     return {0, std::monostate{}};
@@ -974,10 +961,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   try {
     app.parse(static_cast<int>(argv.size()), argv.data());
   } catch (const CLI::CallForHelp&) {  // GG_COV_EXCL_BRANCH
-    if (lean && !app.remaining(true).empty()) {
-      error << "error: command disabled in lean mode\n";
-      return {2, std::monostate{}};
-    }
     output << app.help();
     return {0, std::monostate{}};
   } catch (const CLI::CallForVersion&) {

@@ -100,7 +100,6 @@ if(GG_BUILD_TESTS)
   gtest_discover_tests(
     gg_tests
     DISCOVERY_MODE PRE_TEST
-    PROPERTIES ENVIRONMENT "GG_LEAN=0"
   )
   add_test(NAME gg_help COMMAND gg --help)
 
