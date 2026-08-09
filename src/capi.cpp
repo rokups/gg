@@ -25,7 +25,9 @@
 #include <vector>
 
 struct gg_repository {
-  explicit gg_repository(git_repository* raw) : implementation(raw) {}
+  explicit gg_repository(git_repository* raw) : implementation(raw) {
+    implementation.enable_ref_cache();
+  }
   gg::detail::Repository implementation;
 };
 
@@ -166,6 +168,7 @@ Repository& query_repository(
   }
   historical = std::make_unique<Repository>(repository->implementation.raw(),
                                              true, false);
+  historical->enable_ref_cache();
   historical->view_at_operation(at_operation);
   return *historical;
 }
@@ -491,6 +494,7 @@ int gg_repository_adopt_git_history(gg_repository* repository,
       throw gg::detail::UserError("repository must not be null");
     }
     begin_operation(options, "adopt_git_history");
+    repository->implementation.invalidate_ref_cache();
     repository->implementation.import_git_history();
     finish_operation(options, "adopt_git_history");
     return GIT_OK;
@@ -505,6 +509,7 @@ int gg_repository_snapshot_working_copy(int* changed,
       throw gg::detail::UserError("snapshot output and repository must not be null");
     }
     begin_operation(options, "snapshot_working_copy");
+    repository->implementation.invalidate_ref_cache();
     *changed = repository->implementation.sync_workspace();
     finish_operation(options, "snapshot_working_copy");
     return GIT_OK;

@@ -214,6 +214,36 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   gg_repository_free(repository);
 }
 
+TEST_F(RepositoryTest, RefreshesCachedReferencesAfterAdoptingGitChanges) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  gg_named_ref_array refs{};
+  ASSERT_EQ(gg_repository_named_refs(&refs, repository), GIT_OK);
+  gg_named_ref_array_dispose(&refs);
+
+  const git_oid head = ref("HEAD");
+  git_reference* external = nullptr;
+  ASSERT_EQ(git_reference_create(&external, repository_.get(),
+                                 "refs/heads/external", &head, 0, nullptr),
+            GIT_OK);
+  git_reference_free(external);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  ASSERT_EQ(gg_repository_named_refs(&refs, repository), GIT_OK);
+  bool found_external = false;
+  for (size_t index = 0; index < refs.count; ++index) {
+    if (std::strcmp(refs.items[index].name, "external") == 0 &&
+        refs.items[index].kind == GG_NAMED_REF_LOCAL_BOOKMARK) {
+      found_external = true;
+    }
+  }
+  EXPECT_TRUE(found_external);
+  gg_named_ref_array_dispose(&refs);
+  gg_repository_free(repository);
+}
+
 TEST_F(RepositoryTest, ReordersAStackAsOneCOperation) {
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
