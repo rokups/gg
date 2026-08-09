@@ -78,7 +78,7 @@ TEST_F(RepositoryTest, RebasesWithoutConflicts) {
   ASSERT_EQ(invoke({"status"}).code, 0);
 
   const Result rebased =
-      invoke({"rebase", "-s", source_id, "-d", destination_id});
+      invoke({"rebase", "-s", source_id, "--onto", destination_id});
   ASSERT_EQ(rebased.code, 0) << rebased.error;
   EXPECT_NE(rebased.output.find("Rebased"), std::string::npos);
   expect_workspace_coherent();

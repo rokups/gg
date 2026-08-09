@@ -12,7 +12,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
-#include <regex>
 #include <sstream>
 #include <utility>
 
@@ -29,12 +28,6 @@ struct OperationLogEntry {
   std::string timestamp;
   std::string user;
 };
-
-std::string substitute_target(std::string_view expression,
-                              const git_oid& target) {
-  return std::regex_replace(std::string(expression), std::regex("\\bto\\b"),
-                            oid_string(target));
-}
 
 struct RefListItem {
   std::string name;
@@ -102,36 +95,9 @@ RefListItem ref_list_item(std::string name,
           conflict};
 }
 
-std::map<std::string, std::string> ref_template_values(
-    const RefListItem& item) {
-  const std::string target = oid_string(item.oid);
-  return {{"name", item.name},
-          {"remote", item.remote},
-          {"present", "true"},
-          {"conflict", item.conflict ? "true" : "false"},
-          {"normal_target", target},
-          {"removed_targets", ""},
-          {"added_targets", target}};
-}
-
-void validate_ref_template(std::string_view template_value) {
-  if (template_value.empty()) return;
-  static const std::map<std::string, std::string> values{
-      {"name", ""},           {"remote", ""},
-      {"present", ""},        {"conflict", ""},
-      {"normal_target", ""},  {"removed_targets", ""},
-      {"added_targets", ""}};  // GG_COV_EXCL_BRANCH
-  (void)render_template(template_value, values);
-}
-
 void render_ref_list_item(const RefListItem& item,
-                          std::string_view template_value,
                           OutputStyle style,
                           std::ostream& output) {
-  if (!template_value.empty()) {
-    output << render_template(template_value, ref_template_values(item));
-    return;
-  }
   output << styled(output, item.display_name, style) << ": "
          << styled(output, oid_string(item.oid, 8), OutputStyle::commit_id)
          << '\n';
@@ -175,26 +141,6 @@ std::string operation_timestamp(const git_commit* operation) {
          << std::setw(2)  // GG_COV_EXCL_BRANCH
          << absolute_offset / 60 << ':' << std::setw(2) << absolute_offset % 60;
   return output.str();
-}
-
-std::map<std::string, std::string> operation_template_values(
-    const git_oid& oid,
-    const git_oid& newest,
-    const std::optional<git_oid>& previous,
-    std::string_view description,
-    std::string_view timestamp,
-    std::string_view user) {
-  return {{"current_operation", oid == newest ? "true" : "false"},
-          {"description", std::string(description)},
-          {"id", oid_string(oid)},
-          {"attributes", ""},
-          {"tags", ""},
-          {"snapshot", "false"},
-          {"workspace_name", "default@"},
-          {"time", std::string(timestamp)},
-          {"user", std::string(user)},
-          {"root", previous.has_value() ? "false" : "true"},
-          {"parents", previous.has_value() ? oid_string(*previous) : ""}};
 }
 
 std::string head_text(const HeadState& head) {
@@ -437,8 +383,6 @@ void command_bookmark(Repository& repo,
     return;
   }
   if (options.action == BookmarkAction::list) {
-    validate_ref_template(options.template_value);
-
     std::set<git_oid, OidLess> revisions;
     const std::vector<git_oid> resolved =
         resolve_revision_arguments(repo, options.revisions);
@@ -495,8 +439,7 @@ void command_bookmark(Repository& repo,
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      render_ref_list_item(item, options.template_value, OutputStyle::bookmark,
-                           output);
+      render_ref_list_item(item, OutputStyle::bookmark, output);
     }
     return;
   }
@@ -583,29 +526,13 @@ void command_bookmark(Repository& repo,
     }
     std::string target_expression = options.revision;
     if (target_expression.empty()) {
-      if (options.action == BookmarkAction::advance) {
-        target_expression =
-            *config_value(repo, "revsets.bookmark-advance-to");
-      } else {
-        target_expression = "@";
-      }
+      target_expression = "@";
     }
     const git_oid target = repo.resolve(target_expression);
     std::set<git_oid, OidLess> sources;
     const std::vector<git_oid> resolved_sources =
         resolve_revision_arguments(repo, options.from);
     sources.insert(resolved_sources.begin(), resolved_sources.end());
-    const std::optional<std::string> configured_from =
-        config_value(repo, "revsets.bookmark-advance-from");
-    const bool configured_advance = options.action == BookmarkAction::advance &&
-                                    options.names.empty() &&
-                                    configured_from.has_value();
-    if (configured_advance) {
-      const std::string expression = substitute_target(
-          *configured_from, target);
-      const std::vector<git_oid> configured = repo.resolve_set(expression);
-      sources.insert(configured.begin(), configured.end());
-    }
     std::vector<std::pair<std::string, git_oid>> matches;
     for (const auto& [reference, oid] : repo.data_refs()) {
       constexpr std::string_view prefix = "refs/heads/";
@@ -617,15 +544,14 @@ void command_bookmark(Repository& repo,
       }
       if (!sources.empty() && !sources.contains(oid)) continue;
       if (options.action == BookmarkAction::advance &&
-          options.names.empty() && !configured_advance) {
+          options.names.empty()) {
         const int ancestor = git_graph_descendant_of(repo.raw(), &target, &oid);
         check(ancestor, "select bookmarks to advance");
         if (ancestor == 0) continue;
       }
       matches.emplace_back(name, oid);
     }
-    if (options.action == BookmarkAction::advance && options.names.empty() &&
-        !configured_advance) {
+    if (options.action == BookmarkAction::advance && options.names.empty()) {
       std::vector<std::pair<std::string, git_oid>> closest;
       for (const auto& candidate : matches) {
         const bool shadowed =
@@ -727,7 +653,6 @@ void command_tag(Repository& repo,
   };
 
   if (options.action == TagAction::list) {
-    validate_ref_template(options.template_value);
     std::set<git_oid, OidLess> revisions;
     const std::vector<git_oid> resolved =
         resolve_revision_arguments(repo, options.revisions);
@@ -783,8 +708,7 @@ void command_tag(Repository& repo,
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      render_ref_list_item(item, options.template_value, OutputStyle::tag,
-                           output);
+      render_ref_list_item(item, OutputStyle::tag, output);
     }
     return;
   }
@@ -1078,12 +1002,10 @@ void command_push(Repository& repo,
                   const GitPushCommand& options,
                   std::ostream& output) {
   repo.sync_workspace();
-  if (!options.all && !options.tracked && !options.deleted &&
+  const bool default_selection =
+      !options.all && !options.tracked && !options.deleted &&
       options.bookmarks.empty() && options.tags.empty() &&
-      options.revisions.empty() && options.changes.empty() &&
-      options.named.empty()) {
-    throw UserError("push requires a selection option");
-  }
+      options.revisions.empty();
   const std::string name = options.remote.empty() ? "origin" : options.remote;
   const auto refs = repo.data_refs();
   std::map<std::string, std::string> updates;
@@ -1131,36 +1053,16 @@ void command_push(Repository& repo,
       updates.emplace(reference, reference);
     }
   }
-  const auto create_bookmark = [&](const std::string& bookmark,
-                                   const git_oid& target) {
-    const std::string reference = "refs/heads/" + bookmark;
-    int valid = 0;
-    check(git_reference_name_is_valid(&valid, reference.c_str()),
-          "validate push bookmark");
-    if (valid == 0) throw UserError("invalid bookmark name: " + bookmark);
-    if (repo.ref_target(reference).has_value()) {
-      throw UserError("bookmark already exists: " + bookmark);
+  for (const git_oid& revision : revisions) {
+    const bool named = std::ranges::any_of(
+        updates, [&](const auto& update) {
+          return !update.second.empty() && target_of(update.second) == revision;  // GG_COV_EXCL_BRANCH
+        });
+    if (!named) {
+      throw UserError(
+          "push revision is not named by a local bookmark or tag: " +
+          oid_string(revision, 8));
     }
-    updates.emplace(reference, oid_string(target));
-    local_updates.emplace(reference, target);
-  };
-  for (const git_oid& target :
-       resolve_revision_arguments(repo, options.changes)) {
-    std::optional<std::string> id = repo.change_id(target);
-    if (!id.has_value()) {
-      id = repo.new_change_id();
-      local_updates.emplace(std::string(kChangePrefix) + *id, target);
-    }
-    create_bookmark("push-" + repo.short_change_id(*id), target);
-  }
-  for (const std::string& named : options.named) {
-    const std::size_t equals = named.find('=');
-    if (equals == 0 || equals == std::string::npos ||
-        equals + 1 == named.size()) {
-      throw UserError("--named must be BOOKMARK=REVISION");
-    }
-    create_bookmark(named.substr(0, equals),
-                    repo.resolve(named.substr(equals + 1)));
   }
   if (options.all) {
     for (const auto& [reference, oid] : refs) {
@@ -1178,7 +1080,7 @@ void command_push(Repository& repo,
       std::string(kBookmarkTrackingPrefix) + name + "/";
   const std::string tag_tracking_prefix =
       std::string(kTagTrackingPrefix) + name + "/";
-  if (options.tracked || options.deleted) {
+  if (options.tracked || options.deleted || default_selection) {
     for (const auto& [reference, oid] : refs) {
       (void)oid;
       std::string local;
@@ -1195,7 +1097,8 @@ void command_push(Repository& repo,
       } else {
         continue;
       }
-      if (options.tracked && repo.ref_target(local).has_value()) {
+      if ((options.tracked || default_selection) &&  // GG_COV_EXCL_BRANCH
+          repo.ref_target(local).has_value()) {
         updates.emplace(local, local);
       }
       if (options.deleted && !repo.ref_target(local).has_value()) {
@@ -1225,9 +1128,6 @@ void command_push(Repository& repo,
     }
   }
 
-  git_remote* raw_remote = nullptr;
-  check(git_remote_lookup(&raw_remote, repo.raw(), name.c_str()), "find remote");
-  RemotePtr remote(raw_remote);
   if (updates.empty()) {
     output << "No refs to push.\n";
     return;
@@ -1240,20 +1140,18 @@ void command_push(Repository& repo,
            << " to " << name << '\n';
   }
   if (options.dry_run) return;
-  std::vector<char*> values;
-  for (std::string& refspec : storage) values.push_back(refspec.data());
-  git_strarray refspecs{values.data(), values.size()};
-  std::vector<char*> push_option_values;
+  UtilExecCommand push_command{
+      "git", {"--git-dir=" + std::string(git_repository_path(repo.raw())),
+              "push", "--atomic"}};
   for (const std::string& option : options.options) {
-    push_option_values.push_back(const_cast<char*>(option.c_str()));
+    push_command.arguments.emplace_back("--push-option=" + option);
   }
-  git_strarray push_options_array{push_option_values.data(),
-                                  push_option_values.size()};
-  git_push_options push_options = GIT_PUSH_OPTIONS_INIT;
-  push_options.callbacks = remote_callbacks();
-  push_options.remote_push_options = push_options_array;
-  check(git_remote_push(remote.get(), &refspecs, &push_options),
-        "push refs");
+  push_command.arguments.push_back(name);
+  push_command.arguments.insert(push_command.arguments.end(), storage.begin(),
+                                storage.end());
+  if (command_util_exec(push_command, git_repository_path(repo.raw())) != 0) {
+    throw UserError("atomic push failed");
+  }
   for (const auto& [destination, target] : targets) {
     constexpr std::string_view head_prefix = "refs/heads/";
     constexpr std::string_view tag_prefix = "refs/tags/";
@@ -1373,22 +1271,11 @@ void command_operation_log(Repository& repo,
     const OperationLogEntry& entry = operations[index];
     std::ostringstream content;
     set_output_color_mode(content, output_color_mode(output));
-    if (!options.template_value.empty()) {
-      content << render_template(
-          options.template_value,
-          operation_template_values(entry.oid, newest, entry.previous,
-                                    entry.description, entry.timestamp,
-                                    entry.user));
-    } else {
-      content << styled(content, oid_string(entry.oid, 8),
-                        entry.oid == newest
-                            ? OutputStyle::current_operation_id
-                            : OutputStyle::operation_id)
-              << ' '
-              << styled(content, entry.timestamp, OutputStyle::timestamp)
-              << (options.no_graph ? " " : "\n") << entry.description
-              << '\n';
-    }
+    content << styled(content, oid_string(entry.oid, 8),
+                      entry.oid == newest ? OutputStyle::current_operation_id
+                                          : OutputStyle::operation_id)
+            << ' ' << styled(content, entry.timestamp, OutputStyle::timestamp)
+            << (options.no_graph ? " " : "\n") << entry.description << '\n';
     if (options.op_diff || show_patch) {
       render_operation_diff(*after, before, content);
     }
@@ -1462,9 +1349,6 @@ void command_operation_restore(Repository& repo,
 }
 
 int clone_command(const GitCloneCommand& options, std::ostream& output) {
-  if (options.object_hash == "sha256") {
-    throw UserError("gg does not support SHA-256 repositories");
-  }
   std::string destination = options.destination;
   if (destination.empty()) {
     destination = std::filesystem::path(options.url).filename().string();
@@ -1486,6 +1370,14 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
                   &clone_options),
         "clone repository");
   RepositoryPtr repository(raw_repository);
+  const git_oid_t requested_type =
+      options.object_hash == "sha256" ? GIT_OID_SHA256 : GIT_OID_SHA1;
+  if (git_repository_oid_type(repository.get()) != requested_type) {
+    repository.reset();
+    std::error_code error;
+    std::filesystem::remove_all(destination, error);
+    throw UserError("clone source does not use the requested object hash");
+  }
   repository.reset();
   try {
     Repository repo(destination);
@@ -1582,9 +1474,8 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
 int init_command(const GitInitCommand& options, std::ostream& output) {
   git_repository_init_options init_options = GIT_REPOSITORY_INIT_OPTIONS_INIT;
   init_options.flags = GIT_REPOSITORY_INIT_MKPATH;
-  if (options.object_hash == "sha256") {
-    throw UserError("gg does not support SHA-256 repositories");
-  }
+  init_options.oid_type =
+      options.object_hash == "sha256" ? GIT_OID_SHA256 : GIT_OID_SHA1;
   const std::filesystem::path destination =
       options.destination.empty() ? "." : options.destination;
   git_repository* raw_repository = nullptr;

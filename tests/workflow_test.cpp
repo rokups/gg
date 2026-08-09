@@ -136,8 +136,6 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   const std::string root = std::filesystem::weakly_canonical(path_).string();
   EXPECT_EQ(invoke({"workspace", "root"}).output, root + "\n");
   EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
-  EXPECT_EQ(invoke({"workspace", "list", "-T", "name"}).output,
-            "No workspaces.\n");
   EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).code, 2);
   const auto unused = path_.parent_path() /
                       (path_.filename().string() + "-unused-workspace");
@@ -175,15 +173,56 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   const Result listed = invoke({"workspace", "list"});
   EXPECT_NE(listed.output.find("default: "), std::string::npos);
   EXPECT_NE(listed.output.find(root), std::string::npos);
-  const Result templated = invoke(
-      {"workspace", "list", "-T",
-       "name ++ \" \" ++ target.short() ++ \" \" ++ root ++ \" \" ++ "
-       "working_copy ++ \"\\n\""});
-  ASSERT_EQ(templated.code, 0) << templated.error;
-  EXPECT_TRUE(templated.output.starts_with("default "));
-  EXPECT_TRUE(templated.output.ends_with(" " + root + " true\n"));
   EXPECT_EQ(invoke({"workspace", "root", "--name", "other"}).code, 2);
-  EXPECT_EQ(invoke({"workspace", "list", "-T", "unknown"}).code, 2);
+}
+
+TEST_F(RepositoryTest, CreatesAnEmptySparseWorkspace) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  const auto destination = path_.parent_path() /
+                           (path_.filename().string() + "-empty-workspace");
+  std::filesystem::remove_all(destination);
+
+  const Result added =
+      invoke({"workspace", "add", destination.string(), "--name", "empty",
+              "--sparse-patterns", "empty"});
+  ASSERT_EQ(added.code, 0) << added.error;
+  EXPECT_TRUE(std::filesystem::exists(destination / ".git"));
+  EXPECT_FALSE(std::filesystem::exists(destination / "tracked.txt"));
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/empty"));
+  EXPECT_EQ(run({"-R", destination.string(), "sparse", "list"}).output,
+            "!/*\n");
+  ASSERT_EQ(run({"-R", destination.string(), "sparse", "reset"}).code, 0);
+  EXPECT_TRUE(std::filesystem::exists(destination / "tracked.txt"));
+
+  ASSERT_EQ(invoke({"workspace", "forget", "empty"}).code, 0);
+  ASSERT_EQ(invoke_git(
+                {"worktree", "remove", "--force", destination.string()})
+                .code,
+            0);
+}
+
+TEST_F(RepositoryTest, CopiesSparsePatternsIntoAWorkspace) {
+  ASSERT_EQ(invoke_git(
+                {"sparse-checkout", "set", "--no-cone", "tracked.txt"})
+                .code,
+            0);
+  const auto destination = path_.parent_path() /
+                           (path_.filename().string() + "-copy-workspace");
+  std::filesystem::remove_all(destination);
+
+  const Result added = invoke({"workspace", "add", destination.string(),
+                               "--name", "copied"});
+  ASSERT_EQ(added.code, 0) << added.error;
+  EXPECT_TRUE(std::filesystem::exists(destination / "tracked.txt"));
+  EXPECT_EQ(run({"-R", destination.string(), "sparse", "list"}).output,
+            "tracked.txt\n");
+
+  ASSERT_EQ(invoke({"workspace", "forget", "copied"}).code, 0);
+  ASSERT_EQ(invoke_git(
+                {"worktree", "remove", "--force", destination.string()})
+                .code,
+            0);
+  ASSERT_EQ(invoke_git({"sparse-checkout", "disable"}).code, 0);
 }
 
 TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
@@ -209,10 +248,10 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
   const git_oid rename_operation = ref(detail::kOperationRef);
   EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
   ASSERT_TRUE(has_ref("refs/gg/workspaces/topic"));
-  EXPECT_EQ(invoke({"--at-operation", git_oid_tostr_s(&before_rename_operation),
-                    "workspace", "list", "-T", "name ++ \"\\n\""})
-                .output,
-            "default\n");
+  EXPECT_NE(invoke({"--at-operation", git_oid_tostr_s(&before_rename_operation),
+                    "workspace", "list"})
+                .output.find("default: "),
+            std::string::npos);
   detail::Repository legacy_view(path_);
   legacy_view.view_at_operation(git_oid_tostr_s(&legacy_operation));
   EXPECT_EQ(legacy_view.workspace_name(), "topic");
@@ -230,8 +269,6 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
   EXPECT_EQ(git_oid_equal(&original, &renamed), 1);
   EXPECT_NE(invoke({"workspace", "list"}).output.find("topic: "),
             std::string::npos);
-  EXPECT_EQ(invoke({"workspace", "list", "-T", "name ++ \"\\n\""}).output,
-            "topic\n");
   EXPECT_EQ(invoke({"workspace", "root", "--name", "topic"}).output,
             root + "\n");
   EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).code, 2);
@@ -267,9 +304,9 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
 
   ASSERT_EQ(invoke({"undo"}).code, 0);
   EXPECT_TRUE(has_ref("refs/gg/workspaces/topic"));
-  EXPECT_EQ(invoke({"log", "-r", "@", "--no-graph", "-T", "description"})
-                .output,
-            "renamed workspace");
+  EXPECT_NE(invoke({"log", "-r", "@", "--no-graph"})
+                .output.find("renamed workspace"),
+            std::string::npos);
 
   set_ref("refs/gg/workspaces/duplicate",
           ref("refs/gg/workspaces/topic"));
@@ -309,6 +346,11 @@ TEST_F(RepositoryTest, FiltersStatusPaths) {
   EXPECT_NE(invoke({"st", "missing"}).output.find("has no changes"),
             std::string::npos);
   EXPECT_NE(invoke({"status", "."}).output.find("other.txt"), std::string::npos);
+  const Result expression =
+      invoke({"status", "glob('*.txt') ~ root('directory')"});
+  EXPECT_NE(expression.output.find("other.txt"), std::string::npos);
+  EXPECT_EQ(expression.output.find("directory/selected.txt"),
+            std::string::npos);
   EXPECT_EQ(invoke({"status", ""}).code, 2);
   EXPECT_EQ(invoke({"status", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"status", "../outside"}).code, 2);
@@ -404,22 +446,6 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
   EXPECT_NE(formatted.output.find("second.txt"), std::string::npos);
   EXPECT_NE(formatted.output.find("diff --git"), std::string::npos);
   EXPECT_EQ(invoke({"log", "--patch", "--tool", "meld"}).code, 2);
-  const Result templated = invoke(
-      {"log", "-r", second_id, "-n", "1", "--no-graph", "-T",
-       "change_id.short() ++ \" \" ++ commit_id.short(12) ++ \" \" ++ "
-       "description.first_line() ++ \" \" ++ author.name ++ \" \" ++ "
-       "author.email ++ \" \" ++ committer.name ++ \" \" ++ "
-       "committer.email ++ \" \" ++ bookmarks ++ \" \" ++ working_copy ++ "
-       "\"\\n\""});
-  ASSERT_EQ(templated.code, 0) << templated.error;
-  EXPECT_TRUE(templated.output.starts_with(second_id.substr(0, 8) + " "));
-  EXPECT_NE(templated.output.find(" second GG Test gg@example.test GG Test "
-                                  "gg@example.test  false\n"),
-            std::string::npos);
-  EXPECT_EQ(invoke({"log", "-r", "@", "-n", "1", "--no-graph", "-T",
-                    "self.subject ++ \" \" ++ working_copy ++ \"\\n\""})
-                .output,
-            "third true\n");
   EXPECT_EQ(invoke({"log", "--limit", "word"}).code, 2);
 }
 
@@ -475,21 +501,21 @@ TEST_F(RepositoryTest, ExplicitlySnapshotsTheWorkingCopy) {
 TEST_F(RepositoryTest, NavigatesRevisionStacks) {
   const Result first_result = invoke({"new", "-m", "first", "main"});
   ASSERT_EQ(first_result.code, 0) << first_result.error;
-  const git_oid first = ref("refs/gg/workspaces/default");
   const Result second_result = invoke({"new", "-m", "second"});
   ASSERT_EQ(second_result.code, 0) << second_result.error;
   const git_oid second = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
+  const git_oid third = ref("refs/gg/workspaces/default");
 
   ASSERT_EQ(invoke({"prev"}).code, 0);
   git_oid workspace = ref("refs/gg/workspaces/default");
   git_oid parent = commit_parent(workspace);
-  EXPECT_NE(git_oid_equal(&parent, &first), 0);
+  EXPECT_NE(git_oid_equal(&parent, &second), 0);
 
-  ASSERT_EQ(invoke({"next", "--no-edit"}).code, 0);
+  ASSERT_EQ(invoke({"next"}).code, 0);
   workspace = ref("refs/gg/workspaces/default");
   parent = commit_parent(workspace);
-  EXPECT_NE(git_oid_equal(&parent, &second), 0);
+  EXPECT_NE(git_oid_equal(&parent, &third), 0);
   EXPECT_EQ(invoke({"next", "--conflict"}).code, 2);
 }
 
@@ -513,7 +539,7 @@ TEST_F(RepositoryTest, EditsAndValidatesNavigationTargets) {
   ASSERT_EQ(invoke({"prev", "--edit", "2"}).code, 0);
   workspace = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&workspace, &first), 0);
-  EXPECT_EQ(invoke({"prev", "--no-edit"}).code, 2);
+  EXPECT_EQ(invoke({"prev"}).code, 0);
 
   ASSERT_EQ(invoke({"new", "-m", "side", first_id}).code, 0);
   ASSERT_EQ(invoke({"edit", first_id}).code, 0);
@@ -538,37 +564,27 @@ TEST_F(RepositoryTest, NavigationAssignsChangeIdsToExternalCommits) {
   ASSERT_EQ(edited.code, 0) << edited.error;
 }
 
-TEST_F(RepositoryTest, NavigationUsesLayeredEditConfiguration) {
+TEST_F(RepositoryTest, NavigationCreatesChangesUnlessEditIsRequested) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
   const git_oid child = raw_commit("configured child", {workspace});
   set_ref("refs/heads/configured-child", child);
-  ASSERT_EQ(invoke({"config", "set", "--repo", "ui.movement.edit", "true"})
-                .code,
-            0);
-
   ASSERT_EQ(invoke({"next"}).code, 0);
   git_oid actual = ref("refs/gg/workspaces/default");
-  EXPECT_NE(git_oid_equal(&actual, &child), 0);
-
+  EXPECT_EQ(git_oid_equal(&actual, &child), 0);
   detail::Repository repo(path_);
+  const std::vector<git_oid> parents = repo.parents(actual);
+  ASSERT_EQ(parents.size(), 1U);
+  EXPECT_NE(git_oid_equal(&parents.front(), &child), 0);
+
   const std::size_t ids_before_no_edit = repo.changes().size();
-  ASSERT_EQ(invoke({"prev", "--no-edit"}).code, 0);
+  ASSERT_EQ(invoke({"prev"}).code, 0);
   const git_oid no_edit = ref("refs/gg/workspaces/default");
   EXPECT_EQ(repo.changes().size(), ids_before_no_edit + 1);
   const std::vector<git_oid> no_edit_parents = repo.parents(no_edit);
   ASSERT_EQ(no_edit_parents.size(), 1U);
-  const git_oid main = ref("refs/heads/main");
-  EXPECT_NE(git_oid_equal(&no_edit_parents.front(), &main), 0);
+  EXPECT_NE(git_oid_equal(&no_edit_parents.front(), &child), 0);
 
-  ASSERT_EQ(invoke({"config", "set", "--workspace", "ui.movement.edit", "1"})
-                .code,
-            0);
-  EXPECT_EQ(invoke({"prev"}).code, 2);
-  ASSERT_EQ(invoke({"config", "set", "--workspace", "ui.movement.edit", "false"})
-                .code,
-            0);
-  EXPECT_EQ(invoke({"prev"}).code, 2);
   EXPECT_EQ(invoke({"prev", "--edit"}).code, 0);
 }
 
@@ -835,24 +851,9 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
                 .code,
             0);
   const git_oid current = ref("refs/gg/operations/current");
-  const std::string current_id = git_oid_tostr_s(&current);
-  const Result templated = invoke(
-      {"operation", "log", "--limit", "1", "--no-graph", "-T",
-       "id.short(12) ++ \" \" ++ current_operation ++ \" \" ++ "
-       "description.first_line() ++ \" \" ++ snapshot ++ \" \" ++ "
-       "workspace_name ++ \" \" ++ time ++ \" \" ++ user ++ \" \" ++ "
-       "root ++ \" \" ++ parents.short() ++ \" \" ++ attributes ++ "
-       "tags ++ \"\\n\""});
-  ASSERT_EQ(templated.code, 0) << templated.error;
-  EXPECT_TRUE(templated.output.starts_with(current_id.substr(0, 12) +
-                                           " true redo: restore"));
-  const Result templated_states =
-      invoke({"operation", "log", "--no-graph", "-T",
-              "current_operation ++ \" \" ++ root ++ \" \" ++ "
-              "parents.short() ++ \"\\n\""});
-  EXPECT_NE(templated_states.output.find("true false "), std::string::npos);
-  EXPECT_NE(templated_states.output.find("false true \n"), std::string::npos);
-  EXPECT_EQ(invoke({"operation", "log", "-T", "unknown"}).code, 2);
+  EXPECT_NE(invoke({"operation", "log", "--limit", "1", "--no-graph"})
+                .output.find(detail::oid_string(current, 8)),
+            std::string::npos);
   EXPECT_EQ(invoke({"operation", "log", "--limit", "word"}).code, 2);
 }
 

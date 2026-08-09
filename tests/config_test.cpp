@@ -4,228 +4,92 @@
 
 #include "test_support.hpp"
 
-#include <algorithm>
 #include <cstdlib>
 
 namespace gg::test {
 
-TEST_F(RepositoryTest, SetsGetsListsAndUnsetsLayeredConfiguration) {
-  EXPECT_EQ(invoke({"config", "get", "ui.movement.edit"}).output, "false\n");
-  EXPECT_EQ(invoke({"config", "get", "revsets.bookmark-advance-to"}).output,
-            "@\n");
-  EXPECT_EQ(invoke({"config", "list", "ui.movement.edit"}).output, "");
-  EXPECT_NE(invoke({"config", "list", "--include-defaults",
-                    "ui.movement.edit"})
-                .output.find("ui.movement.edit = false"),
-            std::string::npos);
-  ASSERT_EQ(invoke({"config", "set", "--repo", "ui.movement.edit", "true"})
+TEST_F(RepositoryTest, WrapsRepositoryAndWorkspaceGitConfiguration) {
+  EXPECT_EQ(invoke({"config", "get", "demo.value"}).code, 2);
+  ASSERT_EQ(invoke({"config", "set", "--repo", "demo.value", "repository"})
                 .code,
             0);
-  const Result default_override =
-      invoke({"config", "list", "--include-defaults", "--include-overridden",
-              "ui.movement.edit"});
-  EXPECT_EQ(std::count(default_override.output.begin(),
-                       default_override.output.end(), '\n'),
-            2);
-  EXPECT_EQ(invoke({"config", "list", "--include-defaults",
-                    "--include-overridden", "ui.movement.edit", "-T",
-                    "overridden ++ \"\\n\""})
-                .output,
-            "true\nfalse\n");
-  ASSERT_EQ(invoke({"config", "unset", "--repo", "ui.movement.edit"}).code,
-            0);
+  EXPECT_EQ(invoke({"config", "get", "demo.value"}).output,
+            "repository\n");
+  ASSERT_EQ(
+      invoke({"config", "set", "--workspace", "demo.value", "workspace"})
+          .code,
+      0);
+  EXPECT_EQ(invoke({"config", "get", "demo.value"}).output,
+            "workspace\n");
 
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.color", "\"red\""}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "get", "ui.color"}).output, "\"red\"\n");
-  EXPECT_EQ(invoke({"config", "set", "--workspace", "ui.color", "\"blue\""})
-                .code,
-            0);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.number", "42"}).code, 0);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.enabled", "true"}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.disabled", "false"}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.array", "[1, 2]"}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.table", "{ x = 1 }"}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.color", "\"green\""}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "get", "ui.color"}).output, "\"blue\"\n");
-
-  const Result listed = invoke({"config", "list", "ui"});
-  EXPECT_NE(listed.output.find("ui.color = \"blue\""), std::string::npos);
-  EXPECT_NE(listed.output.find("ui.number = 42"), std::string::npos);
-  EXPECT_EQ(invoke({"config", "list", "ui.number", "-T",
-                    "name ++ '=' ++ value ++ ':' ++ overridden ++ ':' ++ "
-                    "source ++ ':' ++ path ++ \"\\n\""})
-                .output,
-            "ui.number=42:false::\n");
+  const Result effective = invoke({"config", "list", "demo"});
+  EXPECT_EQ(effective.output, "demo.value = workspace\n");
   const Result overridden =
-      invoke({"config", "list", "--include-overridden", "ui.color"});
-  EXPECT_EQ(std::count(overridden.output.begin(), overridden.output.end(), '\n'),
-            2);
-  EXPECT_NE(invoke({"config", "list", "--repo", "--include-defaults"})
-                .output.find("ui.enabled = true"),
-            std::string::npos);
+      invoke({"config", "list", "--include-overridden", "demo.value"});
+  EXPECT_NE(overridden.output.find("local "), std::string::npos);
+  EXPECT_NE(overridden.output.find("worktree "), std::string::npos);
 
-  EXPECT_EQ(invoke({"config", "unset", "--workspace", "ui.color"}).code, 0);
-  EXPECT_EQ(invoke({"config", "get", "ui.color"}).output, "\"green\"\n");
-  EXPECT_EQ(invoke({"config", "unset", "--repo", "ui.color"}).code, 0);
-  EXPECT_EQ(invoke({"config", "get", "ui.color"}).code, 2);
+  ASSERT_EQ(invoke({"config", "unset", "--workspace", "demo.value"}).code,
+            0);
+  EXPECT_EQ(invoke({"config", "get", "demo.value"}).output,
+            "repository\n");
+  ASSERT_EQ(invoke({"config", "unset", "--repo", "demo.value"}).code, 0);
+  EXPECT_EQ(invoke({"config", "get", "demo.value"}).code, 2);
 }
 
-TEST_F(RepositoryTest, ReportsConfigPathsAndValidatesRequests) {
-  const std::string repo_path =
-      invoke({"config", "path", "--repo"}).output;
-  EXPECT_NE(repo_path.find("/gg/config.toml\n"), std::string::npos);
-  EXPECT_NE(invoke({"config", "path", "--workspace"})
-                .output.find("/gg/workspaces/default.toml\n"),
-            std::string::npos);
+TEST_F(RepositoryTest, ReportsNativeGitConfigPathsAndScopes) {
   EXPECT_EQ(invoke({"config", "path"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "name", "\"value\""}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", ".bad", "1"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "bad.", "1"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "", "1"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "bad..key", "1"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "bad$key", "1"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "key", "bare"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "key", "1bad"}).code, 2);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "key", " "}).code, 2);
-  EXPECT_EQ(invoke({"config", "unset", "--repo", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"config", "list", "-T", "unknown"}).code, 2);
+  EXPECT_EQ(invoke({"config", "set", "demo.value", "value"}).code, 2);
+  EXPECT_EQ(invoke({"config", "unset", "--repo", "missing.value"}).code,
+            2);
+  EXPECT_EQ(invoke({"config", "path", "--repo"}).output,
+            (path_ / ".git/config").string() + "\n");
+  EXPECT_EQ(invoke({"config", "path", "--workspace"}).output,
+            (path_ / ".git/config.worktree").string() + "\n");
+  EXPECT_FALSE(invoke({"config", "path", "--user"}).output.empty());
   EXPECT_EQ(invoke({"config", "path", "--repo", "--user"}).code, 2);
 }
 
-TEST_F(RepositoryTest, AppliesInvocationConfigurationLayers) {
-  const std::filesystem::path extra = path_ / ".git/extra.toml";
-  {
-    std::ofstream output(extra);
-    output << "ui.color = \"file\"\nui.number = 1\n";
-  }
-  const Result configured =
-      invoke({"--config-file", extra.string(), "--config", "ui.color=command",
-              "--config", "ui.number=2", "config", "list",
-              "--include-overridden", "ui"});
-  ASSERT_EQ(configured.code, 0) << configured.error;
-  EXPECT_NE(configured.output.find("ui.color = \"file\""), std::string::npos);
-  EXPECT_NE(configured.output.find("ui.color = command"), std::string::npos);
-  EXPECT_NE(configured.output.find("ui.number = 2"), std::string::npos);
-  EXPECT_EQ(invoke({"--config", "ui.color=command", "config", "get",
-                    "ui.color"})
-                .output,
-            "command\n");
-  EXPECT_EQ(invoke({"--config", "missing", "config", "list"}).code, 2);
-  EXPECT_EQ(invoke({"--config", "bad..key=1", "config", "list"}).code, 2);
-  EXPECT_EQ(invoke({"--config", "key=[", "config", "list"}).code, 2);
-  EXPECT_EQ(invoke({"--config", "key={", "config", "list"}).code, 2);
-  EXPECT_EQ(invoke({"--config", "key='", "config", "list"}).code, 2);
-  EXPECT_EQ(invoke({"--config", "key=\"", "config", "list"}).code, 2);
-  EXPECT_EQ(invoke({"--config-file", (path_ / "missing").string(), "config",
-                    "list"})
-                .code,
-            2);
+TEST_F(RepositoryTest, UsesGitEditorResolutionOrder) {
+  const char* previous_git_editor = std::getenv("GIT_EDITOR");
+  const std::string saved_git_editor =
+      previous_git_editor == nullptr ? "" : previous_git_editor;
+  const char* previous_visual = std::getenv("VISUAL");
+  const std::string saved_visual = previous_visual == nullptr ? "" : previous_visual;
+  const char* previous_editor = std::getenv("EDITOR");
+  const std::string saved_editor = previous_editor == nullptr ? "" : previous_editor;
 
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
-  const git_oid workspace = ref("refs/gg/workspaces/default");
-  const git_oid child = raw_commit("configured child", {workspace});
-  set_ref("refs/heads/configured-child", child);
-  ASSERT_EQ(invoke({"--config", "ui.movement.edit=true", "next"}).code, 0);
-  const git_oid actual = ref("refs/gg/workspaces/default");
-  EXPECT_NE(git_oid_equal(&actual, &child), 0);
-}
-
-TEST_F(RepositoryTest, PreservesConfigTextAndReportsFileErrors) {
-  std::string path = invoke({"config", "path", "--repo"}).output;
-  path.pop_back();
-  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-  {
-    std::ofstream output(path);
-    output << "\n# preserved\nmalformed\n = 1\nempty = \n"
-              "ui.color = \"old\"\nui.color = \"duplicate\"\n";
-  }
-  EXPECT_EQ(invoke({"config", "set", "--repo", "ui.color", "\"new\""}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "get", "ui.color"}).output, "\"new\"\n");
-  EXPECT_TRUE(invoke({"config", "list", "missing"}).output.empty());
-  EXPECT_EQ(invoke({"config", "unset", "--repo", "ui.color"}).code, 0);
-
-  std::filesystem::remove(path);
-  std::filesystem::create_directories(path + ".tmp");
-  EXPECT_EQ(invoke({"config", "set", "--repo", "key", "1"}).code, 2);
-  std::filesystem::remove_all(path + ".tmp");
-  std::filesystem::create_directories(path);
-  EXPECT_EQ(invoke({"config", "set", "--repo", "key", "1"}).code, 2);
-  std::filesystem::remove_all(path);
-}
-
-TEST_F(RepositoryTest, UsesUserConfigAndLaunchesAnEditor) {
-  const std::filesystem::path config_home = path_ / "config-home";
-  const char* old_xdg = std::getenv("XDG_CONFIG_HOME");
-  const std::string saved_xdg = old_xdg == nullptr ? "" : old_xdg;
-  const char* old_visual = std::getenv("VISUAL");
-  const std::string saved_visual = old_visual == nullptr ? "" : old_visual;
-  const char* old_editor = std::getenv("EDITOR");
-  const std::string saved_editor = old_editor == nullptr ? "" : old_editor;
-  ASSERT_EQ(setenv("XDG_CONFIG_HOME", config_home.string().c_str(), 1), 0);
-  ASSERT_EQ(setenv("VISUAL", "/bin/true", 1), 0);
-
-  EXPECT_EQ(invoke({"config", "set", "--user", "user.name", "'Test'"}).code,
-            0);
-  EXPECT_EQ(invoke({"config", "get", "user.name"}).output, "'Test'\n");
-  EXPECT_NE(invoke({"config", "path", "--user"})
-                .output.find(config_home.string()),
-            std::string::npos);
-  EXPECT_NE(invoke({"config", "list", "--user"})
-                .output.find("user.name = 'Test'"),
-            std::string::npos);
-  EXPECT_EQ(invoke({"config", "edit", "--user"}).code, 0);
-  ASSERT_EQ(setenv("VISUAL", "/bin/test -f", 1), 0);
+  ASSERT_EQ(setenv("GIT_EDITOR", "/bin/true", 1), 0);
   EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 0);
+  ASSERT_EQ(unsetenv("GIT_EDITOR"), 0);
+  ASSERT_EQ(invoke({"config", "set", "--repo", "core.editor", "/bin/true"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 0);
+  ASSERT_EQ(invoke({"config", "unset", "--repo", "core.editor"}).code, 0);
+  ASSERT_EQ(setenv("VISUAL", "/bin/true", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 0);
+  ASSERT_EQ(setenv("GIT_EDITOR", "/missing/gg-editor", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
+  ASSERT_EQ(unsetenv("GIT_EDITOR"), 0);
+  ASSERT_EQ(unsetenv("VISUAL"), 0);
+  ASSERT_EQ(setenv("EDITOR", "/bin/true", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--workspace"}).code, 0);
+  ASSERT_EQ(setenv("EDITOR", "/bin/false", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
+  ASSERT_EQ(setenv("EDITOR", "''", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
+  ASSERT_EQ(setenv("EDITOR", " ", 1), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
+  ASSERT_EQ(unsetenv("EDITOR"), 0);
+  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
 
-  ASSERT_EQ(setenv("VISUAL", "/missing/gg-editor", 1), 0);
-  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
-  ASSERT_EQ(setenv("VISUAL", "/bin/false", 1), 0);
-  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
-  unsetenv("VISUAL");
-  unsetenv("EDITOR");
-  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
-  ASSERT_EQ(setenv("VISUAL", "", 1), 0);
-  ASSERT_EQ(setenv("EDITOR", "", 1), 0);
-  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
-  ASSERT_EQ(setenv("VISUAL", " ", 1), 0);
-  EXPECT_EQ(invoke({"config", "edit", "--repo"}).code, 2);
-
-  const char* old_home = std::getenv("HOME");
-  const std::string saved_home = old_home == nullptr ? "" : old_home;
-  unsetenv("XDG_CONFIG_HOME");
-  unsetenv("HOME");
-  EXPECT_EQ(invoke({"config", "path", "--user"}).code, 2);
-  setenv("XDG_CONFIG_HOME", "", 1);
-  setenv("HOME", "", 1);
-  EXPECT_EQ(invoke({"config", "path", "--user"}).code, 2);
-  if (saved_home.empty()) {
-    unsetenv("HOME");
-  } else {
-    setenv("HOME", saved_home.c_str(), 1);
-  }
-
-  if (saved_xdg.empty()) {
-    unsetenv("XDG_CONFIG_HOME");
-  } else {
-    setenv("XDG_CONFIG_HOME", saved_xdg.c_str(), 1);
-  }
-  if (saved_visual.empty()) {
-    unsetenv("VISUAL");
-  } else {
-    setenv("VISUAL", saved_visual.c_str(), 1);
-  }
-  if (saved_editor.empty()) {
-    unsetenv("EDITOR");
-  } else {
-    setenv("EDITOR", saved_editor.c_str(), 1);
-  }
+  if (saved_git_editor.empty()) unsetenv("GIT_EDITOR");
+  else setenv("GIT_EDITOR", saved_git_editor.c_str(), 1);
+  if (saved_visual.empty()) unsetenv("VISUAL");
+  else setenv("VISUAL", saved_visual.c_str(), 1);
+  if (saved_editor.empty()) unsetenv("EDITOR");
+  else setenv("EDITOR", saved_editor.c_str(), 1);
 }
 
 }  // namespace gg::test

@@ -12,56 +12,9 @@
 
 namespace gg::test {
 
-TEST(TemplateTest, RendersSharedTemplateExpressions) {
-  const std::map<std::string, std::string> values{
-      {"commit_id", "abcdefghijklmnop"},
-      {"description", "first line\nsecond line"},
-      {"empty", ""},
-  };
-  EXPECT_EQ(detail::render_template(
-                "description.first_line() ++ \"\\n\" ++ "
-                "commit_id.short() ++ ':' ++ self.commit_id.short(3)",
-                values),
-            "first line\nabcdefgh:abc");
-  EXPECT_EQ(detail::render_template(
-                "'\\n\\r\\t\\\\\\\'\\\"' ++ empty ++ commit_id.short(0)",
-                values),
-            "\n\r\t\\'\"");
-  EXPECT_EQ(detail::render_template("'a\"b++c'", values), "a\"b++c");
-  EXPECT_EQ(detail::render_template("commit_id.short(100)", values),
-            "abcdefghijklmnop");
-
-  EXPECT_THROW(detail::render_template("", values), detail::UserError);
-  EXPECT_THROW(detail::render_template("commit_id ++", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("unknown", values), detail::UserError);
-  EXPECT_THROW(detail::render_template("'unterminated", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("'bad\\q'", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("'value' suffix", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("commit_id.short(word)", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("commit_id.short(3x)", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("commit_id.short(", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("commit_id +", values),
-               detail::UserError);
-  EXPECT_THROW(detail::render_template("+commit_id", values),
-               detail::UserError);
-  EXPECT_THROW(
-      detail::render_template("commit_id.short(999999999999999999999999999)",
-                              values),
-      detail::UserError);
-}
-
 TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
-  EXPECT_EQ(detail::revision_template_values(repo, base).at("working_copy"),
-            "false");
   EXPECT_EQ(detail::oid_string(base, 100).size(), GIT_OID_SHA1_HEXSIZE);
   EXPECT_TRUE(detail::first_line(nullptr).empty());
   EXPECT_EQ(detail::first_line("one\ntwo"), "one");
@@ -276,6 +229,42 @@ TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   expect("bookmarks(\"exact:right\")", {right});
   expect("bookmarks(x)", {});
   expect("tags()", {right});
+  expect("ancestors(tip, 1)", {tip, merge});
+  expect("first_ancestors(merge, 1)", {merge, left});
+  expect("first_ancestors(tip)", {tip, merge, left, base});
+  expect("present(missing)", {});
+  expect("visible_heads()", {tip, other});
+  expect("merges()", {merge});
+  expect("description(exact:merge)", {merge});
+  expect("author(substring:GG Test)", {base, left, right, merge, tip, other});
+  expect("committer(exact:GG Test <gg@example.test>)",
+         {base, left, right, merge, tip, other});
+  expect("empty()", {left, right, tip, other});
+  expect("commit_id('" + detail::oid_string(tip, 8) + "')", {tip});
+  const std::string tip_change(32, 'k');
+  repo.apply_refs({{std::string(detail::kChangePrefix) + tip_change, tip}}, {},
+                  "test revset IDs");
+  expect("change_id('kkkkkkkk')", {tip});
+  set_ref("refs/remotes/origin/HEAD", tip);
+  set_ref("refs/remotes/origin/tracked", left);
+  set_ref("refs/remotes/origin/untracked", right);
+  set_ref("refs/remotes/orphan", other);
+  set_ref("refs/gg/tracking/bookmarks/origin/tracked", left);
+  expect("remote_bookmarks()", {left, right});
+  expect("remote_bookmarks(exact:tracked)", {left});
+  expect("tracked_remote_bookmarks()", {left});
+  expect("untracked_remote_bookmarks()", {right});
+  git_oid conflict_blob{};
+  ASSERT_EQ(git_blob_create_from_buffer(&conflict_blob, repository_.get(),
+                                        "conflict", 8),
+            0);
+  detail::ConflictValue conflict;
+  conflict.adds.push_back(
+      {true, conflict_blob, GIT_FILEMODE_BLOB});
+  detail::CommitPtr base_commit = repo.commit(base);
+  repo.record_conflicts(*git_commit_tree_id(base_commit.get()),
+                        {{"conflicted.txt", conflict}});
+  expect("conflicts()", {base, left, right, merge, tip, other});
   expect("none()", {});
   const git_oid resolved_parent = repo.resolve("parents(left)");
   EXPECT_TRUE(git_oid_equal(&resolved_parent, &base) != 0);
@@ -290,10 +279,47 @@ TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   EXPECT_THROW(repo.resolve_set("all(base)"), detail::UserError);
   EXPECT_THROW(repo.resolve_set("none(base)"), detail::UserError);
   EXPECT_THROW(repo.resolve_set("root(base)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("ancestors()"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("ancestors(tip, 1, 2)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("ancestors(tip, nope)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("present()"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("visible_heads(tip)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("merges(tip)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("description()"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("conflicts(tip)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("empty(tip)"), detail::UserError);
+  EXPECT_THROW(repo.resolve_set("commit_id()"), detail::UserError);
   EXPECT_THROW(repo.resolve_set("unknown(base)"), detail::UserError);
   EXPECT_THROW(repo.resolve_set("left ~ /"), detail::UserError);
   EXPECT_THROW(repo.resolve_set("(left"), detail::UserError);
   EXPECT_THROW(repo.resolve_set("(')"), detail::UserError);
+}
+
+TEST_F(RepositoryTest, EvaluatesFilesetExpressions) {
+  EXPECT_TRUE(detail::fileset_matches("nested", "nested/file.txt"));
+  EXPECT_TRUE(detail::fileset_matches("glob:*.txt", "nested/file.txt"));
+  EXPECT_TRUE(
+      detail::fileset_matches("glob('nested/*') & ~none()", "nested/a"));
+  EXPECT_TRUE(detail::fileset_matches(
+      "file('one.txt') | file('two.txt')", "two.txt"));
+  EXPECT_FALSE(detail::fileset_matches(
+      "all() ~ (glob('*.bin') | file('skip.txt'))", "skip.txt"));
+  EXPECT_TRUE(detail::fileset_matches("(file('one.txt')) | none()",
+                                      "one.txt"));
+  EXPECT_TRUE(detail::fileset_matches("root(\"a/b\")", "a/b/c"));
+  EXPECT_TRUE(detail::fileset_matches("'quoted.txt'", "quoted.txt"));
+  EXPECT_THROW(detail::fileset_matches("../outside", "outside"),
+               detail::UserError);
+  EXPECT_THROW(detail::fileset_matches("glob('/absolute')", "absolute"),
+               detail::UserError);
+  EXPECT_THROW(detail::fileset_matches("glob:/absolute", "absolute"),
+               detail::UserError);
+  EXPECT_THROW(detail::fileset_matches("file()", "file"),
+               detail::UserError);
+  EXPECT_THROW(detail::fileset_matches("broken)", "broken"),
+               detail::UserError);
+  EXPECT_THROW(detail::fileset_matches("(broken", "broken"),
+               detail::UserError);
 }
 
 TEST_F(RepositoryTest, ExercisesRewriteVariants) {

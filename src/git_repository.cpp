@@ -82,7 +82,7 @@ return git_oid_equal(&left, &right) != 0;
 }
 
 std::string oid_string(const git_oid& oid, std::size_t length) {
-std::array<char, GIT_OID_SHA1_HEXSIZE + 1> buffer{};
+std::array<char, GIT_OID_MAX_HEXSIZE + 1> buffer{};
 git_oid_tostr(buffer.data(), buffer.size(), &oid);
 return std::string(buffer.data(), std::min(length, std::strlen(buffer.data())));
 }
@@ -96,12 +96,8 @@ bool starts_with(std::string_view value, std::string_view prefix) {
 return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
 Repository::Repository(const std::filesystem::path& path,
-                       std::vector<std::string> config_values,
-                       std::vector<std::filesystem::path> config_files,
                        bool ignore_working_copy)
-    : config_values_(std::move(config_values)),
-      config_files_(std::move(config_files)),
-      ignore_working_copy_(ignore_working_copy) {
+    : ignore_working_copy_(ignore_working_copy) {
   git_repository* repository = nullptr;
   check(git_repository_open_ext(&repository, path.string().c_str(),
                                 GIT_REPOSITORY_OPEN_CROSS_FS, nullptr),
@@ -143,14 +139,6 @@ Repository::Repository(const std::filesystem::path& path,
 
 git_repository* Repository::raw() const { return repo_.get(); }
 
-const std::vector<std::string>& Repository::config_values() const {
-  return config_values_;
-}
-
-const std::vector<std::filesystem::path>& Repository::config_files() const {
-  return config_files_;
-}
-
 CommitPtr Repository::commit(const git_oid& oid) const {
   git_commit* value = nullptr;
   check(git_commit_lookup(&value, repo_.get(), &oid), "read commit");
@@ -173,7 +161,8 @@ std::optional<git_oid> Repository::ref_target(std::string_view name) const {
         return target->second;
       }
       git_oid oid{};
-      check(git_oid_fromstr(&oid, operation_view_->head.value.c_str()),
+      check(git_oid_fromstr(&oid, operation_view_->head.value.c_str(),
+                            git_repository_oid_type(repo_.get())),
             "parse historical HEAD");
       return oid;
     }

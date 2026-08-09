@@ -24,7 +24,8 @@ bool refs_equal(const std::map<std::string, git_oid>& left,
 constexpr std::string_view kOperationV2 = "gg-operation-v2";
 constexpr std::string_view kOperationV3 = "gg-operation-v3";
 
-OperationState parse_operation_state(std::string_view text) {
+OperationState parse_operation_state(std::string_view text,
+                                     git_oid_t oid_type) {
   std::istringstream input(std::string{text});
   std::string line;
   if (!std::getline(input, line) || line != kOperationV2) {  // GG_COV_EXCL_BRANCH
@@ -58,7 +59,7 @@ OperationState parse_operation_state(std::string_view text) {
       throw GitError("invalid gg operation reference");
     }
     git_oid target{};
-    check(git_oid_fromstr(&target, oid_text.c_str()),
+    check(git_oid_fromstr(&target, oid_text.c_str(), oid_type),
           "parse operation reference");
     state.refs.emplace(name, target);
   }
@@ -105,7 +106,7 @@ OperationState Repository::parse_operation(const git_oid& oid) const {
 OperationState Repository::parse_operation(const git_commit* operation) const {
   const std::string_view message = git_commit_message(operation);
   if (message.starts_with(kOperationV2)) {
-    return parse_operation_state(message);
+    return parse_operation_state(message, git_repository_oid_type(repo_.get()));
   }
   if (!message.starts_with(kOperationV3)) {
     throw GitError("invalid gg operation snapshot");
@@ -126,7 +127,8 @@ OperationState Repository::parse_operation(const git_commit* operation) const {
   BlobPtr blob(raw_blob);
   OperationState state = parse_operation_state(
       std::string_view(static_cast<const char*>(git_blob_rawcontent(blob.get())),
-                       git_blob_rawsize(blob.get())));
+                       git_blob_rawsize(blob.get())),
+      git_repository_oid_type(repo_.get()));
   std::istringstream metadata{std::string(message)};
   std::string line;
   for (int index = 0; index < 3; ++index) {
@@ -171,7 +173,9 @@ std::optional<git_oid> Repository::operation_target(
   }
   git_oid target{};
   const std::string text(description.substr(prefix.size()));
-  check(git_oid_fromstr(&target, text.c_str()), "parse restored operation");
+  check(git_oid_fromstr(&target, text.c_str(),
+                        git_repository_oid_type(repo_.get())),
+        "parse restored operation");
   return target;
 }
 
@@ -195,7 +199,9 @@ std::optional<git_oid> Repository::operation_previous(
     return std::nullopt;
   }
   git_oid result{};
-  check(git_oid_fromstr(&result, previous.c_str()), "parse operation predecessor");
+  check(git_oid_fromstr(&result, previous.c_str(),
+                        git_repository_oid_type(repo_.get())),
+        "parse operation predecessor");
   return result;
 }
 

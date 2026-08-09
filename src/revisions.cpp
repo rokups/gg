@@ -7,7 +7,9 @@
 #include <git2/sys/errors.h>
 
 #include <algorithm>
+#include <charconv>
 #include <functional>
+#include <limits>
 #include <random>
 
 namespace gg::detail {
@@ -100,6 +102,41 @@ bool outer_parentheses(std::string_view expression) {
     }
   }
   return false;
+}
+
+std::vector<std::string_view> function_arguments(std::string_view value) {
+  std::vector<std::string_view> result;
+  int depth = 0;
+  char quote = '\0';
+  std::size_t begin = 0;
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    const char character = value[index];
+    if (quote != '\0') {
+      if (character == quote) quote = '\0';
+    } else if (character == '\'' || character == '"') {
+      quote = character;
+    } else if (character == '(') {
+      ++depth;
+    } else if (character == ')') {
+      --depth;
+    } else if (character == ',' && depth == 0) {  // GG_COV_EXCL_BRANCH
+      result.push_back(trim(value.substr(begin, index - begin)));
+      begin = index + 1;
+    }
+  }
+  if (!value.empty()) result.push_back(trim(value.substr(begin)));
+  return result;
+}
+
+std::size_t positive_integer(std::string_view value,
+                             std::string_view function) {
+  std::size_t result = 0;
+  const auto parsed =
+      std::from_chars(value.data(), value.data() + value.size(), result);
+  if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {  // GG_COV_EXCL_BRANCH
+    throw UserError(std::string(function) + " depth must be an integer");
+  }
+  return result;
 }
 
 void append_unique(std::vector<git_oid>& target,
@@ -388,6 +425,30 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
     while (git_revwalk_next(&oid, walk.get()) == 0) result.push_back(oid);
     return result;
   };
+  const auto bounded_ancestors = [&](const Selection& seeds,
+                                     std::size_t depth,
+                                     bool first_parent_only) {
+    Selection result;
+    std::set<git_oid, OidLess> seen;
+    std::vector<std::pair<git_oid, std::size_t>> pending;
+    for (const git_oid& seed : seeds) pending.emplace_back(seed, 0);
+    while (!pending.empty()) {
+      const auto [oid, distance] = pending.back();
+      pending.pop_back();
+      if (!seen.insert(oid).second) continue;  // GG_COV_EXCL_BRANCH
+      result.push_back(oid);
+      if (distance >= depth) continue;
+      const Selection values = parents(oid);
+      if (!values.empty() && first_parent_only) {
+        pending.emplace_back(values.front(), distance + 1);
+      } else {
+        for (const git_oid& parent : values) {
+          pending.emplace_back(parent, distance + 1);
+        }
+      }
+    }
+    return result;
+  };
   const auto all = [&] {
     Selection seeds;
     for (const auto& [reference, oid] : rewrite_refs()) {
@@ -462,6 +523,8 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
       const std::string_view function = trim(expression.substr(0, open));
       const std::string_view argument =
           trim(expression.substr(open + 1, expression.size() - open - 2));
+      const std::vector<std::string_view> arguments =
+          function_arguments(argument);
       if (function == "all") {
         if (!argument.empty()) throw UserError("all() takes no arguments");
         return all();
@@ -470,7 +533,37 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
         if (!argument.empty()) throw UserError("none() takes no arguments");
         return {};
       }
-      if (function == "ancestors") return ancestors(evaluate(argument));
+      if (function == "ancestors" || function == "first_ancestors") {
+        if (arguments.empty() || arguments.size() > 2) {
+          throw UserError(std::string(function) +
+                          "() takes a revset and optional depth");
+        }
+        if (arguments.size() == 1) {
+          if (function == "ancestors") return ancestors(evaluate(arguments[0]));
+          return bounded_ancestors(
+              evaluate(arguments[0]), std::numeric_limits<std::size_t>::max(),
+              true);
+        }
+        return bounded_ancestors(evaluate(arguments[0]),
+                                 positive_integer(arguments[1], function),
+                                 function == "first_ancestors");
+      }
+      if (function == "present") {
+        if (arguments.size() != 1) {
+          throw UserError("present() takes one revset");
+        }
+        try {
+          return evaluate(arguments.front());
+        } catch (const UserError&) {  // GG_COV_EXCL_BRANCH
+          return {};
+        }
+      }
+      if (function == "visible_heads") {
+        if (!arguments.empty()) {
+          throw UserError("visible_heads() takes no arguments");
+        }
+        return evaluate("heads(all())");
+      }
       if (function == "parents" || function == "children") {
         Selection result;
         for (const git_oid& oid : evaluate(argument)) {
@@ -506,6 +599,108 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
                 return members.contains(candidate);
               })) {
             result.push_back(oid);
+          }
+        }
+        return result;
+      }
+      if (function == "merges") {
+        if (!argument.empty()) throw UserError("merges() takes no arguments");
+        Selection result;
+        for (const git_oid& oid : all()) {
+          if (parents(oid).size() > 1) result.push_back(oid);
+        }
+        return result;
+      }
+      if (function == "description" || function == "author" ||
+          function == "committer") {
+        if (arguments.size() != 1) {
+          throw UserError(std::string(function) + "() takes one pattern");
+        }
+        const std::string_view pattern = unquote(arguments.front());
+        Selection result;
+        for (const git_oid& oid : all()) {
+          CommitPtr commit = this->commit(oid);
+          std::string value;
+          if (function == "description") {
+            const char* message = git_commit_message(commit.get());
+            value = message == nullptr ? "" : message;  // GG_COV_EXCL_BRANCH
+          } else {
+            const git_signature* signature =
+                function == "author" ? git_commit_author(commit.get())
+                                     : git_commit_committer(commit.get());
+            value = std::string(signature->name) + " <" + signature->email +
+                    ">";
+          }
+          if (string_pattern_matches(pattern, value, "substring")) {
+            result.push_back(oid);
+          }
+        }
+        return result;
+      }
+      if (function == "conflicts") {
+        if (!argument.empty()) {
+          throw UserError("conflicts() takes no arguments");
+        }
+        Selection result;
+        for (const git_oid& oid : all()) {
+          if (commit_has_conflicts(oid)) result.push_back(oid);  // GG_COV_EXCL_BRANCH
+        }
+        return result;
+      }
+      if (function == "empty") {
+        if (!argument.empty()) throw UserError("empty() takes no arguments");
+        Selection result;
+        for (const git_oid& oid : all()) {
+          CommitPtr commit = this->commit(oid);
+          const Selection commit_parents = parents(oid);
+          if (commit_parents.size() == 1) {
+            CommitPtr parent = this->commit(commit_parents.front());
+            if (*git_commit_tree_id(commit.get()) ==  // GG_COV_EXCL_BRANCH
+                *git_commit_tree_id(parent.get())) {
+              result.push_back(oid);
+            }
+          }
+        }
+        return result;
+      }
+      if (function == "change_id" || function == "commit_id") {
+        if (arguments.size() != 1) {
+          throw UserError(std::string(function) + "() takes one prefix");
+        }
+        const std::string_view prefix = unquote(arguments.front());
+        Selection result;
+        for (const git_oid& oid : all()) {
+          const std::string value =
+              function == "commit_id"
+                  ? oid_string(oid)
+                  : change_id(oid).value_or(std::string{});
+          if (starts_with(value, prefix)) result.push_back(oid);
+        }
+        return result;
+      }
+      if (function == "remote_bookmarks" ||
+          function == "tracked_remote_bookmarks" ||
+          function == "untracked_remote_bookmarks") {
+        const std::string_view pattern =
+            argument.empty() ? std::string_view("*") : unquote(argument);
+        Selection result;
+        constexpr std::string_view prefix = "refs/remotes/";
+        for (const auto& [reference, oid] : data_refs()) {
+          if (!starts_with(reference, prefix) || reference.ends_with("/HEAD")) {
+            continue;
+          }
+          const std::string remote_name = reference.substr(prefix.size());
+          const std::size_t slash = remote_name.find('/');
+          if (slash == std::string::npos) continue;
+          const std::string tracking =
+              std::string(kBookmarkTrackingPrefix) +
+              remote_name.substr(0, slash) + "/" +
+              remote_name.substr(slash + 1);
+          const bool tracked = ref_target(tracking).has_value();
+          if (function == "tracked_remote_bookmarks" && !tracked) continue;
+          if (function == "untracked_remote_bookmarks" && tracked) continue;
+          if (string_pattern_matches(pattern, remote_name.substr(slash + 1))) {
+            append_unique(result, {oid});
           }
         }
         return result;

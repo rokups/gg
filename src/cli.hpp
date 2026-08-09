@@ -35,7 +35,6 @@ struct LogCommand {
   std::string revision;
   std::vector<std::string> paths;
   std::uint64_t limit{std::numeric_limits<std::uint64_t>::max()};
-  std::string template_value;
   DiffFormatOptions format;
   bool reversed{false};
   bool no_graph{false};
@@ -122,7 +121,6 @@ struct FileCommand {
   FileAction action{FileAction::list};
   std::string revision{"@"};
   std::vector<std::string> paths;
-  std::string template_value;
   std::string pattern;
   std::string mode;
   bool name_only{false};
@@ -135,13 +133,11 @@ struct DiffCommand {
   std::string revisions;
   std::string from;
   std::string to;
-  std::string template_value;
   DiffFormatOptions format;
 };
 struct ShowCommand {
   std::vector<std::string> revisions;
   std::vector<std::string> revision_options;
-  std::string template_value;
   DiffFormatOptions format;
   bool reversed{false};
   bool no_patch{false};
@@ -167,7 +163,6 @@ struct BookmarkCommand {
   std::vector<std::string> remotes;
   std::vector<std::string> revisions;
   std::vector<std::string> sort;
-  std::string template_value;
   bool allow_backwards{false};
   bool all_remotes{false};
   bool tracked{false};
@@ -184,7 +179,6 @@ struct TagCommand {
   std::vector<std::string> revisions;
   std::vector<std::string> sort;
   std::string revision;
-  std::string template_value;
   bool allow_move{false};
   bool all_remotes{false};
   bool tracked{false};
@@ -211,19 +205,19 @@ struct GitFetchCommand {
   bool tracked{false};
   bool all_remotes{false};
 };
+struct GitPullCommand {
+  std::vector<std::string> arguments;
+};
 struct GitPushCommand {
   std::vector<std::string> bookmarks;
   std::vector<std::string> tags;
   std::vector<std::string> revisions;
-  std::vector<std::string> changes;
-  std::vector<std::string> named;
   std::vector<std::string> options;
   std::string remote;
   bool all{false};
   bool tracked{false};
   bool deleted{false};
   bool allow_empty_description{false};
-  bool allow_private{false};
   bool dry_run{false};
 };
 struct UndoCommand {};
@@ -236,7 +230,6 @@ struct OperationLogCommand {
   bool patch{false};
   DiffFormatOptions format;
   std::string show_changes_in;
-  std::string template_value;
 };
 struct OperationRestoreCommand {
   std::string operation;
@@ -260,8 +253,8 @@ struct WorkspaceCommand {
   std::string destination;
   std::string revision;
   std::string message;
+  std::string sparse_patterns{"copy"};
   std::vector<std::string> names;
-  std::string template_value;
 };
 
 enum class SparseAction { list, reset };
@@ -274,7 +267,6 @@ struct MovementCommand {
   MovementDirection direction{MovementDirection::next};
   std::uint64_t offset{1};
   bool edit{false};
-  bool no_edit{false};
   bool conflict{false};
 };
 
@@ -283,11 +275,9 @@ struct ConfigCommand {
   ConfigAction action{ConfigAction::list};
   std::string name;
   std::string value;
-  std::string template_value;
   bool user{false};
   bool repository{false};
   bool workspace{false};
-  bool include_defaults{false};
   bool include_overridden{false};
 };
 
@@ -307,14 +297,12 @@ using RepositoryCommand =
                  MovementCommand,
                  ConfigCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,
-                             UtilExecCommand>;
+                             GitPullCommand, UtilExecCommand>;
 
 struct Invocation {
   std::filesystem::path repository{"."};
   Command command;
   std::vector<std::string> replay_arguments;
-  std::vector<std::string> config_values;
-  std::vector<std::filesystem::path> config_files;
   std::string color{"auto"};
   std::string at_operation;
   bool ignore_working_copy{false};

@@ -143,8 +143,10 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
                       const std::vector<std::string>& paths) const {
   git_index* raw_selected = nullptr;
   git_index* raw_final = nullptr;
-  check(git_index_new(&raw_selected), "create split index");
-  check(git_index_new(&raw_final), "create split index");
+  git_index_options index_options = GIT_INDEX_OPTIONS_INIT;
+  index_options.oid_type = git_repository_oid_type(repo_.get());
+  check(git_index_new(&raw_selected, &index_options), "create split index");
+  check(git_index_new(&raw_final, &index_options), "create split index");
   IndexPtr selected(raw_selected);
   IndexPtr final(raw_final);
   TreePtr base = tree(base_tree);
@@ -152,17 +154,25 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
   check(git_index_read_tree(selected.get(), base.get()), "prepare split");
   check(git_index_read_tree(final.get(), source.get()), "prepare split");
 
-  for (const std::string& path : paths) {
-    git_index_remove_bypath(selected.get(), path.c_str());
-    git_index_remove_directory(selected.get(), path.c_str(), 0);
+  std::vector<std::string> removed_paths;
+  for (std::size_t index = 0; index < git_index_entrycount(selected.get());
+       ++index) {
+    const git_index_entry* entry = git_index_get_byindex(selected.get(), index);
+    if (std::ranges::any_of(paths, [&](const auto& fileset) {
+          return fileset_matches(fileset, entry->path);
+        })) {
+      removed_paths.emplace_back(entry->path);
+    }
+  }
+  for (const std::string& path : removed_paths) {
+    check(git_index_remove_bypath(selected.get(), path.c_str()),
+          "remove selected path");
   }
   for (std::size_t index = 0; index < git_index_entrycount(final.get()); ++index) {
     const git_index_entry* entry = git_index_get_byindex(final.get(), index);
     const std::string_view entry_path(entry->path);
-    const bool selected_path = std::ranges::any_of(paths, [&](const auto& path) {
-      return entry_path == path ||  // GG_COV_EXCL_BRANCH
-             (entry_path.size() > path.size() && starts_with(entry_path, path) &&
-              entry_path[path.size()] == '/');
+    const bool selected_path = std::ranges::any_of(paths, [&](const auto& fileset) {
+      return fileset_matches(fileset, entry_path);
     });
     if (selected_path) {
       check(git_index_add(selected.get(), entry), "select split path");
@@ -174,10 +184,8 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
   TreeConflicts conflicts = tree_conflicts(base_tree);
   const TreeConflicts final_conflicts = tree_conflicts(final_tree);
   const auto selected_path = [&](std::string_view entry_path) {
-    return std::ranges::any_of(paths, [&](const auto& path) {  // GG_COV_EXCL_BRANCH
-      return entry_path == path ||  // GG_COV_EXCL_BRANCH
-             (entry_path.size() > path.size() && starts_with(entry_path, path) &&
-              entry_path[path.size()] == '/');
+    return std::ranges::any_of(paths, [&](const auto& fileset) {
+      return fileset_matches(fileset, entry_path);
     });
   };
   std::erase_if(conflicts, [&](const auto& item) { return selected_path(item.first); });  // GG_COV_EXCL_BRANCH
@@ -236,7 +244,9 @@ void Repository::set_head(const HeadState& head) const {
     return;
   }
   git_oid oid{};
-  check(git_oid_fromstr(&oid, head.value.c_str()), "parse HEAD");
+  check(git_oid_fromstr(&oid, head.value.c_str(),
+                        git_repository_oid_type(repo_.get())),
+        "parse HEAD");
   check(git_repository_set_head_detached(repo_.get(), &oid), "detach HEAD");
 }
 

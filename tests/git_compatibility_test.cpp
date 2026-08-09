@@ -197,10 +197,9 @@ TEST_F(RepositoryTest, IsolatesGgStateAcrossLinkedWorkspaces) {
   EXPECT_EQ(invoke({"workspace", "rename", "secondary"}).code, 2);
   EXPECT_NE(invoke({"workspace", "list"}).output.find(linked.string()),
             std::string::npos);
-  const Result templated = invoke(
-      {"workspace", "list", "-T", "name ++ \" \" ++ working_copy ++ \"\\n\""});
-  EXPECT_NE(templated.output.find("default true\n"), std::string::npos);
-  EXPECT_NE(templated.output.find("secondary false\n"), std::string::npos);
+  const Result workspaces = invoke({"workspace", "list"});
+  EXPECT_NE(workspaces.output.find("default: "), std::string::npos);
+  EXPECT_NE(workspaces.output.find("secondary: "), std::string::npos);
   detail::Repository primary(path_);
   const git_oid secondary_workspace =
       ref("refs/gg/workspaces/secondary");

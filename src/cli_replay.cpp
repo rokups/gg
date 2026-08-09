@@ -63,7 +63,6 @@ std::vector<std::string> repository_replay_arguments(
             }
             if (value.reversed) result.emplace_back("--reversed");
             if (value.no_graph) result.emplace_back("--no-graph");
-            add_option(result, "--template", value.template_value);
             if (value.patch) result.emplace_back("--patch");
             if (value.count) result.emplace_back("--count");
             add_diff_format(result, value.format);
@@ -226,7 +225,6 @@ std::vector<std::string> repository_replay_arguments(
             if (value.revision != "@") {
               add_option(result, "-r", value.revision);
             }
-            add_option(result, "--template", value.template_value);
             add_option(result, "--pattern", value.pattern);
             if (value.name_only) {
               result.emplace_back("--name-only");
@@ -245,7 +243,6 @@ std::vector<std::string> repository_replay_arguments(
             add_option(result, "--revisions", value.revisions);
             add_option(result, "--from", value.from);
             add_option(result, "--to", value.to);
-            add_option(result, "--template", value.template_value);
             add_diff_format(result, value.format);
             return result;
           },
@@ -258,7 +255,6 @@ std::vector<std::string> repository_replay_arguments(
               result.push_back(revision);
             }
             if (value.reversed) result.emplace_back("--reversed");
-            add_option(result, "--template", value.template_value);
             add_diff_format(result, value.format);
             if (value.no_patch) result.emplace_back("--no-patch");
             return result;
@@ -310,7 +306,6 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("--sort");
               result.push_back(key);
             }
-            add_option(result, "--template", value.template_value);
             add_option(result,
                        value.action == BookmarkAction::advance ||
                                value.action == BookmarkAction::move
@@ -362,7 +357,6 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("--sort");
               result.push_back(key);
             }
-            add_option(result, "--template", value.template_value);
             if (value.allow_move) result.emplace_back("--allow-move");
             if (value.all_remotes) result.emplace_back("--all-remotes");
             if (value.tracked) result.emplace_back("--tracked");
@@ -401,14 +395,6 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("--revision");
               result.push_back(revision);
             }
-            for (const std::string& change : value.changes) {
-              result.emplace_back("--change");
-              result.push_back(change);
-            }
-            for (const std::string& named : value.named) {
-              result.emplace_back("--named");
-              result.push_back(named);
-            }
             for (const std::string& option : value.options) {
               result.emplace_back("--option");
               result.push_back(option);
@@ -420,7 +406,6 @@ std::vector<std::string> repository_replay_arguments(
             if (value.allow_empty_description) {
               result.emplace_back("--allow-empty-description");
             }
-            if (value.allow_private) result.emplace_back("--allow-private");
             if (value.dry_run) result.emplace_back("--dry-run");
             return result;
           },
@@ -438,7 +423,6 @@ std::vector<std::string> repository_replay_arguments(
             if (value.patch) result.emplace_back("--patch");
             add_diff_format(result, value.format);
             add_option(result, "--show-changes-in", value.show_changes_in);
-            add_option(result, "--template", value.template_value);
             return result;
           },
           [](const OperationRestoreCommand& value) {
@@ -468,7 +452,6 @@ std::vector<std::string> repository_replay_arguments(
             std::vector<std::string> result{"workspace"};
             if (value.action == WorkspaceAction::list) {
               result.emplace_back("list");
-              add_option(result, "--template", value.template_value);
             } else if (value.action == WorkspaceAction::root) {
               result.emplace_back("root");
               add_option(result, "--name", value.name);
@@ -477,6 +460,9 @@ std::vector<std::string> repository_replay_arguments(
               add_option(result, "--name", value.name);
               add_option(result, "--revision", value.revision);
               add_option(result, "--message", value.message);
+              if (value.sparse_patterns != "copy") {
+                add_option(result, "--sparse-patterns", value.sparse_patterns);
+              }
               result.push_back(value.destination);
             } else if (value.action == WorkspaceAction::forget) {
               result.emplace_back("forget");
@@ -501,9 +487,6 @@ std::vector<std::string> repository_replay_arguments(
             }
             if (value.edit) {
               result.emplace_back("--edit");
-            }
-            if (value.no_edit) {
-              result.emplace_back("--no-edit");
             }
             if (value.conflict) {
               result.emplace_back("--conflict");
@@ -537,13 +520,9 @@ std::vector<std::string> repository_replay_arguments(
             if (value.user) result.emplace_back("--user");
             if (value.repository) result.emplace_back("--repo");
             if (value.workspace) result.emplace_back("--workspace");
-            if (value.include_defaults) {
-              result.emplace_back("--include-defaults");
-            }
             if (value.include_overridden) {
               result.emplace_back("--include-overridden");
             }
-            add_option(result, "--template", value.template_value);
             return result;
           }},
       command);
@@ -592,6 +571,12 @@ std::vector<std::string> replay_arguments(const Command& command) {
             if (!value.destination.empty()) {
               result.push_back(value.destination);
             }
+            return result;
+          },
+          [](const GitPullCommand& value) {
+            std::vector<std::string> result{"pull"};
+            result.insert(result.end(), value.arguments.begin(),
+                          value.arguments.end());
             return result;
           },
           [](const UtilExecCommand& value) {

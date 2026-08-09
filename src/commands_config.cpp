@@ -4,36 +4,21 @@
 
 #include "commands.hpp"
 
-#include <algorithm>
-#include <array>
-#include <cctype>
-#include <cstdlib>
+#include <git2/sys/errors.h>
+
 #include <fstream>
-#include <iterator>
 #include <map>
 #include <optional>
-#include <sstream>
-#include <system_error>
+#include <set>
+#include <tuple>
 #include <vector>
 
 namespace gg::detail {
 namespace {
 
 enum class ConfigScope { user, repository, workspace };
-
-const std::map<std::string, std::string> kDefaultValues{
-    {"revsets.bookmark-advance-to", "@"},
-    {"ui.movement.edit", "false"}};
-const std::map<std::string, std::string> kEmptyTemplateValues{
-    {"name", ""},       {"value", ""},  {"overridden", ""},
-    {"source", ""},     {"path", ""}};  // GG_COV_EXCL_BRANCH
-
-std::string trim(std::string_view value) {
-  const std::size_t first = value.find_first_not_of(" \t\r\n");
-  if (first == std::string_view::npos) return {};
-  const std::size_t last = value.find_last_not_of(" \t\r\n");
-  return std::string(value.substr(first, last - first + 1));
-}
+using ConfigPtr = GitPtr<git_config, git_config_free>;
+using ConfigIteratorPtr = GitPtr<git_config_iterator, git_config_iterator_free>;
 
 std::optional<ConfigScope> selected_scope(const ConfigCommand& options,
                                           bool required) {
@@ -48,303 +33,171 @@ std::optional<ConfigScope> selected_scope(const ConfigCommand& options,
 
 std::filesystem::path config_path(Repository& repo, ConfigScope scope) {
   if (scope == ConfigScope::repository) {
-    return std::filesystem::path(git_repository_path(repo.raw())) / "gg" /
-           "config.toml";
+    return std::filesystem::path(git_repository_path(repo.raw())) / "config";
   }
   if (scope == ConfigScope::workspace) {
-    return std::filesystem::path(git_repository_path(repo.raw())) / "gg" /
-           "workspaces" / "default.toml";
+    return std::filesystem::path(git_repository_path(repo.raw())) /
+           "config.worktree";
   }
-  const char* xdg = std::getenv("XDG_CONFIG_HOME");
-  if (xdg != nullptr) {
-    if (*xdg != '\0') {
-      return std::filesystem::path(xdg) / "gg" / "config.toml";
-    }
-  }
-  const char* home = std::getenv("HOME");
-  if (home == nullptr) {
-    throw UserError("cannot locate user configuration directory");
-  }
-  if (*home == '\0') {
-    throw UserError("cannot locate user configuration directory");
-  }
-  return std::filesystem::path(home) / ".config" / "gg" / "config.toml";
+  git_buf path = GIT_BUF_INIT;
+  check(git_config_find_global(&path), "locate global Git config");
+  const std::filesystem::path result(path.ptr);
+  git_buf_dispose(&path);
+  return result;
 }
 
-void validate_name(std::string_view name) {
-  if (name.empty()) {
-    throw UserError("invalid configuration key: " + std::string(name));
-  }
-  if (name.front() == '.' || name.back() == '.') {
-    throw UserError("invalid configuration key: " + std::string(name));
-  }
-  bool dot = false;
-  for (const unsigned char character : name) {
-    if (character == '.') {
-      if (dot) throw UserError("invalid configuration key: " + std::string(name));
-      dot = true;
-    } else {
-      dot = false;
-      const bool allowed = (std::isalnum(character) != 0) |
-                           (character == '_') | (character == '-');
-      if (!allowed) {
-        throw UserError("invalid configuration key: " + std::string(name));
-      }
-    }
-  }
+ConfigPtr merged_config(Repository& repo) {
+  git_config* raw = nullptr;
+  check(git_repository_config(&raw, repo.raw()), "open Git config");
+  return ConfigPtr(raw);
 }
 
-void validate_value(std::string_view raw_value) {
-  const std::string value = trim(raw_value);
-  bool valid = (value == "true") | (value == "false");
-  if (value.size() >= 2) {
-    valid |= (value.front() == '"') & (value.back() == '"');
-    valid |= (value.front() == '\'') & (value.back() == '\'');
-    valid |= (value.front() == '[') & (value.back() == ']');
-    valid |= (value.front() == '{') & (value.back() == '}');
+ConfigPtr scoped_config(Repository& repo, ConfigScope scope, bool write) {
+  if (scope == ConfigScope::workspace && write) {  // GG_COV_EXCL_BRANCH
+    ConfigPtr config = merged_config(repo);
+    git_config* raw_local = nullptr;
+    check(git_config_open_level(&raw_local, config.get(), GIT_CONFIG_LEVEL_LOCAL),
+          "open repository Git config");
+    ConfigPtr local(raw_local);
+    check(git_config_set_bool(local.get(), "extensions.worktreeConfig", 1),
+          "enable worktree Git config");
   }
-  char* end = nullptr;
-  std::strtod(value.c_str(), &end);
-  if (end != value.c_str()) valid |= *end == '\0';
-  if (!valid) throw UserError("configuration value must be valid TOML");
-}
 
-std::optional<std::pair<std::string, std::string>> parse_assignment(
-    std::string_view line) {
-  const std::string stripped = trim(line);
-  if (stripped.empty()) return std::nullopt;
-  if (stripped.front() == '#') return std::nullopt;
-  const std::size_t separator = stripped.find('=');
-  if (separator == std::string::npos) return std::nullopt;
-  const std::string name = trim(std::string_view(stripped).substr(0, separator));
-  const std::string value = trim(std::string_view(stripped).substr(separator + 1));
-  if (name.empty()) return std::nullopt;
-  if (value.empty()) return std::nullopt;
-  return std::pair{name, value};
-}
-
-std::vector<std::string> read_lines(const std::filesystem::path& path) {
-  std::ifstream input(path);
-  std::vector<std::string> lines;
-  std::string line;
-  while (std::getline(input, line)) lines.push_back(line);
-  return lines;
-}
-
-std::map<std::string, std::string> read_values(
-    const std::filesystem::path& path) {
-  std::map<std::string, std::string> values;
-  for (const std::string& line : read_lines(path)) {
-    if (const auto assignment = parse_assignment(line); assignment.has_value()) {
-      values[assignment->first] = assignment->second;
-    }
-  }
-  return values;
-}
-
-std::vector<std::pair<std::string, std::string>> runtime_values(
-    const Repository& repo) {
-  std::vector<std::pair<std::string, std::string>> values;
-  for (const std::filesystem::path& path : repo.config_files()) {
-    if (!std::filesystem::is_regular_file(path)) {
-      throw UserError("cannot read configuration: " + path.string());
-    }
-    for (const auto& entry : read_values(path)) values.push_back(entry);
-  }
-  for (const std::string& raw : repo.config_values()) {
-    const auto assignment = parse_assignment(raw);
-    if (!assignment.has_value()) {
-      throw UserError("--config must be NAME=VALUE");
-    }
-    validate_name(assignment->first);
-    const std::string value = trim(assignment->second);
-    if (value.front() == '[' || value.front() == '{' || value.front() == '\'' ||
-        value.front() == '"') {
-      validate_value(value);
-    }
-    values.push_back(*assignment);
-  }
-  return values;
-}
-
-void write_lines(const std::filesystem::path& path,
-                 const std::vector<std::string>& lines) {
-  std::filesystem::create_directories(path.parent_path());
-  const std::filesystem::path temporary = path.string() + ".tmp";
-  {
-    std::ofstream output(temporary, std::ios::trunc);
-    if (!output) throw UserError("cannot write configuration: " + path.string());
-    for (const std::string& line : lines) output << line << '\n';
-  }
-  std::error_code error;
-  std::filesystem::rename(temporary, path, error);
-  if (error) {
-    std::filesystem::remove(temporary);
-    throw UserError("cannot replace configuration: " + error.message());
-  }
-}
-
-void set_value(const std::filesystem::path& path,
-               const std::string& name,
-               const std::string& value) {
-  const std::vector<std::string> old_lines = read_lines(path);
-  std::vector<std::string> lines;
-  bool replaced = false;
-  for (const std::string& line : old_lines) {
-    const auto assignment = parse_assignment(line);
-    if (assignment.has_value()) {
-      if (assignment->first == name) {
-        if (!replaced) lines.push_back(name + " = " + value);
-        replaced = true;
-        continue;
-      }
-    }
-    lines.push_back(line);
-  }
-  if (!replaced) lines.push_back(name + " = " + value);
-  write_lines(path, lines);
-}
-
-void unset_value(const std::filesystem::path& path, const std::string& name) {
-  const std::vector<std::string> old_lines = read_lines(path);
-  std::vector<std::string> lines;
-  for (const std::string& line : old_lines) {
-    const auto assignment = parse_assignment(line);
-    if (!assignment.has_value()) {
-      lines.push_back(line);
-    } else if (assignment->first != name) {
-      lines.push_back(line);
-    }
-  }
-  if (lines.size() == old_lines.size()) {
-    throw UserError("configuration key not found: " + name);
-  }
-  write_lines(path, lines);
+  const std::filesystem::path path = config_path(repo, scope);
+  if (write) std::filesystem::create_directories(path.parent_path());  // GG_COV_EXCL_BRANCH
+  git_config* raw = nullptr;
+  check(git_config_new(&raw), "create Git config view");
+  ConfigPtr config(raw);
+  const git_config_level_t level =
+      scope == ConfigScope::user       ? GIT_CONFIG_LEVEL_GLOBAL  // GG_COV_EXCL_BRANCH
+      : scope == ConfigScope::workspace ? GIT_CONFIG_LEVEL_WORKTREE
+                                       : GIT_CONFIG_LEVEL_LOCAL;
+  check(git_config_add_file_ondisk(config.get(), path.c_str(), level,  // GG_COV_EXCL_BRANCH
+                                   repo.raw(), write ? 1 : 0),
+        "open Git config");
+  return config;
 }
 
 bool name_matches(std::string_view name, std::string_view filter) {
-  if (filter.empty()) return true;
-  if (name == filter) return true;
-  return name.starts_with(std::string(filter) + ".");
+  return filter.empty() || name == filter ||  // GG_COV_EXCL_BRANCH
+         name.starts_with(std::string(filter) + ".");
 }
 
-void validate_config_template(std::string_view template_value) {
-  if (template_value.empty()) return;
-  (void)render_template(template_value, kEmptyTemplateValues);
+std::string_view level_name(git_config_level_t level) {
+  switch (level) { case GIT_CONFIG_LEVEL_PROGRAMDATA: return "programdata"; case GIT_CONFIG_LEVEL_SYSTEM: return "system"; case GIT_CONFIG_LEVEL_XDG: return "xdg"; case GIT_CONFIG_LEVEL_GLOBAL: return "global"; case GIT_CONFIG_LEVEL_LOCAL: return "local"; case GIT_CONFIG_LEVEL_WORKTREE: return "worktree"; case GIT_CONFIG_LEVEL_APP: return "app"; case GIT_CONFIG_HIGHEST_LEVEL: return "unknown"; } return "unknown";  // GG_COV_EXCL_BRANCH
+}
+
+void list_config(git_config* config,
+                 const ConfigCommand& options,
+                 std::ostream& output) {
+  git_config_iterator* raw_iterator = nullptr;
+  check(git_config_iterator_new(&raw_iterator, config), "list Git config");
+  ConfigIteratorPtr iterator(raw_iterator);
+  std::vector<std::tuple<std::string, std::string, git_config_level_t,
+                         std::string>> entries;
+  std::set<std::string> names;
+  while (true) {
+    git_config_entry* entry = nullptr;
+    const int result = git_config_next(&entry, iterator.get());
+    if (result == GIT_ITEROVER) break;
+    check(result, "read Git config");
+    if (!name_matches(entry->name, options.name)) continue;
+    entries.emplace_back(entry->name, entry->value, entry->level,
+                         entry->origin_path);
+    names.insert(entry->name);
+  }
+
+  if (options.include_overridden) {
+    for (const auto& [name, value, level, origin] : entries) {
+      output << level_name(level) << ' ' << origin << ' ' << name << " = "
+             << value << '\n';
+    }
+    return;
+  }
+  for (const std::string& name : names) {
+    git_config_entry* raw_entry = nullptr;
+    check(git_config_get_entry(&raw_entry, config, name.c_str()),
+          "read Git config value");
+    GitPtr<git_config_entry, git_config_entry_free> entry(raw_entry);
+    output << name << " = " << entry->value << '\n';
+  }
 }
 
 }  // namespace
 
 std::optional<std::string> config_value(Repository& repo,
                                         std::string_view name) {
-  std::map<std::string, std::string> values = kDefaultValues;
-  const std::array<ConfigScope, 3> scopes{
-      ConfigScope::user, ConfigScope::repository, ConfigScope::workspace};
-  for (const ConfigScope scope : scopes) {
-    for (const auto& entry : read_values(config_path(repo, scope))) {
-      values[entry.first] = entry.second;
-    }
+  ConfigPtr config = merged_config(repo);
+  git_config_entry* raw_entry = nullptr;
+  const int result = git_config_get_entry(&raw_entry, config.get(),
+                                          std::string(name).c_str());
+  if (result == GIT_ENOTFOUND) {
+    git_error_clear();
+    return std::nullopt;
   }
-  for (const auto& entry : runtime_values(repo)) {
-    values[entry.first] = entry.second;
-  }
-  const auto value = values.find(std::string(name));
-  if (value == values.end()) return std::nullopt;
-  return value->second;
+  check(result, "read Git config value");
+  GitPtr<git_config_entry, git_config_entry_free> entry(raw_entry);
+  return std::string(entry->value);
 }
 
 void command_config(Repository& repo,
                     const ConfigCommand& options,
                     std::ostream& output) {
-  const bool scope_required = (options.action == ConfigAction::edit) |
-                              (options.action == ConfigAction::path) |
-                              (options.action == ConfigAction::set) |
-                              (options.action == ConfigAction::unset);
+  const bool scope_required = options.action == ConfigAction::edit ||
+                              options.action == ConfigAction::path ||
+                              options.action == ConfigAction::set ||
+                              options.action == ConfigAction::unset;
   const std::optional<ConfigScope> scope = selected_scope(options, scope_required);
-  const bool name_required = (options.action == ConfigAction::get) |
-                             (options.action == ConfigAction::set) |
-                             (options.action == ConfigAction::unset);
-  if (name_required || !options.name.empty()) validate_name(options.name);
 
   if (options.action == ConfigAction::path) {
     output << config_path(repo, *scope).string() << '\n';
     return;
   }
   if (options.action == ConfigAction::edit) {
+    if (*scope == ConfigScope::workspace) {
+      (void)scoped_config(repo, *scope, true);
+    }
     const std::filesystem::path path = config_path(repo, *scope);
     std::filesystem::create_directories(path.parent_path());
     std::ofstream(path, std::ios::app);
-    edit_file_with_editor(path);
+    edit_file_with_editor(repo, path);
     return;
   }
+
+  const bool write = options.action == ConfigAction::set ||
+                     options.action == ConfigAction::unset;
+  ConfigPtr config = scope.has_value()
+                         ? scoped_config(repo, *scope, write)
+                         : merged_config(repo);
   if (options.action == ConfigAction::set) {
-    validate_value(options.value);
-    set_value(config_path(repo, *scope), options.name, options.value);
+    check(git_config_set_string(config.get(), options.name.c_str(),
+                                options.value.c_str()),
+          "set Git config value");
     return;
   }
   if (options.action == ConfigAction::unset) {
-    unset_value(config_path(repo, *scope), options.name);
+    const int result = git_config_delete_entry(config.get(), options.name.c_str());
+    if (result == GIT_ENOTFOUND) {
+      git_error_clear();
+      throw UserError("configuration key not found: " + options.name);
+    }
+    check(result, "unset Git config value");
     return;
   }
   if (options.action == ConfigAction::get) {
-    const auto value = config_value(repo, options.name);
-    if (!value.has_value()) {
+    git_config_entry* raw_entry = nullptr;
+    const int result =
+        git_config_get_entry(&raw_entry, config.get(), options.name.c_str());
+    if (result == GIT_ENOTFOUND) {
+      git_error_clear();
       throw UserError("configuration key not found: " + options.name);
     }
-    output << *value << '\n';
+    check(result, "read Git config value");
+    GitPtr<git_config_entry, git_config_entry_free> entry(raw_entry);
+    output << entry->value << '\n';
     return;
   }
-
-  validate_config_template(options.template_value);
-
-  const std::array<ConfigScope, 3> scopes{
-      ConfigScope::user, ConfigScope::repository, ConfigScope::workspace};
-  std::map<std::string, std::string> merged;
-  std::vector<std::pair<std::string, std::string>> layered;
-  if (options.include_defaults) {
-    merged = kDefaultValues;
-    layered.insert(layered.end(), merged.begin(), merged.end());
-  }
-  for (const ConfigScope layer : scopes) {
-    if (scope.has_value()) {
-      if (*scope != layer) continue;
-    }
-    for (const auto& entry : read_values(config_path(repo, layer))) {
-      merged[entry.first] = entry.second;
-      layered.push_back(entry);
-    }
-  }
-  if (!scope.has_value()) {
-    for (const auto& entry : runtime_values(repo)) {
-      merged[entry.first] = entry.second;
-      layered.push_back(entry);
-    }
-  }
-  const auto print = [&](std::string_view name, std::string_view value,
-                         bool overridden) {
-    if (name_matches(name, options.name)) {
-      if (options.template_value.empty()) {
-        output << name << " = " << value << '\n';
-      } else {
-        auto values = kEmptyTemplateValues;
-        values["name"] = name;
-        values["value"] = value;
-        values["overridden"] = overridden ? "true" : "false";
-        output << render_template(options.template_value, values);
-      }
-    }
-  };
-  if (options.include_overridden) {
-    for (auto entry = layered.begin(); entry != layered.end(); ++entry) {
-      const bool overridden = std::ranges::any_of(
-          std::next(entry), layered.end(), [&](const auto& later) {
-            return later.first == entry->first;
-          });
-      print(entry->first, entry->second, overridden);
-    }
-  } else {
-    for (const auto& [name, value] : merged) print(name, value, false);
-  }
+  list_config(config.get(), options, output);
 }
 
 }  // namespace gg::detail

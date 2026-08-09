@@ -4,8 +4,6 @@
 
 #include "commands.hpp"
 
-#include <CLI/CLI.hpp>
-
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -45,66 +43,29 @@ class TemporaryDirectory {
   std::filesystem::path path_;
 };
 
-std::vector<std::string> configured_arguments(std::string value) {
-  if (value.starts_with('[')) {
-    value = value.substr(1, value.size() - 2);
-    bool quoted = false;
-    bool escaped = false;
-    for (char& character : value) {
-      if (escaped) {
-        escaped = false;
-      } else if (character == '\\') {
-        escaped = true;
-      } else if (character == '"') {
-        quoted = !quoted;
-      } else if (character == ',' && !quoted) {
-        character = ' ';
-      }
-    }
-  }
-  std::vector<std::string> result = CLI::detail::split_up(value);
-  CLI::detail::remove_quotes(result);
-  return result;
+std::string tool_program(Repository& repo,
+                         std::string_view family,
+                         std::string_view tool) {
+  const std::string key = std::string(family) + "." + std::string(tool) +
+                          ".path";
+  return config_value(repo, key).value_or(std::string(tool));
 }
 
-std::string configured_program(Repository& repo, std::string_view tool) {
-  const std::string key = "merge-tools." + std::string(tool) + ".program";
-  const auto value = config_value(repo, key);
-  if (!value.has_value()) return std::string(tool);
-  const std::vector<std::string> words = configured_arguments(*value);
-  if (words.size() != 1) throw UserError(key + " must name one executable");
-  return words.front();
-}
-
-std::set<int> expected_exit_codes(Repository& repo, std::string_view tool) {
-  const std::string key =
-      "merge-tools." + std::string(tool) + ".diff-expected-exit-codes";
-  const auto configured = config_value(repo, key);
-  if (!configured.has_value()) {
-    return tool == "diff" ? std::set<int>{0, 1} : std::set<int>{0};
+std::vector<std::string> tool_command(Repository& repo,
+                                      std::string_view family,
+                                      std::string_view tool,
+                                      const std::filesystem::path& left,
+                                      const std::filesystem::path& right) {
+  const std::string key = std::string(family) + "." + std::string(tool) +
+                          ".cmd";
+  if (const auto command = config_value(repo, key); command.has_value()) {
+    return {"/bin/sh", "-c",
+            "LOCAL=\"$1\"; REMOTE=\"$2\"; MERGED=\"$3\"; "
+            "export LOCAL REMOTE MERGED; " +
+                *command,
+            "gg-tool", left.string(), right.string(), right.string()};
   }
-  std::string values = *configured;
-  for (char& character : values) {
-    if ((character < '0' || character > '9') && character != '-') {
-      character = ' ';
-    }
-  }
-  std::istringstream input(values);
-  std::set<int> result;
-  int value = 0;
-  while (input >> value) result.insert(value);
-  if (result.empty()) throw UserError(key + " must contain exit codes");
-  return result;
-}
-
-void replace_variable(std::string& value,
-                      std::string_view variable,
-                      std::string_view replacement) {
-  std::size_t offset = 0;
-  while ((offset = value.find(variable, offset)) != std::string::npos) {
-    value.replace(offset, variable.size(), replacement);
-    offset += replacement.size();
-  }
+  return {tool_program(repo, family, tool), left.string(), right.string()};
 }
 
 git_oid tree_id(Repository& repo, const git_oid& revision) {
@@ -148,37 +109,46 @@ std::optional<std::pair<git_oid, git_oid>> revision_set_trees(
                    combined_tree(repo, head_values));
 }
 
-std::vector<std::string> diff_paths(const std::vector<std::string>& values) {
-  std::vector<std::string> result;
-  result.reserve(values.size());
-  for (const std::string& value : values) {
-    if (value.empty()) {
-      throw UserError("diff paths must not be empty");
-    }
-    std::string pattern = value;
-    if (starts_with(pattern, "file:") || starts_with(pattern, "glob:")) {
-      pattern = pattern.substr(pattern.find(':') + 1);
-    }
-    const std::filesystem::path path(pattern);
-    if (path.is_absolute()) {
-      throw UserError("diff paths must be repository-relative");
-    }
-    for (const auto& component : path) {
-      if (component == "..") {
-        throw UserError("diff paths must not contain '..'");
-      }
-    }
-    result.push_back(path == "." ? "*" : path.generic_string());
+int collect_tree_path(const char* root,
+                      const git_tree_entry* entry,
+                      void* payload) {
+  if (git_tree_entry_type(entry) != GIT_OBJECT_TREE) {
+    static_cast<std::vector<std::string>*>(payload)->push_back(
+        std::string(root) + git_tree_entry_name(entry));
   }
-  return result;
+  return 0;
+}
+
+std::vector<std::string> matching_tree_paths(
+    Repository& repo,
+    const git_oid& tree_oid,
+    const std::vector<std::string>& filesets) {
+  if (filesets.empty()) return {};
+  for (const std::string& fileset : filesets) {
+    (void)fileset_matches(fileset, "");
+  }
+  TreePtr tree = repo.tree(tree_oid);
+  std::vector<std::string> paths;
+  check(git_tree_walk(tree.get(), GIT_TREEWALK_PRE, collect_tree_path, &paths),
+        "walk diff tree");
+  std::erase_if(paths, [&](const std::string& path) {
+    return std::ranges::none_of(filesets, [&](const std::string& fileset) {
+      return fileset_matches(fileset, path);
+    });
+  });
+  return paths;
 }
 
 void export_tree(Repository& repo,
                  const git_oid& tree_oid,
-                 const std::vector<std::string>& path_values,
+  const std::vector<std::string>& path_values,
                  const std::filesystem::path& destination) {
   std::filesystem::create_directory(destination);
-  const std::vector<std::string> paths = diff_paths(path_values);
+  std::vector<std::string> paths =
+      matching_tree_paths(repo, tree_oid, path_values);
+  if (!path_values.empty() && paths.empty()) {
+    paths.emplace_back("/.gg-fileset-no-match");
+  }
   std::vector<char*> path_pointers;
   path_pointers.reserve(paths.size());
   for (const std::string& path : paths) {
@@ -188,7 +158,8 @@ void export_tree(Repository& repo,
   git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
   options.checkout_strategy = GIT_CHECKOUT_FORCE |
                               GIT_CHECKOUT_DONT_UPDATE_INDEX |
-                              GIT_CHECKOUT_DONT_WRITE_INDEX;
+                              GIT_CHECKOUT_DONT_WRITE_INDEX |
+                              GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH;
   const std::string target = destination.string();
   options.target_directory = target.c_str();
   options.paths = {path_pointers.data(), path_pointers.size()};
@@ -211,21 +182,9 @@ void render_external_diff(Repository& repo,
   export_tree(repo, from_tree, paths, left);
   export_tree(repo, to_tree, paths, right);
 
-  const std::string key =
-      "merge-tools." + format.tool + ".diff-args";
-  const auto configured = config_value(repo, key);
-  std::vector<std::string> arguments =
-      configured.has_value()
-          ? configured_arguments(*configured)
-          : std::vector<std::string>{"$left", "$right"};
-  for (std::string& argument : arguments) {
-    replace_variable(argument, "$left", left.string());
-    replace_variable(argument, "$right", right.string());
-    replace_variable(argument, "$width", "80");
-  }
-  std::string program = configured_program(repo, format.tool);
-  std::vector<std::string> storage{program};
-  storage.insert(storage.end(), arguments.begin(), arguments.end());
+  std::vector<std::string> storage =
+      tool_command(repo, "difftool", format.tool, left, right);
+  const std::string& program = storage.front();
   std::vector<char*> argv;
   argv.reserve(storage.size() + 1);
   for (std::string& argument : storage) argv.push_back(argument.data());
@@ -248,7 +207,9 @@ void render_external_diff(Repository& repo,
   if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for external diff tool");  // GG_COV_EXCL_BRANCH
   if (!WIFEXITED(status)) throw UserError("external diff tool terminated by a signal");  // GG_COV_EXCL_BRANCH
   const int exit_code = WEXITSTATUS(status);
-  if (!expected_exit_codes(repo, format.tool).contains(exit_code)) {
+  const bool accepted = exit_code == 0 ||
+                        (format.tool == "diff" && exit_code == 1);  // GG_COV_EXCL_BRANCH
+  if (!accepted) {
     throw UserError("external diff tool exited with status " +
                     std::to_string(exit_code));
   }
@@ -268,13 +229,18 @@ git_oid import_tree(Repository& repo,
   check(git_index_read_tree(index.get(), base.get()), "prepare edited tree");
   const std::vector<std::string> selectors =
       paths.empty() ? std::vector<std::string>{"."} : paths;
-  for (const std::string& selector : selectors) {
-    if (selector == ".") {
-      check(git_index_clear(index.get()), "clear edited tree");
-    } else {
-      git_index_remove_bypath(index.get(), selector.c_str());
-      git_index_remove_directory(index.get(), selector.c_str(), 0);
+  std::vector<std::string> removed_paths;
+  for (std::size_t item = 0; item < git_index_entrycount(index.get()); ++item) {
+    const git_index_entry* entry = git_index_get_byindex(index.get(), item);
+    if (std::ranges::any_of(selectors, [&](const std::string& selector) {
+          return fileset_matches(selector, entry->path);
+        })) {
+      removed_paths.emplace_back(entry->path);
     }
+  }
+  for (const std::string& path : removed_paths) {
+    check(git_index_remove_bypath(index.get(), path.c_str()),
+          "remove edited path");
   }
   for (const auto& item : std::filesystem::recursive_directory_iterator(source)) {
     const std::filesystem::file_status status = item.symlink_status();
@@ -323,23 +289,9 @@ git_oid run_external_editor(Repository& repo,
   const std::filesystem::path right = temporary.path() / "right";
   export_tree(repo, left_tree, paths, left);
   export_tree(repo, right_tree, paths, right);
-  const std::string key =
-      "merge-tools." + std::string(tool) + ".edit-args";
-  const auto configured = config_value(repo, key);
-  std::vector<std::string> arguments =
-      configured.has_value()
-          ? configured_arguments(*configured)
-          : std::vector<std::string>{"$left", "$right"};
-  if (arguments.empty()) throw UserError(key + " must not be empty");
-  for (std::string& argument : arguments) {
-    replace_variable(argument, "$left", left.string());
-    replace_variable(argument, "$right", right.string());
-    replace_variable(argument, "$output", right.string());
-    replace_variable(argument, "$width", "80");
-  }
-  std::string program = configured_program(repo, tool);
-  std::vector<std::string> storage{program};
-  storage.insert(storage.end(), arguments.begin(), arguments.end());
+  std::vector<std::string> storage =
+      tool_command(repo, "mergetool", tool, left, right);
+  const std::string& program = storage.front();
   std::vector<char*> argv;
   argv.reserve(storage.size() + 1);
   for (std::string& argument : storage) argv.push_back(argument.data());
@@ -367,31 +319,57 @@ DiffPtr create_diff(Repository& repo,
                     const DiffFormatOptions& format) {
   TreePtr from_tree = repo.tree(from_tree_id);
   TreePtr to_tree = repo.tree(to_tree_id);
-  const std::vector<std::string> paths = diff_paths(path_values);
-  std::vector<char*> path_pointers;
-  path_pointers.reserve(paths.size());
-  for (const std::string& path : paths) {
-    path_pointers.push_back(const_cast<char*>(path.c_str()));
+  const auto build = [&](const std::vector<std::string>& paths,
+                         bool exact_paths) {
+    std::vector<char*> path_pointers;
+    path_pointers.reserve(paths.size());
+    for (const std::string& path : paths) {
+      path_pointers.push_back(const_cast<char*>(path.c_str()));
+    }
+    git_diff_options options = GIT_DIFF_OPTIONS_INIT;
+    options.context_lines = format.context;
+    options.pathspec = {path_pointers.data(), path_pointers.size()};
+    options.flags = GIT_DIFF_INCLUDE_TYPECHANGE;
+    if (exact_paths) options.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH;
+    if (format.ignore_all_space) {
+      options.flags |= GIT_DIFF_IGNORE_WHITESPACE;
+    }
+    if (format.ignore_space_change) {
+      options.flags |= GIT_DIFF_IGNORE_WHITESPACE_CHANGE;
+    }
+    git_diff* raw_diff = nullptr;
+    check(git_diff_tree_to_tree(&raw_diff, repo.raw(), from_tree.get(),
+                                to_tree.get(), &options),
+          "compare revisions");
+    DiffPtr diff(raw_diff);
+    git_diff_find_options find_options = GIT_DIFF_FIND_OPTIONS_INIT;
+    find_options.flags = GIT_DIFF_FIND_RENAMES;
+    check(git_diff_find_similar(diff.get(), &find_options),
+          "find renamed files");
+    return diff;
+  };
+
+  DiffPtr diff = build({}, false);
+  if (path_values.empty()) return diff;
+  for (const std::string& fileset : path_values) {
+    (void)fileset_matches(fileset, "");
   }
-  git_diff_options options = GIT_DIFF_OPTIONS_INIT;
-  options.context_lines = format.context;
-  options.pathspec = {path_pointers.data(), path_pointers.size()};
-  options.flags = GIT_DIFF_INCLUDE_TYPECHANGE;
-  if (format.ignore_all_space) {
-    options.flags |= GIT_DIFF_IGNORE_WHITESPACE;
+  std::set<std::string> selected;
+  for (std::size_t index = 0; index < git_diff_num_deltas(diff.get()); ++index) {
+    const git_diff_delta* delta = git_diff_get_delta(diff.get(), index);
+    const auto matches = [&](const char* path) {
+      return std::ranges::any_of(path_values, [&](const auto& fileset) {
+        return fileset_matches(fileset, path);
+      });
+    };
+    if (matches(delta->old_file.path) || matches(delta->new_file.path)) {  // GG_COV_EXCL_BRANCH
+      selected.insert(delta->old_file.path);
+      selected.insert(delta->new_file.path);
+    }
   }
-  if (format.ignore_space_change) {
-    options.flags |= GIT_DIFF_IGNORE_WHITESPACE_CHANGE;
-  }
-  git_diff* raw_diff = nullptr;
-  check(git_diff_tree_to_tree(&raw_diff, repo.raw(), from_tree.get(),
-                              to_tree.get(), &options),
-        "compare revisions");
-  DiffPtr diff(raw_diff);
-  git_diff_find_options find_options = GIT_DIFF_FIND_OPTIONS_INIT;
-  find_options.flags = GIT_DIFF_FIND_RENAMES;
-  check(git_diff_find_similar(diff.get(), &find_options), "find renamed files");
-  return diff;
+  std::vector<std::string> paths(selected.begin(), selected.end());
+  if (paths.empty()) paths.emplace_back("/.gg-fileset-no-match");
+  return build(paths, true);
 }
 
 std::string display_path(const git_diff_delta& delta) {
@@ -399,108 +377,6 @@ std::string display_path(const git_diff_delta& delta) {
   const std::string new_path = delta.new_file.path;
   return old_path == new_path ? new_path
                               : "{" + old_path + " => " + new_path + "}";
-}
-
-std::string diff_status(git_delta_t status) {
-  static const std::map<git_delta_t, std::string> names{
-      {GIT_DELTA_UNMODIFIED, "unmodified"},
-      {GIT_DELTA_ADDED, "added"},
-      {GIT_DELTA_DELETED, "deleted"},
-      {GIT_DELTA_MODIFIED, "modified"},
-      {GIT_DELTA_RENAMED, "renamed"},
-      {GIT_DELTA_COPIED, "copied"},
-      {GIT_DELTA_IGNORED, "ignored"},
-      {GIT_DELTA_UNTRACKED, "untracked"},
-      {GIT_DELTA_TYPECHANGE, "type-changed"},
-      {GIT_DELTA_UNREADABLE, "unreadable"},
-      {GIT_DELTA_CONFLICTED, "conflicted"}};  // GG_COV_EXCL_BRANCH
-  return names.at(status);
-}
-
-std::string file_type(std::uint16_t mode) {
-  static const std::map<std::uint16_t, std::string> names{
-      {GIT_FILEMODE_UNREADABLE, ""},
-      {GIT_FILEMODE_TREE, "tree"},
-      {GIT_FILEMODE_BLOB, "file"},
-      {GIT_FILEMODE_BLOB_EXECUTABLE, "file"},
-      {GIT_FILEMODE_LINK, "symlink"},
-      {GIT_FILEMODE_COMMIT, "git-submodule"}};  // GG_COV_EXCL_BRANCH
-  return names.at(mode);
-}
-
-const std::map<std::string, std::string> kEmptyDiffTemplateValues{
-    {"path", ""},            {"display_diff_path", ""},
-    {"status", ""},          {"status_char", ""},
-    {"source", ""},          {"source.path", ""},
-    {"source.id", ""},       {"source.conflict", ""},
-    {"source.conflict_side_count", ""},
-    {"source.file_type", ""},
-    {"source.executable", ""},
-    {"target", ""},
-    {"target.path", ""},
-    {"target.id", ""},
-    {"target.conflict", ""},
-    {"target.conflict_side_count", ""},
-    {"target.file_type", ""},
-    {"target.executable", ""}};  // GG_COV_EXCL_BRANCH
-
-std::map<std::string, std::string> diff_template_values(
-    const git_diff_delta& delta,
-    const TreeConflicts& source_conflicts,
-    const TreeConflicts& target_conflicts) {
-  const std::string old_path = delta.old_file.path;
-  const std::string new_path = delta.new_file.path;
-  auto values = kEmptyDiffTemplateValues;
-  values["path"] = new_path;
-  values["display_diff_path"] = display_path(delta);
-  values["status"] = diff_status(delta.status);
-  values["status_char"] = git_diff_status_char(delta.status);
-  values["source"] = old_path;
-  values["source.path"] = old_path;
-  values["source.id"] = oid_string(delta.old_file.id);
-  values["source.conflict"] = "false";
-  values["source.conflict_side_count"] = "1";
-  values["source.file_type"] = file_type(delta.old_file.mode);
-  values["source.executable"] =
-      delta.old_file.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false";
-  values["target"] = new_path;
-  values["target.path"] = new_path;
-  values["target.id"] = oid_string(delta.new_file.id);
-  values["target.conflict"] = "false";
-  values["target.conflict_side_count"] = "1";
-  values["target.file_type"] = file_type(delta.new_file.mode);
-  values["target.executable"] =
-      delta.new_file.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false";
-  if (const auto conflict = source_conflicts.find(old_path);
-      conflict != source_conflicts.end()) {
-    values["source.conflict"] = "true";
-    values["source.conflict_side_count"] =
-        std::to_string(conflict->second.adds.size());
-  }
-  if (const auto conflict = target_conflicts.find(new_path);
-      conflict != target_conflicts.end()) {
-    values["target.conflict"] = "true";
-    values["target.conflict_side_count"] =
-        std::to_string(conflict->second.adds.size());
-  }
-  return values;
-}
-
-void render_diff_template(Repository& repo,
-                          const git_oid& from_tree,
-                          const git_oid& to_tree,
-                          git_diff* diff,
-                          std::string_view template_value,
-                          std::ostream& output) {
-  (void)render_template(template_value, kEmptyDiffTemplateValues);
-  const TreeConflicts source_conflicts = repo.tree_conflicts(from_tree);
-  const TreeConflicts target_conflicts = repo.tree_conflicts(to_tree);
-  for (std::size_t index = 0; index < git_diff_num_deltas(diff); ++index) {
-    output << render_template(
-        template_value,
-        diff_template_values(*git_diff_get_delta(diff, index),
-                             source_conflicts, target_conflicts));
-  }
 }
 
 char mode_type(std::uint16_t mode) {
@@ -782,19 +658,7 @@ git_oid select_diff_tree(Repository& repo,
                          const std::vector<std::string>& paths,
                          std::string_view requested_tool) {
   std::string tool(requested_tool);
-  if (tool.empty()) {
-    if (const auto configured = config_value(repo, "ui.diff-editor");
-        configured.has_value()) {
-      const std::vector<std::string> words =
-          configured_arguments(*configured);
-      if (words.size() != 1) {
-        throw UserError("ui.diff-editor must name one tool");
-      }
-      tool = words.front();
-    } else {
-      tool = ":builtin";
-    }
-  }
+  if (tool.empty()) tool = ":builtin";
   if (tool != ":builtin") {
     if (starts_with(tool, ":")) {
       throw UserError("invalid builtin diff editor: " + tool.substr(1));
@@ -810,7 +674,7 @@ git_oid select_diff_tree(Repository& repo,
     (void)selected_paths;
     manifest << label << '\n';
   }
-  const std::string edited = edit_text(manifest.str());
+  const std::string edited = edit_text(repo, manifest.str());
   std::istringstream lines(edited);
   std::vector<std::string> selected_paths;
   std::string line;
@@ -848,13 +712,8 @@ void command_diff(Repository& repo,
   }
   DiffPtr diff =
       create_diff(repo, from_tree, to_tree, options.paths, options.format);
-  if (options.template_value.empty()) {
-    render_diff(repo, from_tree, to_tree, options.paths, diff.get(),
-                options.format, output);
-  } else {
-    render_diff_template(repo, from_tree, to_tree, diff.get(),
-                         options.template_value, output);
-  }
+  render_diff(repo, from_tree, to_tree, options.paths, diff.get(),
+              options.format, output);
 }
 
 void command_show(Repository& repo,
@@ -873,13 +732,8 @@ void command_show(Repository& repo,
   }
   for (std::size_t index = 0; index < resolved.size(); ++index) {
     const git_oid revision = resolved[index];
-    if (options.template_value.empty()) {
-      if (index != 0) output << '\n';
-      render_revision_header(repo, revision, output);
-    } else {
-      output << render_template(options.template_value,
-                                revision_template_values(repo, revision));
-    }
+    if (index != 0) output << '\n';
+    render_revision_header(repo, revision, output);
     if (!options.no_patch) {
       render_revision_diff(repo, revision, {}, options.format, output);
     }

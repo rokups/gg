@@ -48,6 +48,26 @@ TEST_F(RepositoryTest, CommitsOnlySelectedPaths) {
   EXPECT_EQ(status.find("tracked.txt"), std::string::npos);
 }
 
+TEST_F(RepositoryTest, CommitsFilesetSelections) {
+  ASSERT_EQ(invoke({"new", "-m", "draft", "main"}).code, 0);
+  write("tracked.txt", "selected\n");
+  write("nested/remaining.txt", "remaining\n");
+  write("other.bin", "binary\n");
+
+  const Result committed =
+      invoke({"commit", "-m", "selected",
+              "glob('*.txt') ~ file('nested/remaining.txt')"});
+  ASSERT_EQ(committed.code, 0) << committed.error;
+  EXPECT_EQ(invoke({"file", "show", "-r", "@-", "tracked.txt"}).output,
+            "selected\n");
+  EXPECT_EQ(invoke({"file", "show", "-r", "@-", "nested/remaining.txt"})
+                .code,
+            2);
+  EXPECT_EQ(invoke({"file", "show", "-r", "@-", "other.bin"}).code, 2);
+  EXPECT_NE(invoke({"status"}).output.find("nested/remaining.txt"),
+            std::string::npos);
+}
+
 TEST_F(RepositoryTest, PreservesOrClearsCommitDescriptions) {
   ASSERT_EQ(invoke({"new", "-m", "keep me", "main"}).code, 0);
   ASSERT_EQ(invoke({"ci"}).code, 0);
@@ -156,9 +176,8 @@ TEST_F(RepositoryTest, SelectsCommitChangesWithDiffEditors) {
   const std::string configured_saved_visual =
       configured_old_visual == nullptr ? "" : configured_old_visual;
   ASSERT_EQ(setenv("VISUAL", "/bin/true", 1), 0);
-  const Result configured = invoke(
-      {"--config", "ui.diff-editor=\":builtin\"", "commit",
-       "configured.txt", "--interactive"});
+  const Result configured =
+      invoke({"commit", "configured.txt", "--interactive"});
   if (configured_saved_visual.empty()) {
     unsetenv("VISUAL");
   } else {
@@ -204,15 +223,11 @@ TEST_F(RepositoryTest, SelectsCommitChangesWithDiffEditors) {
 
   EXPECT_EQ(invoke({"commit", "--tool", ":missing"}).code, 2);
   EXPECT_EQ(invoke({"commit", "--tool", "/bin/false"}).code, 2);
-  EXPECT_EQ(invoke({"--config", "ui.diff-editor=[\"one\",\"two\"]",
-                    "commit", "--interactive"})
+  ASSERT_EQ(invoke({"config", "set", "--repo", "mergetool.false.path",
+                    "/bin/false"})
                 .code,
-            2);
-  EXPECT_EQ(invoke({"--config", "merge-tools.empty.program=\"/bin/true\"",
-                    "--config", "merge-tools.empty.edit-args=[]", "commit",
-                    "--tool", "empty"})
-                .code,
-            2);
+            0);
+  EXPECT_EQ(invoke({"commit", "--tool", "false"}).code, 2);
 }
 
 TEST_F(RepositoryTest, SelectsRenamesAsOneInteractiveChange) {

@@ -72,12 +72,6 @@ std::string normalize_selector(const std::string& value) {
   return normalized.generic_string();
 }
 
-bool matches_selector(std::string_view path, std::string_view selector) {
-  return selector.empty() || path == selector ||
-         (path.size() > selector.size() && starts_with(path, selector) &&
-          path[selector.size()] == '/');
-}
-
 std::vector<const FileEntry*> select_entries(
     const std::vector<FileEntry>& entries,
     const std::vector<std::string>& values,
@@ -85,12 +79,13 @@ std::vector<const FileEntry*> select_entries(
   std::vector<std::string> selectors;
   selectors.reserve(values.size());
   for (const std::string& value : values) {
-    selectors.push_back(normalize_selector(value));
+    (void)fileset_matches(value, "");
+    selectors.push_back(value);
   }
   if (require_matches) {
     for (std::size_t index = 0; index < selectors.size(); ++index) {
       const bool matched = std::ranges::any_of(entries, [&](const auto& entry) {
-        return matches_selector(entry.path, selectors[index]);
+        return fileset_matches(selectors[index], entry.path);
       });
       if (!matched) {
         throw UserError("path not found: " + values[index]);
@@ -102,7 +97,7 @@ std::vector<const FileEntry*> select_entries(
   for (const FileEntry& entry : entries) {
     if (selectors.empty() ||
         std::ranges::any_of(selectors, [&](const auto& selector) {
-          return matches_selector(entry.path, selector);
+          return fileset_matches(selector, entry.path);
         })) {
       selected.push_back(&entry);
     }
@@ -123,22 +118,6 @@ std::string blob_contents(Repository& repo, const FileEntry& entry) {
     return {};
   }
   return {static_cast<const char*>(git_blob_rawcontent(blob.get())), size};
-}
-
-std::map<std::string, std::string> file_template_values(
-    const FileEntry& entry) {
-  static const std::map<git_filemode_t, std::string> file_types{
-      {GIT_FILEMODE_BLOB, "file"},
-      {GIT_FILEMODE_BLOB_EXECUTABLE, "file"},
-      {GIT_FILEMODE_LINK, "symlink"},
-      {GIT_FILEMODE_COMMIT, "git-submodule"},
-  };  // GG_COV_EXCL_BRANCH
-  return {{"path", entry.path},
-          {"conflict", entry.conflict ? "true" : "false"},
-          {"conflict_side_count", std::to_string(entry.conflict_sides)},
-          {"file_type", file_types.at(entry.mode)},
-          {"executable",
-           entry.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false"}};
 }
 
 std::string escape_regex(std::string_view pattern, bool glob) {
@@ -186,27 +165,18 @@ std::regex search_pattern(const std::string& value) {
 }
 
 void list_files(const std::vector<const FileEntry*>& entries,
-                std::string_view template_value,
                 std::ostream& output) {
   for (const FileEntry* entry : entries) {
-    if (template_value.empty()) {
-      output << entry->path << '\n';
-    } else {
-      output << render_template(template_value, file_template_values(*entry));
-    }
+    output << entry->path << '\n';
   }
 }
 
 void show_files(Repository& repo,
                 const std::vector<const FileEntry*>& entries,
-                std::string_view template_value,
                 std::ostream& output) {
   for (const FileEntry* entry : entries) {
     if (!is_regular_file(entry->mode)) {
       throw UserError("path is not a regular file: " + entry->path);
-    }
-    if (!template_value.empty()) {
-      output << render_template(template_value, file_template_values(*entry));
     }
     const std::string content = blob_contents(repo, *entry);
     output.write(content.data(), static_cast<std::streamsize>(content.size()));
@@ -256,7 +226,9 @@ void chmod_files(Repository& repo,
   CommitPtr old_commit = repo.commit(old);
   TreePtr old_tree = repo.tree(*git_commit_tree_id(old_commit.get()));
   git_index* raw_index = nullptr;
-  check(git_index_new(&raw_index), "create file index");
+  git_index_options index_options = GIT_INDEX_OPTIONS_INIT;
+  index_options.oid_type = git_repository_oid_type(repo.raw());
+  check(git_index_new(&raw_index, &index_options), "create file index");
   IndexPtr index(raw_index);
   check(git_index_read_tree(index.get(), old_tree.get()), "prepare file modes");
   const bool executable = options.mode == "x" || options.mode == "executable";
@@ -331,10 +303,10 @@ void command_file(Repository& repo,
   }
   switch (options.action) {
     case FileAction::list:
-      list_files(selected, options.template_value, output);
+      list_files(selected, output);
       return;
     case FileAction::show:
-      show_files(repo, selected, options.template_value, output);
+      show_files(repo, selected, output);
       return;
     case FileAction::search:
       search_files(repo, options, selected, output);

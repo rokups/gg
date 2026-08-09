@@ -22,23 +22,20 @@ TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
   EXPECT_EQ(invoke({"file", "list", "."}).output, all);
   EXPECT_EQ(invoke({"file", "list", "nested"}).output,
             "nested/empty.txt\nnested/link\nnested/tool.txt\n");
+  EXPECT_EQ(invoke({"file", "list", "glob('nested/*.txt')"}).output,
+            "nested/empty.txt\nnested/tool.txt\n");
+  EXPECT_EQ(invoke({"file", "list",
+                    "glob('*.txt') ~ file('nested/tool.txt')"})
+                .output,
+            "nested/empty.txt\ntracked.txt\n");
+  EXPECT_EQ(invoke({"file", "list", "file('tracked.txt') | root('nested')"})
+                .output,
+            all);
   EXPECT_EQ(invoke({"file", "list", "nested/to"}).output, "");
   EXPECT_EQ(invoke({"file", "list", "missing"}).output, "");
   EXPECT_EQ(invoke({"file", "list", "-r", "main"}).output,
             "tracked.txt\n");
-  EXPECT_EQ(
-      invoke({"file", "list", "nested", "-T",
-              "path ++ \" \" ++ file_type ++ \" \" ++ executable ++ \" \" "
-              "++ conflict ++ \" \" ++ conflict_side_count ++ \"\\n\""})
-          .output,
-      "nested/empty.txt file false false 1\n"
-      "nested/link symlink false false 1\n"
-      "nested/tool.txt file true false 1\n");
-
   EXPECT_EQ(invoke({"file", "show", "tracked.txt"}).output, "working\n");
-  EXPECT_EQ(invoke({"file", "show", "-T", "path ++ ':'", "tracked.txt"})
-                .output,
-            "tracked.txt:working\n");
   EXPECT_EQ(invoke({"file", "show", "-r", "main", "tracked.txt"}).output,
             "base\n");
   EXPECT_EQ(invoke({"file", "show", "nested/empty.txt"}).output, "");
@@ -49,9 +46,6 @@ TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
   EXPECT_EQ(invoke({"file", "list", ""}).code, 2);
   EXPECT_EQ(invoke({"file", "list", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"file", "list", "../outside"}).code, 2);
-  EXPECT_EQ(invoke({"file", "list", "-T", "unknown"}).code, 2);
-  EXPECT_EQ(
-      invoke({"file", "show", "-T", "unknown", "tracked.txt"}).code, 2);
 }
 
 TEST_F(RepositoryTest, SearchesRevisionFileContents) {

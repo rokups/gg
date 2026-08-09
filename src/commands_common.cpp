@@ -8,6 +8,8 @@
 #include <git2/sys/errors.h>
 
 #include <spawn.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -17,6 +19,7 @@
 #include <cstdlib>
 #include <fnmatch.h>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <regex>
@@ -27,6 +30,29 @@ extern char** environ;
 
 namespace gg::detail {
 namespace {
+
+class WorkspaceLock {
+ public:
+  explicit WorkspaceLock(git_repository* repo) {
+    const std::filesystem::path directory =
+        std::filesystem::path(git_repository_commondir(repo)) / "gg";
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path path = directory / "workspace.lock";
+    descriptor_ = open(path.c_str(), O_RDWR | O_CREAT, 0600);
+    if (descriptor_ < 0 || flock(descriptor_, LOCK_EX) != 0) { if (descriptor_ >= 0) close(descriptor_); throw UserError("cannot lock workspace state"); }  // GG_COV_EXCL_BRANCH
+  }
+
+  ~WorkspaceLock() {
+    (void)flock(descriptor_, LOCK_UN);
+    close(descriptor_);
+  }
+
+  WorkspaceLock(const WorkspaceLock&) = delete;
+  WorkspaceLock& operator=(const WorkspaceLock&) = delete;
+
+ private:
+  int descriptor_{-1};
+};
 
 enum GraphLink : std::uint16_t {
   graph_horizontal = 1 << 0,
@@ -133,117 +159,6 @@ constexpr std::array<StyleSpec, 23> kStyles{{
     {"\x1b[1m", "heading"},
     {"\x1b[38;5;6m", "hunk"},
 }};
-
-std::string_view trim_template(std::string_view value) {
-  const std::size_t begin = value.find_first_not_of(" \t\r\n");
-  if (begin == std::string_view::npos) return {};
-  return value.substr(begin, value.find_last_not_of(" \t\r\n") - begin + 1);
-}
-
-std::vector<std::string_view> template_atoms(std::string_view expression) {
-  std::vector<std::string_view> atoms;
-  std::size_t begin = 0;
-  char quote = '\0';
-  bool escaped = false;
-  for (std::size_t index = 0; index < expression.size(); ++index) {
-    const char character = expression[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (quote != '\0' && character == '\\') {
-      escaped = true;
-    } else if (character == '\'' || character == '"') {
-      if (quote == character) {
-        quote = '\0';
-      } else if (quote == '\0') {
-        quote = character;
-      }
-    } else if (quote == '\0' && character == '+' &&
-               index + 1 < expression.size() && expression[index + 1] == '+') {
-      atoms.push_back(trim_template(expression.substr(begin, index - begin)));
-      begin = index + 2;
-      ++index;
-    }
-  }
-  if (quote != '\0') throw UserError("unterminated template string");
-  atoms.push_back(trim_template(expression.substr(begin)));
-  return atoms;
-}
-
-std::string template_literal(std::string_view atom) {
-  if (atom.back() != atom.front()) {
-    throw UserError("invalid template string literal");
-  }
-  std::string result;
-  for (std::size_t index = 1; index + 1 < atom.size(); ++index) {
-    if (atom[index] != '\\') {
-      result += atom[index];
-      continue;
-    }
-    ++index;
-    switch (atom[index]) {
-      case 'n':
-        result += '\n';
-        break;
-      case 'r':
-        result += '\r';
-        break;
-      case 't':
-        result += '\t';
-        break;
-      case '\\':
-        result += '\\';
-        break;
-      case '\'':
-        result += '\'';
-        break;
-      case '"':
-        result += '"';
-        break;
-      default:
-        throw UserError("invalid template escape");
-    }
-  }
-  return result;
-}
-
-std::string template_keyword(
-    std::string_view atom,
-    const std::map<std::string, std::string>& values) {
-  std::string_view name = atom;
-  enum class Method { none, shorten, first_line };
-  Method method = Method::none;
-  std::size_t short_length = 8;
-  if (atom.ends_with(".first_line()")) {
-    name = atom.substr(0, atom.size() - std::string_view(".first_line()").size());
-    method = Method::first_line;
-  } else if (const std::size_t short_method = atom.find(".short(");
-             short_method != std::string_view::npos && atom.back() == ')') {
-    name = atom.substr(0, short_method);
-    const std::string_view argument = atom.substr(
-        short_method + std::string_view(".short(").size(),
-        atom.size() - short_method - std::string_view(".short(").size() - 1);
-    if (!argument.empty()) {
-      const auto parsed =
-          std::from_chars(argument.begin(), argument.end(), short_length);
-      if (parsed.ec != std::errc{} || parsed.ptr != argument.end()) {
-        throw UserError("template short length must be an integer");
-      }
-    }
-    method = Method::shorten;
-  }
-  if (name.starts_with("self.")) name.remove_prefix(5);
-  const auto value = values.find(std::string(name));
-  if (value == values.end()) {
-    throw UserError("unknown template keyword: " + std::string(name));
-  }
-  if (method == Method::shorten) {
-    return value->second.substr(0, short_length);
-  }
-  if (method == Method::first_line) return first_line(value->second.c_str());
-  return value->second;
-}
 
 int color_mode_index() {
   static const int index = std::ios_base::xalloc();  // GG_COV_EXCL_BRANCH
@@ -402,57 +317,152 @@ void GraphRenderer::add(std::ostream& output,
   }
 }
 
-std::string render_template(
-    std::string_view expression,
-    const std::map<std::string, std::string>& values) {
-  std::string result;
-  for (const std::string_view atom : template_atoms(expression)) {
-    if (atom.empty()) throw UserError("template expression is empty");
-    if (atom.front() == '\'' || atom.front() == '"') {
-      result += template_literal(atom);
-    } else {
-      result += template_keyword(atom, values);
-    }
-  }
-  return result;
-}
-
-std::map<std::string, std::string> revision_template_values(
-    Repository& repo,
-    const git_oid& oid) {
-  CommitPtr commit = repo.commit(oid);
-  const git_signature* author = git_commit_author(commit.get());
-  const git_signature* committer = git_commit_committer(commit.get());
-  const char* raw_description = git_commit_message(commit.get());
-  const std::string description =
-      raw_description == nullptr ? "" : raw_description;  // GG_COV_EXCL_BRANCH
-  const std::optional<std::string> change_id = repo.change_id(oid);
-  std::ostringstream bookmarks;
-  for (const std::string& bookmark : repo.bookmarks(oid)) {
-    if (bookmarks.tellp() != 0) bookmarks << ' ';
-    bookmarks << bookmark;
-  }
-  const auto workspace = repo.workspace();
-  return {{"commit_id", oid_string(oid)},
-          {"change_id", change_id.value_or("")},
-          {"description", description},
-          {"subject", first_line(description.c_str())},
-          {"author.name", author->name},
-          {"author.email", author->email},
-          {"committer.name", committer->name},
-          {"committer.email", committer->email},
-          {"bookmarks", bookmarks.str()},
-          {"conflict", repo.commit_has_conflicts(oid) ? "true" : "false"},  // GG_COV_EXCL_BRANCH
-          {"working_copy",
-           workspace.has_value() && *workspace == oid ? "true" : "false"}};
-}
-
 void set_output_color_mode(std::ostream& output, OutputColorMode mode) {
   output.iword(color_mode_index()) = static_cast<long>(mode);
 }
 
 OutputColorMode output_color_mode(std::ostream& output) {
   return static_cast<OutputColorMode>(output.iword(color_mode_index()));
+}
+
+bool fileset_matches(std::string_view expression, std::string_view path) {
+  const auto trim = [](std::string_view value) {
+    const std::size_t begin = value.find_first_not_of(" \t\n\r");
+    if (begin == std::string_view::npos) return std::string_view{};
+    return value.substr(begin,
+                        value.find_last_not_of(" \t\n\r") - begin + 1);
+  };
+  const auto top_level = [](std::string_view value, char operation) {
+    int depth = 0;
+    char quote = '\0';
+    for (std::size_t index = value.size(); index-- > 0;) {
+      const char character = value[index];
+      if (quote != '\0') {
+        if (character == quote) quote = '\0';
+      } else if (character == '\'' || character == '"') {
+        quote = character;
+      } else if (character == ')') {
+        ++depth;
+      } else if (character == '(') {
+        --depth;
+      } else if (depth == 0 && character == operation) {
+        return index;
+      }
+    }
+    return std::string_view::npos;
+  };
+  const auto wrapped = [](std::string_view value) {
+    if (value.size() < 2 || value.front() != '(' || value.back() != ')') {  // GG_COV_EXCL_BRANCH
+      return false;
+    }
+    int depth = 0;
+    for (std::size_t index = 0; index + 1 < value.size(); ++index) {
+      if (value[index] == '(') ++depth;
+      if (value[index] == ')' && --depth == 0) return false;
+    }
+    return true;
+  };
+
+  std::function<bool(std::string_view)> evaluate;
+  evaluate = [&](std::string_view value) {
+    value = trim(value);
+    if (value.empty()) throw UserError("fileset must not be empty");
+    int depth = 0;
+    char quote = '\0';
+    for (const char character : value) {
+      if (quote != '\0') {
+        if (character == quote) quote = '\0';
+      } else if (character == '\'' || character == '"') {
+        quote = character;
+      } else if (character == '(') {
+        ++depth;
+      } else if (character == ')' && --depth < 0) {
+        throw UserError("unbalanced fileset expression");
+      }
+    }
+    if (quote != '\0' || depth != 0) {  // GG_COV_EXCL_BRANCH
+      throw UserError("unbalanced fileset expression");
+    }
+    while (wrapped(value)) value = trim(value.substr(1, value.size() - 2));
+    if (const std::size_t separator = top_level(value, '|');
+        separator != std::string_view::npos) {
+      return evaluate(value.substr(0, separator)) ||
+             evaluate(value.substr(separator + 1));
+    }
+    if (const std::size_t separator = top_level(value, '&');
+        separator != std::string_view::npos) {
+      return evaluate(value.substr(0, separator)) &&  // GG_COV_EXCL_BRANCH
+             evaluate(value.substr(separator + 1));  // GG_COV_EXCL_BRANCH
+    }
+    if (const std::size_t separator = top_level(value, '~');
+        separator != std::string_view::npos) {
+      if (separator == 0) return !evaluate(value.substr(1));
+      return evaluate(value.substr(0, separator)) &&
+             !evaluate(value.substr(separator + 1));
+    }
+    if (value == "all()" || value == ".") return true;
+    if (value == "none()") return false;
+    const auto function_argument = [&](std::string_view name)
+        -> std::optional<std::string_view> {
+      if (!value.starts_with(name) || value.size() <= name.size() + 1 ||  // GG_COV_EXCL_BRANCH
+          value[name.size()] != '(' || value.back() != ')') {  // GG_COV_EXCL_BRANCH
+        return std::nullopt;
+      }
+      std::string_view argument =
+          trim(value.substr(name.size() + 1, value.size() - name.size() - 2));
+      if (argument.size() >= 2 &&  // GG_COV_EXCL_BRANCH
+          ((argument.front() == '\'' && argument.back() == '\'') ||  // GG_COV_EXCL_BRANCH
+           (argument.front() == '"' && argument.back() == '"'))) {  // GG_COV_EXCL_BRANCH
+        argument = argument.substr(1, argument.size() - 2);
+      }
+      if (argument.empty()) throw UserError("fileset path must not be empty");
+      return argument;
+    };
+    if (const auto argument = function_argument("glob"); argument.has_value()) {
+      value = *argument;
+      if (value.front() == '/' || value.find("../") != std::string_view::npos) {  // GG_COV_EXCL_BRANCH
+        throw UserError("filesets must be repository-relative");
+      }
+      return fnmatch(std::string(value).c_str(), std::string(path).c_str(), 0) ==
+             0;
+    }
+    for (const std::string_view name : {"file", "root", "cwd", "exact"}) {
+      if (const auto argument = function_argument(name); argument.has_value()) {
+        value = *argument;
+        break;
+      }
+    }
+    if (value.starts_with("glob:")) {
+      if (value.size() == 5 || value[5] == '/' ||  // GG_COV_EXCL_BRANCH
+          value.substr(5).find("../") != std::string_view::npos) {
+        throw UserError("filesets must be repository-relative");
+      }
+      return fnmatch(std::string(value.substr(5)).c_str(),
+                     std::string(path).c_str(), 0) == 0;
+    }
+    for (const std::string_view prefix : {"file:", "root:", "cwd:"}) {
+      if (value.starts_with(prefix)) value.remove_prefix(prefix.size());
+    }
+    if (value.size() >= 2 &&  // GG_COV_EXCL_BRANCH
+        ((value.front() == '\'' && value.back() == '\'') ||  // GG_COV_EXCL_BRANCH
+         (value.front() == '"' && value.back() == '"'))) {  // GG_COV_EXCL_BRANCH
+      value = value.substr(1, value.size() - 2);
+    }
+    if (value.empty() || value.front() == '/') {  // GG_COV_EXCL_BRANCH
+      throw UserError("filesets must be repository-relative");
+    }
+    const std::filesystem::path parsed(value);
+    for (const auto& component : parsed) {
+      if (component == "..") {
+        throw UserError("filesets must not contain '..'");
+      }
+    }
+    const std::string normalized = parsed.lexically_normal().generic_string();
+    return path == normalized ||
+           (path.size() > normalized.size() && starts_with(path, normalized) &&
+            path[normalized.size()] == '/');
+  };
+  return evaluate(expression);
 }
 
 std::string styled(std::ostream& output,
@@ -595,20 +605,30 @@ void finish_workspace(Repository& repo,
   repo.checkout(workspace);
 }
 
-void edit_file_with_editor(const std::filesystem::path& path) {
-  const char* raw_editor = std::getenv("VISUAL");
-  if (raw_editor == nullptr) raw_editor = std::getenv("EDITOR");
-  if (raw_editor != nullptr && *raw_editor == '\0') {
-    raw_editor = std::getenv("EDITOR");
-  }
-  if (raw_editor == nullptr || *raw_editor == '\0') {
-    throw UserError("VISUAL or EDITOR must name an editor executable");
+void edit_file_with_editor(Repository& repo,
+                           const std::filesystem::path& path) {
+  std::string editor;
+  if (const char* value = std::getenv("GIT_EDITOR");  // GG_COV_EXCL_BRANCH
+      value != nullptr && *value != '\0') {  // GG_COV_EXCL_BRANCH
+    editor = value;
+  } else if (const auto value = config_value(repo, "core.editor");  // GG_COV_EXCL_BRANCH
+             value.has_value() && !value->empty()) {  // GG_COV_EXCL_BRANCH
+    editor = *value;
+  } else if (const char* value = std::getenv("VISUAL");  // GG_COV_EXCL_BRANCH
+             value != nullptr && *value != '\0') {  // GG_COV_EXCL_BRANCH
+    editor = value;
+  } else if (const char* value = std::getenv("EDITOR");  // GG_COV_EXCL_BRANCH
+             value != nullptr && *value != '\0') {  // GG_COV_EXCL_BRANCH
+    editor = value;
+  } else {
+    throw UserError(
+        "GIT_EDITOR, core.editor, VISUAL, or EDITOR must name an editor");
   }
   std::vector<std::string> argument_storage =
-      CLI::detail::split_up(raw_editor);
+      CLI::detail::split_up(editor);
   CLI::detail::remove_quotes(argument_storage);
   if (argument_storage.empty()) {
-    throw UserError("VISUAL or EDITOR must name an editor executable");
+    throw UserError("editor command must name an executable");
   }
   argument_storage.push_back(path.string());
   std::vector<char*> arguments;
@@ -629,7 +649,7 @@ void edit_file_with_editor(const std::filesystem::path& path) {
   }
 }
 
-std::string edit_text(std::string_view initial) {
+std::string edit_text(Repository& repo, std::string_view initial) {
   std::string pattern =
       (std::filesystem::temp_directory_path() / "gg-edit-XXXXXX").string();
   const int descriptor = mkstemp(pattern.data());
@@ -637,7 +657,7 @@ std::string edit_text(std::string_view initial) {
   close(descriptor);
   std::ofstream(pattern) << initial;
   try {
-    edit_file_with_editor(pattern);
+    edit_file_with_editor(repo, pattern);
     std::ifstream input(pattern);
     std::string result{std::istreambuf_iterator<char>(input),
                        std::istreambuf_iterator<char>()};
@@ -849,7 +869,9 @@ void command_util_check_push_conflicts(Repository& repo, std::istream& input) {
       throw UserError("invalid Git pre-push input");
     }
     git_oid oid{};
-    check(git_oid_fromstr(&oid, local_oid.c_str()), "parse pushed object");
+    check(git_oid_fromstr(&oid, local_oid.c_str(),
+                          git_repository_oid_type(repo.raw())),
+          "parse pushed object");
     if (git_oid_is_zero(&oid)) continue;
     git_object* raw_object = nullptr;
     check(git_object_lookup(&raw_object, repo.raw(), &oid, GIT_OBJECT_ANY),
@@ -890,6 +912,7 @@ void command_workspace(Repository& repo,
     return;
   }
   if (options.action == WorkspaceAction::add) {
+    WorkspaceLock lock(repo.raw());
     repo.sync_workspace();
     if (!options.name.empty()) {
       int valid = 0;
@@ -928,6 +951,32 @@ void command_workspace(Repository& repo,
     }
     Repository linked(destination);
     if (!options.name.empty()) linked.set_workspace_name(options.name);
+    if (options.sparse_patterns == "empty") {
+      const UtilExecCommand sparse_command{
+          "git", {"-C", destination.string(), "sparse-checkout", "set",
+                  "--no-cone", "!/*"}};
+      if (command_util_exec(sparse_command, destination) != 0) throw UserError("cannot initialize empty sparse workspace");  // GG_COV_EXCL_BRANCH
+    } else if (options.sparse_patterns == "copy") {  // GG_COV_EXCL_BRANCH
+      const std::filesystem::path current_patterns =
+          std::filesystem::path(git_repository_path(repo.raw())) / "info" /
+          "sparse-checkout";
+      if (std::filesystem::exists(current_patterns)) {
+        const UtilExecCommand initialize_sparse{
+            "git", {"-C", destination.string(), "sparse-checkout", "init",
+                    "--no-cone"}};
+        if (command_util_exec(initialize_sparse, destination) != 0) throw UserError("cannot initialize copied sparse workspace");  // GG_COV_EXCL_BRANCH
+        const std::filesystem::path linked_patterns =
+            std::filesystem::path(git_repository_path(linked.raw())) / "info" /
+            "sparse-checkout";
+        std::filesystem::create_directories(linked_patterns.parent_path());
+        std::filesystem::copy_file(
+            current_patterns, linked_patterns,
+            std::filesystem::copy_options::overwrite_existing);
+        const UtilExecCommand apply_sparse{
+            "git", {"-C", destination.string(), "sparse-checkout", "reapply"}};
+        if (command_util_exec(apply_sparse, destination) != 0) throw UserError("cannot apply copied sparse patterns");  // GG_COV_EXCL_BRANCH
+      }
+    }
     const std::string name = linked.workspace_name();
     const std::string id = repo.new_change_id();
     repo.record({{std::string(kWorkspacePrefix) + name, working},
@@ -998,19 +1047,6 @@ void command_workspace(Repository& repo,
     }
   }
   if (workspaces.empty()) {
-    if (!options.template_value.empty()) {
-      static const std::map<std::string, std::string> values{
-          {"name", ""},      {"target", ""},
-          {"root", ""},      {"commit_id", ""},
-          {"change_id", ""}, {"description", ""},
-          {"subject", ""},   {"author.name", ""},
-          {"author.email", ""},
-          {"committer.name", ""},
-          {"committer.email", ""},
-          {"bookmarks", ""},
-          {"working_copy", ""}};  // GG_COV_EXCL_BRANCH
-      (void)render_template(options.template_value, values);
-    }
     output << "No workspaces.\n";
     return;
   }
@@ -1020,30 +1056,36 @@ void command_workspace(Repository& repo,
         found == roots.end()
             ? "(stale)"
             : std::filesystem::weakly_canonical(found->second).string();
-    if (!options.template_value.empty()) {
-      auto values = revision_template_values(repo, oid);
-      values["name"] = name;
-      values["target"] = oid_string(oid);
-      values["root"] = workspace_root;
-      values["working_copy"] = name == workspace_name ? "true" : "false";
-      output << render_template(options.template_value, values);
-    } else {
-      const auto id = repo.change_id(oid);
-      output << name << ": "
-             << (id.has_value() ? repo.short_change_id(*id) : "--------")
-             << ' ' << oid_string(oid, 8) << ' ' << workspace_root << '\n';
-    }
+    const auto id = repo.change_id(oid);
+    output << name << ": "
+           << (id.has_value() ? repo.short_change_id(*id) : "--------") << ' '
+           << oid_string(oid, 8) << ' ' << workspace_root << '\n';
   }
 }
 
 void command_sparse(Repository& repo,
                     const SparseCommand& options,
                     std::ostream& output) {
-  repo.sync_workspace();
   if (!repo.workspace().has_value()) {
     throw UserError("this command requires a working-copy change");
   }
-  if (options.action == SparseAction::list) output << ".\n";
+  const std::filesystem::path patterns =
+      std::filesystem::path(git_repository_path(repo.raw())) / "info" /
+      "sparse-checkout";
+  if (options.action == SparseAction::list) {
+    if (!std::filesystem::exists(patterns)) {
+      output << ".\n";
+      return;
+    }
+    std::ifstream input(patterns);
+    output << input.rdbuf();
+    return;
+  }
+  WorkspaceLock lock(repo.raw());
+  const std::filesystem::path root = git_repository_workdir(repo.raw());
+  const UtilExecCommand command{
+      "git", {"-C", root.string(), "sparse-checkout", "disable"}};
+  if (command_util_exec(command, root) != 0) throw UserError("cannot reset sparse workspace");  // GG_COV_EXCL_BRANCH
 }
 
 }  // namespace gg::detail

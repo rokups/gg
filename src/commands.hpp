@@ -50,12 +50,6 @@ std::string styled_short_change_id(Repository&, std::ostream&,
                                    std::string_view, bool working = false);
 std::string styled_short_commit_id(Repository&, std::ostream&, const git_oid&,
                                    bool working = false);
-std::string render_template(
-    std::string_view expression,
-    const std::map<std::string, std::string>& values);
-std::map<std::string, std::string> revision_template_values(
-    Repository&, const git_oid&);
-
 class GraphRenderer {
  public:
   void add(std::ostream&, const git_oid&, std::span<const git_oid>,
@@ -85,8 +79,8 @@ void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation);
-void edit_file_with_editor(const std::filesystem::path&);
-std::string edit_text(std::string_view);
+void edit_file_with_editor(Repository&, const std::filesystem::path&);
+std::string edit_text(Repository&, std::string_view);
 
 int credentials(git_credential** output, const char* url, const char* username,
                 unsigned int allowed, void* payload);

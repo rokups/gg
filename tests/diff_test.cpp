@@ -66,20 +66,6 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
             std::string::npos);
   EXPECT_NE(invoke({"diff", "-r", "main"}).output.find("+base"),
             std::string::npos);
-  const Result templated =
-      invoke({"diff", "-T",
-              "status_char ++ \" \" ++ status ++ \" \" ++ path ++ \" \" "
-              "++ display_diff_path ++ \" \" ++ source.path ++ \" \" ++ "
-              "target.path ++ \" \" ++ source.file_type ++ \" \" ++ "
-              "target.file_type ++ \" \" ++ source.executable ++ \" \" ++ "
-              "target.executable ++ \"\\n\""});
-  ASSERT_EQ(templated.code, 0) << templated.error;
-  EXPECT_NE(templated.output.find("A added added.txt added.txt"),
-            std::string::npos);
-  EXPECT_NE(templated.output.find("A added link link"), std::string::npos);
-  EXPECT_NE(templated.output.find("M modified tracked.txt tracked.txt"),
-            std::string::npos);
-
   write("tracked.txt", "changed suffix\n");
   write("uneven.txt", "one\ntwo\n");
   write("more.txt", "old\n");
@@ -117,10 +103,6 @@ TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
             "R {tracked.txt => renamed.txt}\n");
   EXPECT_EQ(invoke({"diff", "--types"}).output,
             "FF {tracked.txt => renamed.txt}\n");
-  EXPECT_EQ(invoke({"diff", "-T",
-                    "status ++ \" \" ++ display_diff_path ++ \"\\n\""})
-                .output,
-            "renamed {tracked.txt => renamed.txt}\n");
   EXPECT_NE(invoke({"--color", "always", "diff"})
                 .output.find("\x1b[1mrename from tracked.txt\x1b[0m"),
             std::string::npos);
@@ -128,8 +110,6 @@ TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
   std::filesystem::remove(path_ / "renamed.txt");
   EXPECT_EQ(invoke({"diff", "--summary"}).output, "D tracked.txt\n");
   EXPECT_EQ(invoke({"diff", "--types"}).output, "F- tracked.txt\n");
-  EXPECT_EQ(invoke({"diff", "-T", "status ++ \"\\n\""}).output,
-            "deleted\n");
   EXPECT_NE(invoke({"--color", "always", "diff"})
                 .output.find("\x1b[1mdeleted file mode"),
             std::string::npos);
@@ -175,39 +155,14 @@ TEST_F(RepositoryTest, RunsBuiltinAndExternalDiffTools) {
   EXPECT_FALSE(std::filesystem::exists(left));
   EXPECT_FALSE(std::filesystem::exists(right));
 
-  const std::vector<std::string> configured{
-      "--config", "merge-tools.named.program=\"/bin/echo\"",
-      "--config",
-      "merge-tools.named.diff-args=[\"L=$left\", \"R=$right\", "
-      "\"W=$width\", \"literal,comma\", \"slash\\\\$left\"]",
-      "diff", "--tool", "named"};
-  const Result named = invoke(configured);
+  ASSERT_EQ(invoke({"config", "set", "--repo", "difftool.named.cmd",
+                    "/bin/echo L=$LOCAL R=$REMOTE"})
+                .code,
+            0);
+  const Result named = invoke({"diff", "--tool", "named"});
   ASSERT_EQ(named.code, 0) << named.error;
   EXPECT_NE(named.output.find("L=/tmp/gg-diff-"), std::string::npos);
   EXPECT_NE(named.output.find(" R=/tmp/gg-diff-"), std::string::npos);
-  EXPECT_NE(named.output.find(" W=80 literal,comma"), std::string::npos);
-  EXPECT_EQ(invoke({"--config", "merge-tools.named.program=[\"one\",\"two\"]",
-                    "diff", "--tool", "named"})
-                .code,
-            2);
-  EXPECT_EQ(invoke({"--config", "merge-tools.false.program=\"/bin/false\"",
-                    "--config",
-                    "merge-tools.false.diff-expected-exit-codes=[1]", "diff",
-                    "--tool", "false"})
-                .code,
-            0);
-  EXPECT_EQ(invoke({"--config", "merge-tools.false.program=\"/bin/false\"",
-                    "--config",
-                    "merge-tools.false.diff-expected-exit-codes=[]", "diff",
-                    "--tool", "false"})
-                .code,
-            2);
-  EXPECT_EQ(invoke({"--config", "merge-tools.true.program=\"/bin/true\"",
-                    "--config",
-                    "merge-tools.true.diff-expected-exit-codes=[-1,0]", "diff",
-                    "--tool", "true"})
-                .code,
-            0);
   EXPECT_EQ(invoke({"diff", "--tool", "/bin/false"}).code, 2);
   EXPECT_EQ(invoke({"diff", "--tool", "missing-gg-diff-tool"}).code, 2);
   EXPECT_NE(invoke({"diff", "tracked.txt", "--tool", "diff"})
@@ -226,16 +181,13 @@ TEST_F(RepositoryTest, RunsBuiltinAndExternalDiffTools) {
             std::string::npos);
 }
 
-TEST_F(RepositoryTest, TemplatesExecutableModeChanges) {
+TEST_F(RepositoryTest, ReportsExecutableModeChanges) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   std::filesystem::permissions(
       path_ / "tracked.txt", std::filesystem::perms::owner_exec,
       std::filesystem::perm_options::add);
-  EXPECT_EQ(invoke({"diff", "-T",
-                    "source.executable ++ \" \" ++ target.executable ++ "
-                    "\"\\n\""})
-                .output,
-            "false true\n");
+  EXPECT_NE(invoke({"diff"}).output.find("new mode 100755"),
+            std::string::npos);
 
   ASSERT_EQ(invoke({"file", "chmod", "x", "-r", "main", "tracked.txt"})
                 .code,
@@ -243,11 +195,8 @@ TEST_F(RepositoryTest, TemplatesExecutableModeChanges) {
   std::filesystem::permissions(
       path_ / "tracked.txt", std::filesystem::perms::owner_exec,
       std::filesystem::perm_options::remove);
-  EXPECT_EQ(invoke({"diff", "-T",
-                    "source.executable ++ \" \" ++ target.executable ++ "
-                    "\"\\n\""})
-                .output,
-            "true false\n");
+  EXPECT_NE(invoke({"diff"}).output.find("new mode 100644"),
+            std::string::npos);
 }
 
 TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
@@ -277,16 +226,10 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   const std::size_t main_id_offset = plain.output.find("Commit ID: ") + 11;
   const std::string main_oid = plain.output.substr(main_id_offset, 40);
   git_oid main{};
-  ASSERT_EQ(git_oid_fromstr(&main, main_oid.c_str()), 0);
+  ASSERT_EQ(git_oid_fromstr(&main, main_oid.c_str(), GIT_OID_SHA1), 0);
   set_ref("refs/heads/also", main);
-  EXPECT_EQ(invoke({"show", "main", "--no-patch", "-T",
-                    "commit_id.short(12) ++ \" \" ++ bookmarks ++ \"\\n\""})
-                .output,
-            main_oid.substr(0, 12) + " also main\n");
-  const Result templated_set =
-      invoke({"show", "main | @", "--no-patch", "-T",
-              "description.first_line() ++ \"\\n\""});
-  EXPECT_EQ(templated_set.output, "base\nwork\n");
+  const Result decorated = invoke({"show", "main", "--no-patch"});
+  EXPECT_NE(decorated.output.find("Bookmarks: also main"), std::string::npos);
   EXPECT_EQ(invoke({"show", "-r", "main", "-r", "@", "--no-patch"}).code,
             0);
   EXPECT_NE(invoke({"show", "--summary"}).output.find("M tracked.txt"),
@@ -303,10 +246,7 @@ TEST_F(RepositoryTest, ValidatesDiffAndShowRequests) {
   EXPECT_EQ(invoke({"diff", ""}).code, 2);
   EXPECT_EQ(invoke({"diff", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"diff", "../outside"}).code, 2);
-  EXPECT_EQ(invoke({"diff", "-T", "unknown"}).code, 2);
-  EXPECT_EQ(invoke({"diff", "-T", "path", "--summary"}).code, 2);
   EXPECT_EQ(invoke({"diff", "--tool", "meld"}).code, 2);
-  EXPECT_EQ(invoke({"show", "-T", "unknown", "--no-patch"}).code, 2);
   EXPECT_EQ(invoke({"show", "--no-patch", "--summary"}).code, 2);
 
   const git_oid untracked = raw_commit("untracked");

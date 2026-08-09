@@ -336,7 +336,7 @@ void command_commit(Repository& repo,
   std::string message = options.message_provided
                             ? options.message
                             : (old_message == nullptr ? "" : old_message);  // GG_COV_EXCL_BRANCH
-  if (options.editor) message = edit_text(message);
+  if (options.editor) message = edit_text(repo, message);
   const git_oid committed =
       repo.rewrite_commit(*workspace, parents, selected_tree, message);
   const git_oid new_workspace = repo.create_commit(full_tree, {committed}, "");
@@ -356,19 +356,8 @@ void command_status(Repository& repo,
   repo.sync_workspace();
   std::vector<std::string> paths;
   for (const std::string& value : options.paths) {
-    const std::filesystem::path path(value);
-    if (value.empty() || path.is_absolute()) {
-      throw UserError("status paths must be repository-relative");
-    }
-    for (const auto& component : path) {
-      if (component == "..") {
-        throw UserError("status paths must not contain '..'");
-      }
-    }
-    const std::string normalized = path.lexically_normal().generic_string();
-    if (normalized != ".") {
-      paths.push_back(normalized);
-    }
+    (void)fileset_matches(value, "");
+    paths.push_back(value);
   }
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
@@ -417,15 +406,9 @@ void command_status(Repository& repo,
       if (paths.empty()) {
         return true;
       }
-      for (const std::string& prefix : paths) {
-        if (path == prefix) {
-          return true;
-        }
-        if (path.starts_with(prefix + "/")) {
-          return true;
-        }
-      }
-      return false;
+      return std::ranges::any_of(paths, [&](const auto& fileset) {
+        return fileset_matches(fileset, path);
+      });
     };
     const bool old_selected = selected(delta->old_file.path);
     const bool new_selected = selected(delta->new_file.path);
@@ -456,8 +439,8 @@ void command_status(Repository& repo,
   std::vector<std::string> conflicts = repo.conflict_paths(*workspace);
   if (!paths.empty()) {  // GG_COV_EXCL_BRANCH
     std::erase_if(conflicts, [&](const std::string& path) {
-      return std::ranges::none_of(paths, [&](const auto& prefix) {
-        return path == prefix || path.starts_with(prefix + "/");  // GG_COV_EXCL_BRANCH
+      return std::ranges::none_of(paths, [&](const auto& fileset) {
+        return fileset_matches(fileset, path);  // GG_COV_EXCL_BRANCH
       });
     });
   }
@@ -573,11 +556,7 @@ void command_log(Repository& repo,
     const std::string marker =
         styled(output, working ? "@" : "○",
                working ? OutputStyle::working_copy : OutputStyle::change_id);
-    if (!options.template_value.empty()) {
-      content << render_template(options.template_value,
-                                 revision_template_values(repo, oid));
-    } else {
-      content << (id.has_value()
+    content << (id.has_value()
                       ? styled_short_change_id(repo, content, *id, working)
                       : styled_short_commit_id(repo, content, oid, working))
               << ' '
@@ -592,11 +571,10 @@ void command_log(Repository& repo,
       }
       const std::string description =
           first_line(git_commit_message(value.get()));
-      if (repo.commit_has_conflicts(oid)) content << " conflict";
+    if (repo.commit_has_conflicts(oid)) content << " conflict";
       content << (options.no_graph ? " " : "\n")
               << (description.empty() ? "(no description set)" : description)
               << '\n';
-    }
     if (show_diff) {
       render_revision_diff(repo, oid, options.paths, options.format, content);
     }
@@ -809,7 +787,7 @@ void command_describe(Repository& repo,
     common_message = options.message;
   }
   if (options.editor && common_message.has_value()) {
-    common_message = edit_text(*common_message);
+    common_message = edit_text(repo, *common_message);
   }
 
   std::map<git_oid, std::string, OidLess> messages;
@@ -820,7 +798,7 @@ void command_describe(Repository& repo,
       CommitPtr value = repo.commit(oid);
       const char* original = git_commit_message(value.get());
       messages.emplace(
-          oid, edit_text(original == nullptr ? "" : original));  // GG_COV_EXCL_BRANCH
+          oid, edit_text(repo, original == nullptr ? "" : original));  // GG_COV_EXCL_BRANCH
     }
   }
 
@@ -901,23 +879,15 @@ void command_move(Repository& repo,
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }
-  bool edit = options.edit;
-  if (!edit && !options.no_edit) {
-    const std::string configured =
-        config_value(repo, "ui.movement.edit").value_or("false");
-    if (configured == "true") {
-      edit = true;
-    } else if (configured != "false") {
-      throw UserError("ui.movement.edit must be true or false");
-    }
-  }
-  if (!edit && !repo.children(*workspace).empty()) {
-    throw UserError(
-        "the working-copy change has children; create a new change or use --edit");
-  }
+  const bool edit = options.edit;
+  const bool direct_next = options.direction == MovementDirection::next &&
+                           !edit && !repo.children(*workspace).empty();
+  const bool skip_current = options.direction == MovementDirection::next &&
+                            !edit && !direct_next;
 
   std::set<git_oid, OidLess> frontier;
-  if (edit) {
+  if (edit || options.direction == MovementDirection::previous ||
+      direct_next) {
     frontier.insert(*workspace);
   } else {
     const auto parents = repo.parents(*workspace);
@@ -933,7 +903,7 @@ void command_move(Repository& repo,
         if (options.conflict && !repo.commit_has_conflicts(candidate)) {  // GG_COV_EXCL_BRANCH
           continue;
         }
-        if (!(options.direction == MovementDirection::next && !edit &&  // GG_COV_EXCL_BRANCH
+        if (!(skip_current &&  // GG_COV_EXCL_BRANCH
               step == 0 && candidate == *workspace)) {
           next.insert(candidate);
         }

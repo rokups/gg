@@ -88,16 +88,6 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
       invoke({"bookmark", "list", "-r", "alpha | beta"});
   EXPECT_NE(revision_set.output.find("alpha:"), std::string::npos);
   EXPECT_NE(revision_set.output.find("beta:"), std::string::npos);
-  const std::string first_id = git_oid_tostr_s(&first);
-  EXPECT_EQ(invoke({"bookmark", "list", "alpha", "-T",
-                    "name ++ \" \" ++ remote ++ \" \" ++ "
-                    "normal_target.short() ++ \" \" ++ present ++ \" \" ++ "
-                    "conflict ++ \" \" ++ removed_targets ++ \" \" ++ "
-                    "added_targets.short(4) ++ \"\\n\""})
-                .output,
-            "alpha  " + first_id.substr(0, 8) + " true false  " +
-                first_id.substr(0, 4) + "\n");
-
   const Result all = invoke({"bookmark", "list", "--all-remotes"});
   EXPECT_NE(all.output.find("alpha@origin:"), std::string::npos);
   EXPECT_NE(all.output.find("beta@backup:"), std::string::npos);
@@ -107,10 +97,6 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   EXPECT_NE(origin.output.find("alpha@origin:"), std::string::npos);
   EXPECT_EQ(origin.output.find("beta@backup:"), std::string::npos);
   EXPECT_EQ(origin.output.find("alpha:"), std::string::npos);
-  EXPECT_EQ(invoke({"bookmark", "list", "alpha", "--remote", "origin",
-                    "-T", "name ++ '@' ++ remote ++ \"\\n\""})
-                .output,
-            "alpha@origin\n");
   EXPECT_NE(invoke({"bookmark", "list", "--remote", "glob:ori*"})
                 .output.find("alpha@origin:"),
             std::string::npos);
@@ -150,8 +136,6 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
   const Result conflicted = invoke({"bookmark", "list", "--conflicted"});
   EXPECT_EQ(conflicted.code, 0);
   EXPECT_TRUE(conflicted.output.empty());
-  EXPECT_EQ(invoke({"bookmark", "list", "--template", "unknown"}).code,
-            2);
   EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--remote",
                     "origin"})
                 .code,
@@ -301,10 +285,8 @@ TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
   EXPECT_TRUE(points_to("refs/heads/old", target));
   ASSERT_EQ(invoke({"bookmark", "create", "configured", "-r", "@-"}).code,
             0);
-  const Result configured = invoke(
-      {"--config",
-       "revsets.bookmark-advance-from=bookmarks(exact:configured) & ancestors(to)",
-       "bookmark", "advance"});
+  const Result configured =
+      invoke({"bookmark", "advance", "configured"});
   ASSERT_EQ(configured.code, 0) << configured.error;
   EXPECT_TRUE(points_to("refs/heads/configured", target));
 
@@ -312,9 +294,8 @@ TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
                     git_oid_tostr_s(&old)})
                 .code,
             0);
-  const Result configured_target =
-      invoke({"--config", "revsets.bookmark-advance-to=@-", "bookmark",
-              "advance", "configured-target"});
+  const Result configured_target = invoke(
+      {"bookmark", "advance", "configured-target", "--to", "@-"});
   ASSERT_EQ(configured_target.code, 0) << configured_target.error;
   EXPECT_TRUE(points_to("refs/heads/configured-target", near));
   EXPECT_NE(invoke({"bookmark", "advance", "near"})
@@ -377,24 +358,23 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   EXPECT_EQ(remote_refs, std::vector<std::string>{"refs/heads/topic"});
   git_repository_free(bare_check);
 
-  ASSERT_EQ(invoke({"push", "--named", "named=@"}).code, 0);
-  EXPECT_TRUE(has_ref("refs/heads/named"));
-  EXPECT_TRUE(has_ref("refs/remotes/origin/named"));
-  ASSERT_EQ(invoke({"push", "--change", "main | @"}).code, 0);
+  EXPECT_EQ(invoke({"push", "--named", "named=@"}).code, 2);
+  EXPECT_FALSE(has_ref("refs/heads/named"));
+  EXPECT_EQ(invoke({"push", "--change", "main | @"}).code, 2);
   const git_oid raw_push = raw_commit("raw push", {ref("refs/heads/main")});
-  ASSERT_EQ(invoke({"push", "--change", git_oid_tostr_s(&raw_push)}).code, 0);
+  EXPECT_EQ(invoke({"push", "--revision", git_oid_tostr_s(&raw_push),
+                    "--dry-run"})
+                .code,
+            2);
   git_reference_iterator* generated_iterator = nullptr;
   ASSERT_EQ(git_reference_iterator_glob_new(&generated_iterator,
                                             repository_.get(),
                                             "refs/heads/push-*"),
             0);
   git_reference* generated_reference = nullptr;
-  ASSERT_EQ(git_reference_next(&generated_reference, generated_iterator), 0);
-  const std::string generated_name = git_reference_name(generated_reference);
-  git_reference_free(generated_reference);
+  EXPECT_EQ(git_reference_next(&generated_reference, generated_iterator),
+            GIT_ITEROVER);
   git_reference_iterator_free(generated_iterator);
-  EXPECT_TRUE(has_ref("refs/remotes/origin/" +
-                      generated_name.substr(std::string("refs/heads/").size())));
 
   const Result fetched_default = invoke({"fetch"});
   EXPECT_EQ(fetched_default.code, 0) << fetched_default.error;
@@ -408,13 +388,13 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   ASSERT_EQ(invoke({"tag", "set", "release"}).code, 0);
   const Result multi_push =
       invoke({"push", "-b", "glob:to*", "-b", "regex:^second$", "-t",
-              "glob:rel*", "--allow-private"});
+              "glob:rel*"});
   ASSERT_EQ(multi_push.code, 0) << multi_push.error;
   EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/release"));
   const Result tracked_tag = invoke({"push", "--tracked", "--dry-run"});
   EXPECT_NE(tracked_tag.output.find("refs/tags/release"), std::string::npos);
   EXPECT_EQ(invoke({"push", "-t", "release"}).code, 0);
-  EXPECT_EQ(invoke({"push", "-b", "topic", "--option", "ci=1"}).code, 1);
+  EXPECT_EQ(invoke({"push", "-b", "topic", "--option", "ci=1"}).code, 2);
   ASSERT_EQ(invoke({"bookmark", "create", "gone"}).code, 0);
   ASSERT_EQ(invoke({"push", "-b", "gone"}).code, 0);
   ASSERT_EQ(invoke({"bookmark", "delete", "gone"}).code, 0);
@@ -845,8 +825,22 @@ TEST_F(RepositoryTest, InitializesNewAndExistingRepositories) {
   git_repository_free(repository);
   EXPECT_NE(git_oid_equal(&before, &after), 0);
 
-  EXPECT_EQ(run({"init", "--object-hash", "sha256", target.string()}).code, 2);
+  EXPECT_NE(run({"init", "--object-hash", "sha256", target.string()}).code,
+            0);
   std::filesystem::remove_all(target);
+
+  const auto sha256_target = path_.parent_path() /
+                             (path_.filename().string() + "-sha256-init");
+  std::filesystem::remove_all(sha256_target);
+  const Result sha256 =
+      run({"init", "--object-hash", "sha256", sha256_target.string()});
+  ASSERT_EQ(sha256.code, 0) << sha256.error;
+  ASSERT_EQ(git_repository_open(&repository, sha256_target.string().c_str()),
+            0);
+  EXPECT_EQ(git_repository_oid_type(repository), GIT_OID_SHA256);
+  git_repository_free(repository);
+  EXPECT_EQ(run({"-R", sha256_target.string(), "status"}).code, 0);
+  std::filesystem::remove_all(sha256_target);
 
   const auto default_target =
       path_.parent_path() / (path_.filename().string() + "-default-init");

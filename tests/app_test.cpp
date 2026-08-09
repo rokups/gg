@@ -24,7 +24,27 @@ TEST(AppTest, PrintsHelpAndVersion) {
             std::string::npos);
   EXPECT_EQ(run({"help"}).code, 2);
   EXPECT_EQ(run({"version"}).code, 2);
-  EXPECT_EQ(run({"--ignore-immutable", "--no-pager", "--version"}).code, 0);
+  EXPECT_EQ(run({"--ignore-immutable", "status"}).code, 2);
+  EXPECT_EQ(run({"--no-pager", "status"}).code, 2);
+  const Result doc = run({"config", "set", "--doc"});
+  EXPECT_EQ(doc.code, 0);
+  EXPECT_NE(doc.output.find("gg config set — Set a configuration value"),
+            std::string::npos);
+  EXPECT_NE(doc.output.find("name TEXT REQUIRED"), std::string::npos);
+  const Result root_doc = run({"--doc"});
+  EXPECT_EQ(root_doc.code, 0);
+  EXPECT_NE(root_doc.output.find("gg — A JJ-shaped Git interface"),
+            std::string::npos);
+  const Result group_doc = run({"bookmark", "--doc"});
+  EXPECT_EQ(group_doc.code, 0);
+  EXPECT_NE(group_doc.output.find("gg bookmark — Manage bookmarks"),
+            std::string::npos);
+  const Result rooted_doc =
+      run({"-R", ".", "config", "set", "--doc"});
+  EXPECT_EQ(rooted_doc.code, 0);
+  EXPECT_NE(rooted_doc.output.find("gg config set —"), std::string::npos);
+  EXPECT_NE(run({"op", "--doc"}).output.find("gg operation —"),
+            std::string::npos);
 }
 
 TEST(AppTest, ReportsUserAndGitErrors) {
@@ -41,7 +61,7 @@ TEST(AppTest, ShowsAllTopLevelCommands) {
 
   ASSERT_EQ(help.code, 0);
   for (std::string_view command :
-       {"status", "diff", "show", "clone", "init", "sparse"}) {
+       {"status", "diff", "show", "clone", "init", "pull", "sparse"}) {
     EXPECT_NE(help.output.find("  " + std::string(command)), std::string::npos)
         << command;
     EXPECT_NE(markdown.output.find("## `gg " + std::string(command)),
@@ -111,7 +131,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"fetch", "--branch", "bad name"}).code, 1);
   EXPECT_EQ(invoke({"fetch", "--tag", "bad name"}).code, 1);
   EXPECT_EQ(invoke({"fetch", "--remote", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"push"}).code, 2);
+  EXPECT_EQ(invoke({"push"}).code, 0);
   EXPECT_EQ(invoke({"push", "-b", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-t", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-r", "missing"}).code, 2);
@@ -154,7 +174,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"workspace", "add"}).code, 2);
   EXPECT_EQ(invoke({"next", "0"}).code, 2);
   EXPECT_EQ(invoke({"prev", "word"}).code, 2);
-  EXPECT_EQ(invoke({"next", "--edit", "--no-edit"}).code, 2);
+  EXPECT_EQ(invoke({"next", "--no-edit"}).code, 2);
   EXPECT_EQ(invoke({"prev", "--conflict", "2"}).code, 2);
   EXPECT_EQ(invoke({"unknown"}).code, 2);
   EXPECT_EQ(invoke({"continue"}).code, 2);
@@ -245,6 +265,36 @@ TEST_F(RepositoryTest, ExecutesUtilitiesWithExactArgumentsAndWorkspaceRoot) {
   EXPECT_EQ(run({"-R", "/", "util", "exec", "/bin/true"}).code, 0);
 }
 
+TEST_F(RepositoryTest, PullPassesArgumentsAndExitStatusToGit) {
+  const char* previous_path = std::getenv("PATH");
+  ASSERT_NE(previous_path, nullptr);
+  const std::string saved_path = previous_path;
+  write("fake-bin/git",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > "
+        "\"$GG_WORKSPACE_ROOT/pull-arguments\"\nexit 7\n");
+  const std::filesystem::path git = path_ / "fake-bin/git";
+  std::filesystem::permissions(
+      git, std::filesystem::perms::owner_exec |
+               std::filesystem::perms::owner_read |
+               std::filesystem::perms::owner_write);
+  ASSERT_EQ(setenv("PATH", (git.parent_path().string() + ":" + saved_path).c_str(),
+                   1),
+            0);
+  const Result result =
+      invoke({"--debug", "pull", "-h", "--rebase", "origin", "main"});
+  ASSERT_EQ(setenv("PATH", saved_path.c_str(), 1), 0);
+
+  EXPECT_EQ(result.code, 7) << result.error;
+  EXPECT_NE(result.error.find("debug: command pull -h --rebase origin main"),
+            std::string::npos);
+  std::ifstream input(path_ / "pull-arguments");
+  std::ostringstream arguments;
+  arguments << input.rdbuf();
+  EXPECT_EQ(arguments.str(),
+            "-C\n" + path_.string() +
+                "\npull\n-h\n--rebase\norigin\nmain\n");
+}
+
 TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
   const Result markdown = run({"util", "markdown-help"});
   ASSERT_EQ(markdown.code, 0) << markdown.error;
@@ -291,16 +341,11 @@ TEST(AppTest, GeneratesShellCompletionsFromTheCommandSchema) {
   EXPECT_EQ(run({"util", "completion", "tcsh"}).code, 2);
 }
 
-TEST(AppTest, PrintsTheConfigurationSchema) {
-  const Result schema = run({"util", "config-schema"});
-  ASSERT_EQ(schema.code, 0) << schema.error;
-  EXPECT_NE(schema.output.find("https://json-schema.org/draft/2020-12/schema"),
-            std::string::npos);
-  EXPECT_NE(schema.output.find("patternProperties"), std::string::npos);
-  EXPECT_NE(schema.output.find("additionalProperties\": false"),
-            std::string::npos);
-  EXPECT_EQ(run({"util", "config-schema"}).output, schema.output);
-  EXPECT_EQ(run({"util", "config-schema", "extra"}).code, 2);
+TEST(AppTest, RejectsRemovedConfigurationAndTemplateInterfaces) {
+  EXPECT_EQ(run({"--config", "demo.value=x", "status"}).code, 2);
+  EXPECT_EQ(run({"--config-file", "config.toml", "status"}).code, 2);
+  EXPECT_EQ(run({"util", "config-schema"}).code, 2);
+  EXPECT_EQ(run({"log", "--template", "description"}).code, 2);
 }
 
 TEST_F(RepositoryTest, PrunesUnreachableGitObjects) {

@@ -21,6 +21,7 @@ CPMAddPackage(
     "BUILD_CLI OFF"
     "BUILD_EXAMPLES OFF"
     "BUILD_FUZZERS OFF"
+    "EXPERIMENTAL_SHA256 ON"
     "USE_HTTPS OpenSSL-Dynamic"
 )
 
@@ -53,6 +54,7 @@ add_library(
 )
 target_include_directories(gg_core PUBLIC include ${libgit2_SOURCE_DIR}/include)
 target_link_libraries(gg_core PUBLIC libgit2package PRIVATE CLI11::CLI11)
+target_compile_definitions(gg_core PUBLIC GIT_EXPERIMENTAL_SHA256)
 target_compile_options(gg_core PRIVATE -Wall -Wextra -Wpedantic -Werror
                                        -Wno-missing-field-initializers)
 

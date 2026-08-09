@@ -49,6 +49,7 @@ bool string_pattern_matches(std::string_view pattern,
 bool any_string_pattern_matches(const std::vector<std::string>& patterns,
                                 std::string_view value,
                                 std::string_view default_kind = "glob");
+bool fileset_matches(std::string_view expression, std::string_view path);
 
 template <typename T, void (*Free)(T*)>
 struct GitDeleter {
@@ -101,7 +102,7 @@ struct OidLess {
 
 bool operator==(const git_oid& left, const git_oid& right);
 std::string oid_string(const git_oid& oid,
-                       std::size_t length = GIT_OID_SHA1_HEXSIZE);
+                       std::size_t length = GIT_OID_MAX_HEXSIZE);
 std::string first_line(const char* message);
 bool starts_with(std::string_view value, std::string_view prefix);
 
@@ -120,11 +121,8 @@ struct RewritePlan {
 
 class Repository {
  public:
-  explicit Repository(
-      const std::filesystem::path& path,
-      std::vector<std::string> config_values = {},
-      std::vector<std::filesystem::path> config_files = {},
-      bool ignore_working_copy = false);
+  explicit Repository(const std::filesystem::path& path,
+                      bool ignore_working_copy = false);
 
   git_repository* raw() const;
 
@@ -309,16 +307,10 @@ class Repository {
 
   std::vector<std::string> bookmarks(const git_oid& oid) const;
 
-  const std::vector<std::string>& config_values() const;
-
-  const std::vector<std::filesystem::path>& config_files() const;
-
  private:
   git_oid resolve_atom(std::string_view revision) const;
 
   RepositoryPtr repo_;
-  std::vector<std::string> config_values_;
-  std::vector<std::filesystem::path> config_files_;
   bool ignore_working_copy_{false};
   std::optional<OperationState> operation_view_;
   std::optional<git_oid> viewed_operation_;

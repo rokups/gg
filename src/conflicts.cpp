@@ -55,7 +55,8 @@ TreeConflicts Repository::tree_conflicts(const git_oid& tree_oid) const {
       value.present = oid_text != "-";
       value.mode = static_cast<git_filemode_t>(mode);
       if (value.present) {  // GG_COV_EXCL_BRANCH
-        check(git_oid_fromstr(&value.oid, oid_text.c_str()),
+        check(git_oid_fromstr(&value.oid, oid_text.c_str(),
+                              git_repository_oid_type(repo_.get())),
               "parse conflict object");
       }
       (kind == 'R' ? conflict.removes : conflict.adds).push_back(value);

@@ -269,13 +269,19 @@ int dispatch(std::span<const std::string_view> arguments,
   if (const auto* init = std::get_if<GitInitCommand>(&invocation.command)) {
     return init_command(*init, command_output);
   }
+  if (const auto* pull = std::get_if<GitPullCommand>(&invocation.command)) {
+    UtilExecCommand git_pull{"git",
+                             {"-C", invocation.repository.string(), "pull"}};
+    git_pull.arguments.insert(git_pull.arguments.end(),
+                              pull->arguments.begin(), pull->arguments.end());
+    return command_util_exec(git_pull, invocation.repository);
+  }
   if (const auto* util_exec =
           std::get_if<UtilExecCommand>(&invocation.command)) {
     return command_util_exec(*util_exec, invocation.repository);
   }
 
-  Repository repository(invocation.repository, std::move(invocation.config_values),
-                        std::move(invocation.config_files),
+  Repository repository(invocation.repository,
                         invocation.ignore_working_copy ||
                             !invocation.at_operation.empty());
   repository.enable_ref_cache();

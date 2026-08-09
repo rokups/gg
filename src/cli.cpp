@@ -90,6 +90,50 @@ void install_man_pages(const CLI::App& app,
   write_man_pages(app, "gg", man1);
 }
 
+void add_doc_options(CLI::App& command) {
+  command.add_flag("--doc", "Show full command documentation");
+  for (CLI::App* child : command.get_subcommands()) add_doc_options(*child);  // GG_COV_EXCL_BRANCH
+}
+
+std::pair<const CLI::App*, std::string> doc_command(
+    const CLI::App& app, std::span<const std::string_view> arguments) {
+  const CLI::App* command = &app;
+  std::string path = "gg";
+  bool skip_root_value = false;
+  for (std::string_view argument : arguments) {  // GG_COV_EXCL_BRANCH
+    if (argument == "--doc") break;
+    if (skip_root_value) {
+      skip_root_value = false;
+      continue;
+    }
+    if (command == &app &&  // GG_COV_EXCL_BRANCH
+        (argument == "-R" || argument == "--repository" ||  // GG_COV_EXCL_BRANCH
+         argument == "--at-operation" || argument == "--at-op" ||  // GG_COV_EXCL_BRANCH
+         argument == "--color")) {
+      skip_root_value = true;
+      continue;
+    }
+    if (argument.starts_with('-')) continue;  // GG_COV_EXCL_BRANCH
+    for (const CLI::App* child : schema_children(*command)) {  // GG_COV_EXCL_BRANCH
+      const auto& aliases = child->get_aliases();
+      if (argument == child->get_name() ||
+          std::ranges::find(aliases, argument) != aliases.end()) {
+        command = child;
+        path += " " + child->get_name();
+        break;
+      }
+    }
+  }
+  return {command, path};
+}
+
+void write_plain_doc(const CLI::App& command,
+                     std::string_view path,
+                     std::ostream& output) {
+  output << path << " — " << command.get_description() << "\n\n"
+         << stable_help(command, path);
+}
+
 void collect_completion_words(const CLI::App& command,
                               std::set<std::string>& words) {
   for (const CLI::Option* option : command.get_options()) {
@@ -148,21 +192,6 @@ void write_completion(const CLI::App& app,
   }
 }
 
-void write_config_schema(std::ostream& output) {
-  output << R"JSON({
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gg-vcs.dev/schema/config.json",
-  "title": "gg configuration",
-  "description": "Flat dotted gg-native configuration assignments",
-  "type": "object",
-  "patternProperties": {
-    "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$": {}
-  },
-  "additionalProperties": false
-}
-)JSON";
-}
-
 }  // namespace
 
 ParseResult parse_cli(std::span<const std::string_view> arguments,
@@ -180,11 +209,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   std::string at_operation;
   app.add_option("--at-operation,--at-op", at_operation,
                  "Load the repository at an operation");
-  bool ignore_immutable = false;
-  app.add_flag("--ignore-immutable", ignore_immutable,
-               "Allow rewriting any non-root revision");
-  bool no_pager = false;
-  app.add_flag("--no-pager", no_pager, "Disable the pager");
   bool debug = false;
   app.add_flag("--debug", debug, "Enable debug logging");
   bool quiet = false;
@@ -192,14 +216,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   std::string color = "auto";
   app.add_option("--color", color, "When to colorize output")
       ->check(CLI::IsMember({"always", "never", "debug", "auto"}));
-  std::vector<std::string> config_values;
-  app.add_option("--config", config_values, "Additional NAME=VALUE configuration")
-      ->type_size(1)
-      ->allow_extra_args(false);
-  std::vector<std::filesystem::path> config_files;
-  app.add_option("--config-file", config_files, "Additional configuration file")
-      ->type_size(1)
-      ->allow_extra_args(false);
 
   StatusCommand status_value;
   auto* status = app.add_subcommand("status", "Show the working-copy change");
@@ -218,8 +234,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                 "Show older revisions first");
   log->add_flag("-G,--no-graph", log_value.no_graph,
                 "Do not show graph markers");
-  log->add_option("-T,--template", log_value.template_value,
-                  "Revision template");
   log->add_flag("-p,--patch", log_value.patch, "Show patches");
   log->add_flag("--count", log_value.count, "Print only the revision count");
   log->add_flag("-s,--summary", log_value.format.summary,
@@ -311,7 +325,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   rebase->add_option("-s,--source", rebase_value.source, "Source revision")
       ->required();
   rebase
-      ->add_option("-d,--destination", rebase_value.destination,
+      ->add_option("-d,-o,--destination,--onto", rebase_value.destination,
                    "Destination revision")
       ->required();
 
@@ -391,8 +405,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   file_list->add_option("filesets", file_list_value.paths,
                         "Repository-relative paths");
   file_list->add_option("-r,--revision", file_list_value.revision, "Revision");
-  file_list->add_option("-T,--template", file_list_value.template_value,
-                        "File template");
   FileCommand file_show_value;
   file_show_value.action = FileAction::show;
   auto* file_show =
@@ -401,8 +413,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                         "Repository-relative paths")
       ->required();
   file_show->add_option("-r,--revision", file_show_value.revision, "Revision");
-  file_show->add_option("-T,--template", file_show_value.template_value,
-                        "File template");
   FileCommand file_search_value;
   file_search_value.action = FileAction::search;
   auto* file_search = file->add_subcommand("search", "Search file contents");
@@ -488,11 +498,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   CLI::Option* diff_to =
       diff->add_option("-t,--to", diff_value.to, "Target revision");
   diff_revisions->excludes(diff_from)->excludes(diff_to);
-  CLI::Option* diff_template = diff->add_option(
-      "-T,--template", diff_value.template_value, "Diff entry template");
-  for (CLI::Option* format : add_diff_format(diff, diff_value.format)) {
-    diff_template->excludes(format);
-  }
+  add_diff_format(diff, diff_value.format);
 
   ShowCommand show_value;
   auto* show = app.add_subcommand("show", "Show revisions and their changes");
@@ -500,8 +506,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   show->add_option("-r", show_value.revision_options, "Revisions");
   show->add_flag("--reversed", show_value.reversed,
                  "Show revisions in reverse order");
-  show->add_option("-T,--template", show_value.template_value,
-                   "Revision template");
   const std::vector<CLI::Option*> show_formats =
       add_diff_format(show, show_value.format);
   CLI::Option* show_no_patch =
@@ -596,8 +600,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->excludes(bookmark_list_conflicted);
   list->add_option("-r,--revision,--revisions", bookmark_list.revisions,
                    "Revision containing a bookmark target");
-  list->add_option("-T,--template", bookmark_list.template_value,
-                   "Bookmark template");
   const std::vector<std::string> ref_sort_keys{
       "name",            "name-",           "author-name",
       "author-name-",    "author-email",    "author-email-",
@@ -656,8 +658,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->excludes(tag_list_conflicted);
   tag_list->add_option("-r,--revision,--revisions", tag_list_value.revisions,
                        "Revision containing a tag target");
-  tag_list->add_option("-T,--template", tag_list_value.template_value,
-                       "Tag template");
   tag_list->add_option("--sort", tag_list_value.sort, "Sort key")
       ->delimiter(',')
       ->check(CLI::IsMember(ref_sort_keys));
@@ -701,6 +701,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   fetch->add_flag("--all-remotes", fetch_value.all_remotes,
                   "Fetch every remote")
       ->excludes(fetch_remotes);
+  GitPullCommand pull_value;
+  auto* pull = app.add_subcommand("pull", "Run git pull");
+  pull->set_help_flag();
+  pull->prefix_command();
+  pull->footer("Arguments after 'pull' are passed unchanged to git pull.");
   GitPushCommand push_value;
   auto* push = app.add_subcommand("push", "Push bookmarks and tags");
   CLI::Option* push_bookmarks =
@@ -711,11 +716,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   CLI::Option* push_revisions =
       push->add_option("-r,--revision,--revisions", push_value.revisions,
                        "Revision containing refs to push");
-  CLI::Option* push_changes =
-      push->add_option("-c,--change", push_value.changes,
-                       "Revision to push under a generated bookmark");
-  CLI::Option* push_named =
-      push->add_option("--named", push_value.named, "Bookmark=revision");
   push->add_flag("--all", push_value.all, "Push all bookmarks and tags");
   push->add_flag("--tracked", push_value.tracked,
                  "Push refs known on the remote");
@@ -723,15 +723,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                  "Delete remote bookmarks and tags deleted locally")
       ->excludes(push_bookmarks)
       ->excludes(push_tags)
-      ->excludes(push_revisions)
-      ->excludes(push_changes)
-      ->excludes(push_named);
+      ->excludes(push_revisions);
   push->add_option("--remote", push_value.remote, "Remote name");
   push->add_flag("--allow-empty-description",
                  push_value.allow_empty_description,
                  "Allow empty commit descriptions");
-  push->add_flag("--allow-private", push_value.allow_private,
-                 "Allow private commits");
   push->add_flag("--dry-run", push_value.dry_run,
                  "Show updates without pushing");
   push->add_option("-o,--option", push_value.options, "Push option");
@@ -760,9 +756,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   operation_log->add_option("--show-changes-in",
                             operation_log_value.show_changes_in,
                             "Changed revisions to show");
-  operation_log->add_option("-T,--template",
-                            operation_log_value.template_value,
-                            "Operation template");
   OperationRestoreCommand operation_restore_value;
   auto* operation_restore = operation->add_subcommand(
       "restore", "Restore the repository to an earlier operation");
@@ -793,8 +786,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required()
       ->check(CLI::IsMember({"bash", "elvish", "fish", "nushell",
                              "power-shell", "powershell", "zsh"}));
-  auto* util_config_schema =
-      util->add_subcommand("config-schema", "Print the configuration schema");
   std::string util_man_path;
   auto* util_install_man =
       util->add_subcommand("install-man-pages", "Install generated man pages");
@@ -813,9 +804,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   WorkspaceCommand workspace_list_value;
   auto* workspace_list =
       workspace->add_subcommand("list", "List known workspaces");
-  workspace_list->add_option("-T,--template",
-                             workspace_list_value.template_value,
-                             "Workspace template");
   WorkspaceCommand workspace_root_value;
   workspace_root_value.action = WorkspaceAction::root;
   auto* workspace_root =
@@ -836,6 +824,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                             "Parent revision");
   workspace_add->add_option("-m,--message", workspace_add_value.message,
                             "Working-copy description");
+  workspace_add
+      ->add_option("--sparse-patterns", workspace_add_value.sparse_patterns,
+                   "Sparse patterns: copy, full, or empty")
+      ->check(CLI::IsMember({"copy", "full", "empty"}));
   WorkspaceCommand workspace_forget_value;
   workspace_forget_value.action = WorkspaceAction::forget;
   auto* workspace_forget =
@@ -864,11 +856,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       next->add_option("offset", next_value.offset, "Number of revisions")
           ->default_val(1)
           ->check(CLI::PositiveNumber);
-  CLI::Option* next_edit =
-      next->add_flag("-e,--edit", next_value.edit, "Edit the target revision");
-  CLI::Option* next_no_edit = next->add_flag(
-      "-n,--no-edit", next_value.no_edit, "Create a new working-copy revision");
-  next_edit->excludes(next_no_edit);
+  next->add_flag("-e,--edit", next_value.edit, "Edit the target revision");
   next->add_flag("--conflict", next_value.conflict,
                  "Jump to the next conflicted descendant")
       ->excludes(next_offset);
@@ -880,12 +868,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
           ->add_option("offset", previous_value.offset, "Number of revisions")
           ->default_val(1)
           ->check(CLI::PositiveNumber);
-  CLI::Option* previous_edit = previous->add_flag(
+  previous->add_flag(
       "-e,--edit", previous_value.edit, "Edit the target revision");
-  CLI::Option* previous_no_edit = previous->add_flag(
-      "-n,--no-edit", previous_value.no_edit,
-      "Create a new working-copy revision");
-  previous_edit->excludes(previous_no_edit);
   previous->add_flag("--conflict", previous_value.conflict,
                      "Jump to the previous conflicted ancestor")
       ->excludes(previous_offset);
@@ -914,14 +898,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* config_list = config->add_subcommand("list", "List configuration");
   config_list->add_option("name", config_list_value.name, "Key prefix")
       ->expected(0, 1);
-  config_list->add_flag("--include-defaults",
-                        config_list_value.include_defaults,
-                        "Include built-in defaults");
   config_list->add_flag("--include-overridden",
                         config_list_value.include_overridden,
                         "Include overridden values");
-  config_list->add_option("-T,--template", config_list_value.template_value,
-                          "Configuration template");
   add_config_scopes(config_list, config_list_value);
   ConfigCommand config_path_value;
   config_path_value.action = ConfigAction::path;
@@ -942,8 +921,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   config_unset->add_option("name", config_unset_value.name, "Configuration key")
       ->required();
   add_config_scopes(config_unset, config_unset_value);
+  add_doc_options(app);
   if (arguments.empty()) {
     output << app.help();
+    return {0, std::monostate{}};
+  }
+  if (std::ranges::find(arguments, "--doc") != arguments.end()) {
+    const auto [command, path] = doc_command(app, arguments);
+    write_plain_doc(*command, path, output);
     return {0, std::monostate{}};
   }
 
@@ -975,10 +960,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     const std::string shell = util_completion_shell;
     app.clear();
     write_completion(app, shell, output);
-    return {0, std::monostate{}};
-  }
-  if (util_config_schema->parsed()) {
-    write_config_schema(output);
     return {0, std::monostate{}};
   }
   if (util_markdown->parsed()) {
@@ -1079,6 +1060,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = std::move(init_value);
   } else if (fetch->parsed()) {
     command = RepositoryCommand{std::move(fetch_value)};
+  } else if (pull->parsed()) {
+    pull_value.arguments = pull->remaining();
+    command = std::move(pull_value);
   } else if (push->parsed()) {
     command = RepositoryCommand{std::move(push_value)};
   } else if (undo->parsed()) {  // GG_COV_EXCL_BRANCH
@@ -1132,7 +1116,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   }
 
   Invocation invocation{repository, std::move(command), {},
-                        std::move(config_values), std::move(config_files),
                         std::move(color), std::move(at_operation),
                         ignore_working_copy, debug, quiet};
   invocation.replay_arguments = replay_arguments(invocation.command);

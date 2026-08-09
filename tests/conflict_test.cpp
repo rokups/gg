@@ -111,22 +111,15 @@ TEST_F(RepositoryTest, ComposesConflictsWithoutNestedMarkers) {
   EXPECT_EQ(invoke({"status", "clean.sh"})
                 .output.find("Unresolved conflicts:"),
             std::string::npos);
-  const Result files = invoke(
-      {"file", "list", "-r", left_id, "-T",
-       "path ++ \" \" ++ conflict ++ \" \" ++ conflict_side_count ++ \"\\n\""});
-  EXPECT_NE(files.output.find("tracked.txt true 3"), std::string::npos)
-      << files.output;
-  EXPECT_NE(files.output.find("overlap.txt true 3"), std::string::npos)
-      << files.output;
-  const std::string diff_template =
-      "path ++ \" \" ++ source.conflict ++ \" \" ++ "
-      "target.conflict ++ \"\\n\"";
-  const Result forward = invoke({"diff", "--from", right_id, "--to",
-                                 left_id, "-T", diff_template});
-  EXPECT_NE(forward.output.find("true"), std::string::npos);
-  const Result reverse = invoke({"diff", "--from", left_id, "--to",
-                                 right_id, "-T", diff_template});
-  EXPECT_NE(reverse.output.find("true"), std::string::npos);
+  const Result files = invoke({"file", "list", "-r", left_id});
+  EXPECT_NE(files.output.find("tracked.txt"), std::string::npos);
+  EXPECT_NE(files.output.find("overlap.txt"), std::string::npos);
+  EXPECT_NE(invoke({"diff", "--from", right_id, "--to", left_id})
+                .output.find("tracked.txt"),
+            std::string::npos);
+  EXPECT_NE(invoke({"diff", "--from", left_id, "--to", right_id})
+                .output.find("tracked.txt"),
+            std::string::npos);
   ASSERT_EQ(invoke({"commit", "-m", "partial", "tracked.txt"}).code, 0);
   EXPECT_NE(invoke({"status"}).output.find("C overlap.txt"),
             std::string::npos);
@@ -157,13 +150,6 @@ TEST_F(RepositoryTest, RejectsPushingConflictedAncestry) {
   EXPECT_NE(invoke({"tag", "list", "--conflicted"})
                 .output.find("conflicted-tag"),
             std::string::npos);
-  EXPECT_EQ(invoke({"bookmark", "list", "conflicted", "-T", "conflict"})
-                .output,
-            "true");
-  EXPECT_EQ(invoke({"tag", "list", "conflicted-tag", "-T", "conflict"})
-                .output,
-            "true");
-
   const Result push = invoke({"push", "-b", "conflicted", "--dry-run"});
   EXPECT_EQ(push.code, 2);
   EXPECT_NE(push.error.find("refusing to push conflicted history"),

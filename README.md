@@ -79,11 +79,13 @@ git push -u origin topic
 ```
 
 Each `gg commit` describes the current change and creates a new empty working
-change. Paths may be supplied to commit only part of the working change; the
+change. Filesets may be supplied to commit only part of the working change; the
 remaining edits stay in the new working change:
 
 ```sh
 gg commit -m "Add the parser" src/parser.cpp include/parser.hpp
+gg commit -m "Commit sources except generated files" \
+  "glob('src/*') ~ root('src/generated')"
 ```
 
 ### Using only `gg` commands
@@ -100,14 +102,16 @@ gg bookmark create topic
 gg push --bookmark topic
 ```
 
-Help, generated manuals, and shell completions follow the selected mode.
+Every command and command group prints its complete help with `--doc`, without
+requiring a repository. Generated manuals and shell completions use the same
+command schema.
 
 ## Storage model
 
 Each working copy is represented by a commit under
 `refs/gg/workspaces/<name>`. The primary checkout starts as `default`; linked
-Git worktrees have their own names, operation histories, and paused-rewrite
-state while sharing commits, change IDs, bookmarks, and tags. Stable change
+Git worktrees have their own names, working changes, and operation histories
+while sharing commits, change IDs, bookmarks, and tags. Stable change
 IDs live under `refs/gg/changes/<id>`. Git `HEAD` stays at the working change's
 parent so existing tooling continues to see normal working-tree changes.
 
@@ -135,25 +139,25 @@ then `gg workspace forget NAME` if its gg workspace ref is still listed.
 The following is the full implemented command surface shown by `gg --help`.
 
 ```text
-gg status [PATH...]
-gg log [-r REV] [-n LIMIT] [--reversed] [--count] [PATH...]
+gg status [FILESET...]
+gg log [-r REVSET] [-n LIMIT] [--reversed] [--count] [FILESET...]
 gg new [-m DESCRIPTION] [--no-edit] [PARENT...]
 gg new [-m DESCRIPTION] [--no-edit] (--insert-after REV | --insert-before REV)
 gg describe [-m DESCRIPTION | --stdin | --editor] [REV]
 gg edit [REV | -r REV]
 gg metaedit [REV...] [-m DESCRIPTION] [--author 'NAME <EMAIL>']
 gg squash [-r REV | --from REV --into REV]
-gg split [-r REV] [-m DESCRIPTION] PATH...
+gg split [-r REV] [-m DESCRIPTION] FILESET...
 gg abandon [--retain-bookmarks] [--restore-descendants] [REV]
 gg rebase -s REV -d REV
-gg commit [-m DESCRIPTION] [--editor] [PATH...]
-gg restore [--from REV] [--into REV] [PATH...]
+gg commit [-m DESCRIPTION] [--editor] [FILESET...]
+gg restore [--from REV] [--into REV] [FILESET...]
 gg simplify-parents [-s REV]... [-r REV]...
-gg file list [-r REV] [PATH...]
-gg file show [-r REV] PATH...
-gg file search [-r REV] -p PATTERN [--name-only | --line-number] [PATH...]
-gg file chmod [-r REV] (n|normal|x|executable) PATH...
-gg diff [-r REV | --from REV] [--to REV] [PATH...]
+gg file list [-r REV] [FILESET...]
+gg file show [-r REV] FILESET...
+gg file search [-r REV] -p PATTERN [--name-only | --line-number] [FILESET...]
+gg file chmod [-r REV] (n|normal|x|executable) FILESET...
+gg diff [-r REVSET | --from REV] [--to REV] [FILESET...]
 gg show [--no-patch] [REV...]
 gg bookmark advance [NAME...] [-t REV]
 gg bookmark create NAME... [-r REV]
@@ -169,13 +173,13 @@ gg tag list [NAME...] [-r REVISION...] [--sort KEY...]
 gg init [DESTINATION]
 gg clone URL [DESTINATION]
 gg fetch [-b BRANCH...] [-t TAG...] [--remote REMOTE... | --all-remotes]
-gg push [-b BOOKMARK...] [-t TAG...] [-r REVISION...] [-c REVISION...] [--named NAME=REVISION...] [--all | --tracked | --deleted] [--remote REMOTE] [--dry-run]
+gg pull [GIT_ARGUMENT...]
+gg push [-b BOOKMARK...] [-t TAG...] [-r REVSET...] [--all | --tracked | --deleted] [--remote REMOTE] [--dry-run]
 gg undo
 gg redo
 gg operation log
 gg operation restore [--what repo|remote-tracking] OPERATION
 gg util completion (bash|elvish|fish|nushell|power-shell|zsh)
-gg util config-schema
 gg util exec -- COMMAND [ARG...]
 gg util gc [--expire now]
 gg util install-git-hooks
@@ -183,13 +187,13 @@ gg util install-man-pages PATH
 gg util markdown-help
 gg util snapshot
 gg util check-push-conflicts
-gg workspace add DESTINATION [--name NAME] [-r REVISION] [-m DESCRIPTION]
+gg workspace add DESTINATION [--name NAME] [-r REVISION] [-m DESCRIPTION] [--sparse-patterns copy|full|empty]
 gg workspace forget [NAME...]
 gg workspace list
 gg workspace rename NAME
 gg workspace root [--name default]
-gg next [--edit|--no-edit] [OFFSET]
-gg prev [--edit|--no-edit] [OFFSET]
+gg next [--edit] [OFFSET]
+gg prev [--edit] [OFFSET]
 gg config get NAME
 gg config list [--user|--repo|--workspace] [NAME]
 gg config path (--user|--repo|--workspace)
@@ -197,6 +201,25 @@ gg config set (--user|--repo|--workspace) NAME VALUE
 gg config unset (--user|--repo|--workspace) NAME
 gg config edit (--user|--repo|--workspace)
 ```
+
+Filesets support literal files/directories, `file:`, `root:`, `cwd:`, and
+`glob:` selectors (or their function forms), with `|` union, `&`
+intersection, and `~` difference. Revision selection supports graph ranges,
+set operators, ancestor/descendant traversal, heads/roots, refs, IDs, metadata
+patterns, conflict/empty predicates, and remote-bookmark predicates.
+
+`gg config` is a thin wrapper over native Git configuration. Repository values
+live in `.git/config`, workspace values use Git's per-worktree config, and user
+values use the normal global Git config. Editor and diff/merge-tool behavior
+uses standard keys such as `core.editor`, `difftool.<name>.*`, and
+`mergetool.<name>.*`; gg creates no TOML configuration or private defaults.
+
+`gg pull` is a direct wrapper over `git pull`; every trailing argument is
+forwarded unchanged and Git's exit status is returned.
+
+Push only sends existing bookmarks and tags, in one atomic `git push`. A
+revision selector must resolve to an existing local ref; an unbookmarked change
+is rejected instead of receiving a generated remote name.
 
 Rewrites restack descendants and move affected local refs together. Conflicts
 are recorded as local logical merge terms, so operations still succeed and

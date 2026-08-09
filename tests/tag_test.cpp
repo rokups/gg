@@ -22,13 +22,6 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
   EXPECT_NE(invoke({"tag", "list", "glob:st*"})
                 .output.find("stable: "),
             std::string::npos);
-  const git_oid v1 = ref("refs/tags/v1");
-  const std::string v1_id = git_oid_tostr_s(&v1);
-  EXPECT_EQ(invoke({"tag", "list", "v1", "-T",
-                    "name ++ \" \" ++ remote ++ \" \" ++ "
-                    "normal_target.short(12) ++ \"\\n\""})
-                .output,
-            "v1  " + v1_id.substr(0, 12) + "\n");
   EXPECT_EQ(invoke({"tag", "list", "missing"}).output, "");
   EXPECT_NE(invoke({"tag", "list", "-r", "main"}).output.find("base: "),
             std::string::npos);
@@ -133,7 +126,6 @@ TEST_F(RepositoryTest, ValidatesTagRequestsAndUnsupportedFilters) {
   const Result conflicted = invoke({"tag", "list", "--conflicted"});
   EXPECT_EQ(conflicted.code, 0);
   EXPECT_TRUE(conflicted.output.empty());
-  EXPECT_EQ(invoke({"tag", "list", "-T", "unknown"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "--sort", "unknown"}).code, 2);
   EXPECT_EQ(invoke({"tag", "list", "--all-remotes", "--remote", "origin"})
                 .code,
