@@ -86,10 +86,14 @@ target_include_directories(
   gg_lib
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${libgit2_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${libgit2_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   PRIVATE src
+)
+target_include_directories(
+  gg_lib SYSTEM
+  PUBLIC
+    $<BUILD_INTERFACE:${libgit2_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${libgit2_SOURCE_DIR}/include>
 )
 target_link_libraries(
   gg_lib
