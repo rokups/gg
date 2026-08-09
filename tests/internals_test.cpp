@@ -530,6 +530,7 @@ TEST_F(RepositoryTest, RejectsMalformedConflictMetadata) {
 }
 
 TEST_F(RepositoryTest, SelectsSupportedCredentialKinds) {
+  EXPECT_NE(git_libgit2_features() & GIT_FEATURE_SSH, 0);
   git_credential* credential = nullptr;
   EXPECT_EQ(detail::credentials(&credential, "https://example.test", nullptr, 0,
                                 nullptr),

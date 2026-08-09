@@ -27,6 +27,7 @@ CPMAddPackage(
     "BUILD_FUZZERS OFF"
     "EXPERIMENTAL_SHA256 ON"
     "USE_HTTPS OpenSSL-Dynamic"
+    "USE_SSH exec"
 )
 
 CPMAddPackage(
