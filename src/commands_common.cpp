@@ -3,21 +3,28 @@
 // For a copy, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0.html> or the accompanying LICENSE file.
 
 #include "commands.hpp"
+#include "process.hpp"
 
 #include <git2/sys/errors.h>
 
-#include <spawn.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <sys/file.h>
-#include <sys/wait.h>
+#endif
 #include <unistd.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <array>
 #include <algorithm>
 #include <charconv>
 #include <cctype>
 #include <cstdlib>
+#ifndef _WIN32
 #include <fnmatch.h>
+#endif
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -25,8 +32,6 @@
 #include <regex>
 #include <sstream>
 #include <utility>
-
-extern char** environ;
 
 namespace gg::detail {
 namespace {
@@ -70,21 +75,58 @@ class WorkspaceLock {
         std::filesystem::path(git_repository_commondir(repo)) / "gg";
     std::filesystem::create_directories(directory);
     const std::filesystem::path path = directory / "workspace.lock";
+#ifdef _WIN32
+    descriptor_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (descriptor_ == INVALID_HANDLE_VALUE) {
+      throw UserError("cannot lock workspace state");
+    }
+#else
     descriptor_ = open(path.c_str(), O_RDWR | O_CREAT, 0600);
     if (descriptor_ < 0 || flock(descriptor_, LOCK_EX) != 0) { if (descriptor_ >= 0) close(descriptor_); throw UserError("cannot lock workspace state"); }  // GG_COV_EXCL_BRANCH
+#endif
   }
 
   ~WorkspaceLock() {
+#ifdef _WIN32
+    CloseHandle(descriptor_);
+#else
     (void)flock(descriptor_, LOCK_UN);
     close(descriptor_);
+#endif
   }
 
   WorkspaceLock(const WorkspaceLock&) = delete;
   WorkspaceLock& operator=(const WorkspaceLock&) = delete;
 
  private:
+#ifdef _WIN32
+  HANDLE descriptor_{INVALID_HANDLE_VALUE};
+#else
   int descriptor_{-1};
+#endif
 };
+
+bool wildcard_matches(std::string_view pattern, std::string_view value) {
+#ifdef _WIN32
+  const std::string owned_pattern(pattern);
+  const std::string owned_value(value);
+  char* pattern_pointer = const_cast<char*>(owned_pattern.c_str());
+  git_strarray patterns{&pattern_pointer, 1};
+  git_pathspec* raw_pathspec = nullptr;
+  if (git_pathspec_new(&raw_pathspec, &patterns) != 0) {
+    git_error_clear();
+    return false;
+  }
+  GitPtr<git_pathspec, git_pathspec_free> pathspec(raw_pathspec);
+  return git_pathspec_matches_path(pathspec.get(), GIT_PATHSPEC_USE_CASE,
+                                   owned_value.c_str()) != 0;
+#else
+  return fnmatch(std::string(pattern).c_str(), std::string(value).c_str(), 0) ==
+         0;
+#endif
+}
 
 enum GraphLink : std::uint16_t {
   graph_horizontal = 1 << 0,
@@ -455,8 +497,7 @@ bool fileset_matches(std::string_view expression, std::string_view path) {
       if (value.front() == '/' || value.find("../") != std::string_view::npos) {  // GG_COV_EXCL_BRANCH
         throw UserError("filesets must be repository-relative");
       }
-      return fnmatch(std::string(value).c_str(), std::string(path).c_str(), 0) ==
-             0;
+      return wildcard_matches(value, path);
     }
     for (const std::string_view name : {"file", "root", "cwd", "exact"}) {
       if (const auto argument = function_argument(name); argument.has_value()) {
@@ -469,8 +510,7 @@ bool fileset_matches(std::string_view expression, std::string_view path) {
           value.substr(5).find("../") != std::string_view::npos) {
         throw UserError("filesets must be repository-relative");
       }
-      return fnmatch(std::string(value.substr(5)).c_str(),
-                     std::string(path).c_str(), 0) == 0;
+      return wildcard_matches(value.substr(5), path);
     }
     for (const std::string_view prefix : {"file:", "root:", "cwd:"}) {
       if (value.starts_with(prefix)) value.remove_prefix(prefix.size());
@@ -560,8 +600,7 @@ bool string_pattern_matches(std::string_view pattern,
   if (kind == "exact") return value == body;
   if (kind == "substring") return value.find(body) != std::string_view::npos;
   if (kind == "glob") {
-    return fnmatch(std::string(body).c_str(), std::string(value).c_str(), 0) ==
-           0;
+    return wildcard_matches(body, value);
   }
   if (kind == "regex") {
     try {
@@ -661,20 +700,9 @@ void edit_file_with_editor(Repository& repo,
     throw UserError("editor command must name an executable");
   }
   argument_storage.push_back(path.string());
-  std::vector<char*> arguments;
-  arguments.reserve(argument_storage.size() + 1);
-  for (std::string& argument : argument_storage) {
-    arguments.push_back(argument.data());
-  }
-  arguments.push_back(nullptr);
-  pid_t process = 0;
-  const int spawned = posix_spawnp(&process, argument_storage.front().c_str(),
-                                   nullptr, nullptr, arguments.data(), environ);
-  if (spawned != 0) throw UserError("cannot launch editor");
-  int status = 0;
-  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for editor");  // GG_COV_EXCL_BRANCH
-  if (!WIFEXITED(status)) throw UserError("editor exited unsuccessfully");  // GG_COV_EXCL_BRANCH
-  if (WEXITSTATUS(status) != 0) {
+  const std::optional<int> exit_code = run_process(argument_storage);
+  if (!exit_code.has_value()) throw UserError("cannot launch editor");
+  if (*exit_code != 0) {
     throw UserError("editor exited unsuccessfully");
   }
 }
@@ -704,16 +732,10 @@ int command_util_exec(const UtilExecCommand& options,
   std::vector<std::string> argument_storage{options.command};
   argument_storage.insert(argument_storage.end(), options.arguments.begin(),
                           options.arguments.end());
-  std::vector<char*> arguments;
-  arguments.reserve(argument_storage.size() + 1);
-  for (std::string& argument : argument_storage) {
-    arguments.push_back(argument.data());
-  }
-  arguments.push_back(nullptr);
 
   std::vector<std::string> environment_storage;
   std::vector<char*> environment;
-  char** child_environment = environ;
+  char** child_environment = process_environment();
   git_repository* raw_repository = nullptr;
   const std::string repository_path = repository.string();
   if (git_repository_open_ext(&raw_repository, repository_path.c_str(), 0,
@@ -721,7 +743,7 @@ int command_util_exec(const UtilExecCommand& options,
     RepositoryPtr discovered(raw_repository);
     if (git_repository_is_bare(discovered.get()) == 0) {
       constexpr std::string_view prefix = "GG_WORKSPACE_ROOT=";
-      for (char** entry = environ; *entry != nullptr; ++entry) {
+      for (char** entry = process_environment(); *entry != nullptr; ++entry) {
         if (!starts_with(*entry, prefix)) {
           environment_storage.emplace_back(*entry);
         }
@@ -742,17 +764,12 @@ int command_util_exec(const UtilExecCommand& options,
     git_error_clear();
   }
 
-  pid_t process = 0;
-  const int spawned = posix_spawnp(&process, options.command.c_str(), nullptr,
-                                   nullptr, arguments.data(),
-                                   child_environment);
-  if (spawned != 0) {
+  const std::optional<int> exit_code =
+      run_process(argument_storage, child_environment);
+  if (!exit_code.has_value()) {
     throw UserError("cannot execute external command: " + options.command);
   }
-  int status = 0;
-  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for external command");  // GG_COV_EXCL_BRANCH
-  if (WIFEXITED(status)) return WEXITSTATUS(status);
-  throw UserError("external command terminated by a signal");
+  return *exit_code;
 }
 
 void command_util_gc(Repository& repo,

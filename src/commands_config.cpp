@@ -72,7 +72,8 @@ ConfigPtr scoped_config(Repository& repo, ConfigScope scope, bool write) {
       scope == ConfigScope::user       ? GIT_CONFIG_LEVEL_GLOBAL  // GG_COV_EXCL_BRANCH
       : scope == ConfigScope::workspace ? GIT_CONFIG_LEVEL_WORKTREE
                                        : GIT_CONFIG_LEVEL_LOCAL;
-  check(git_config_add_file_ondisk(config.get(), path.c_str(), level,  // GG_COV_EXCL_BRANCH
+  const std::string path_text = path.string();
+  check(git_config_add_file_ondisk(config.get(), path_text.c_str(), level,  // GG_COV_EXCL_BRANCH
                                    repo.raw(), write ? 1 : 0),
         "open Git config");
   return config;

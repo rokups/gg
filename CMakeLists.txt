@@ -16,6 +16,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(cmake/CPM.cmake)
 
+set(GG_LIBGIT2_HTTPS_BACKEND OpenSSL-Dynamic)
+if(MINGW)
+  set(GG_LIBGIT2_HTTPS_BACKEND Schannel)
+endif()
+
 CPMAddPackage(
   NAME libgit2
   GITHUB_REPOSITORY libgit2/libgit2
@@ -26,7 +31,7 @@ CPMAddPackage(
     "BUILD_EXAMPLES OFF"
     "BUILD_FUZZERS OFF"
     "EXPERIMENTAL_SHA256 ON"
-    "USE_HTTPS OpenSSL-Dynamic"
+    "USE_HTTPS ${GG_LIBGIT2_HTTPS_BACKEND}"
     "USE_SSH exec"
 )
 
@@ -44,6 +49,7 @@ add_library(
   src/revisions.cpp
   src/rewrite.cpp
   src/operations.cpp
+  src/process.cpp
   src/conflicts.cpp
   src/commands_common.cpp
   src/commands_change.cpp

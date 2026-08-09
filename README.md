@@ -295,6 +295,16 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+To cross-build a standalone Windows executable with MinGW-w64:
+
+```sh
+cmake --preset windows-x64-static
+cmake --build --preset windows-x64-static
+```
+
+The resulting `build/windows-x64-static/gg.exe` statically links libgit2 and
+the GCC runtimes. HTTPS uses Windows Schannel, so no OpenSSL DLLs are needed.
+
 The coverage build gates project source lines and reachable, non-exception
 branches at 100%. Compiler-generated exception and unreachable cleanup edges
 are excluded; the small number of source-line exclusions are marked inline

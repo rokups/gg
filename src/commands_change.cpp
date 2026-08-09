@@ -9,12 +9,15 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <utility>
 
 namespace gg::detail {
@@ -39,13 +42,39 @@ std::pair<std::string, std::string> parse_author(std::string_view value) {
   return {std::move(name), std::move(email)};
 }
 
+const char* parse_time(const std::string& value,
+                       const char* format,
+                       std::tm& fields) {
+  std::istringstream input(value);
+  input >> std::get_time(&fields, format);
+  if (input.fail()) return nullptr;
+  const std::streampos position = input.tellg();
+  return value.c_str() +
+         (position == std::streampos(-1) ? value.size()
+                                         : static_cast<std::size_t>(position));
+}
+
+git_time_t utc_time(const std::tm& fields) {
+  using namespace std::chrono;
+  const year_month_day date{year(fields.tm_year + 1900),
+                            month(static_cast<unsigned>(fields.tm_mon + 1)),
+                            day(static_cast<unsigned>(fields.tm_mday))};
+  if (!date.ok() || fields.tm_hour < 0 || fields.tm_hour > 23 ||
+      fields.tm_min < 0 || fields.tm_min > 59 || fields.tm_sec < 0 ||
+      fields.tm_sec > 60) {
+    throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
+  }
+  return duration_cast<seconds>(sys_days(date).time_since_epoch()).count() +
+         fields.tm_hour * 3600 + fields.tm_min * 60 + fields.tm_sec;
+}
+
 std::pair<git_time_t, int> parse_rfc3339_timestamp(std::string_view value) {
   if (value.size() < 20) {
     throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
   }
   std::tm fields{};
   std::string owned(value);
-  char* suffix = strptime(owned.c_str(), "%Y-%m-%dT%H:%M:%S", &fields);
+  const char* suffix = parse_time(owned, "%Y-%m-%dT%H:%M:%S", fields);
   if (suffix != owned.c_str() + 19) {
     throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
   }
@@ -78,14 +107,13 @@ std::pair<git_time_t, int> parse_rfc3339_timestamp(std::string_view value) {
     offset = hours * 60 + minutes;
     if (*suffix == '-') offset = -offset;
   }
-  const std::time_t local = timegm(&fields);
-  return {static_cast<git_time_t>(local) - offset * 60, offset};
+  return {utc_time(fields) - offset * 60, offset};
 }
 
 std::pair<git_time_t, int> parse_rfc2822_timestamp(std::string_view value) {
   std::tm fields{};
   std::string owned(value);
-  char* zone = strptime(owned.c_str(), "%a, %d %b %Y %H:%M:%S ", &fields);
+  const char* zone = parse_time(owned, "%a, %d %b %Y %H:%M:%S ", fields);
   if (zone == nullptr || *zone == '\0') {
     throw UserError("author timestamp must use RFC 3339 or RFC 2822 form");
   }
@@ -125,8 +153,7 @@ std::pair<git_time_t, int> parse_rfc2822_timestamp(std::string_view value) {
     }
     offset = named->second;
   }
-  const std::time_t local = timegm(&fields);
-  return {static_cast<git_time_t>(local) - offset * 60, offset};
+  return {utc_time(fields) - offset * 60, offset};
 }
 
 std::pair<git_time_t, int> parse_author_timestamp(std::string_view value) {

@@ -3,10 +3,8 @@
 // For a copy, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0.html> or the accompanying LICENSE file.
 
 #include "commands.hpp"
+#include "process.hpp"
 
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -16,8 +14,6 @@
 #include <iterator>
 #include <sstream>
 #include <utility>
-
-extern char** environ;
 
 namespace gg::detail {
 namespace {
@@ -184,34 +180,15 @@ void render_external_diff(Repository& repo,
 
   std::vector<std::string> storage =
       tool_command(repo, "difftool", format.tool, left, right);
-  const std::string& program = storage.front();
-  std::vector<char*> argv;
-  argv.reserve(storage.size() + 1);
-  for (std::string& argument : storage) argv.push_back(argument.data());
-  argv.push_back(nullptr);
-
-  posix_spawn_file_actions_t actions;
-  if (posix_spawn_file_actions_init(&actions) != 0) throw UserError("cannot prepare external diff tool");  // GG_COV_EXCL_BRANCH
-  const int opened = posix_spawn_file_actions_addopen(
-      &actions, STDOUT_FILENO, captured.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
-      0600);
-  if (opened != 0) { posix_spawn_file_actions_destroy(&actions); throw UserError("cannot capture external diff output"); }  // GG_COV_EXCL_BRANCH
-  pid_t process = 0;
-  const int spawned = posix_spawnp(&process, program.c_str(), &actions,
-                                   nullptr, argv.data(), environ);
-  posix_spawn_file_actions_destroy(&actions);
-  if (spawned != 0) {
-    throw UserError("cannot execute external diff tool: " + program);
+  const std::optional<int> exit_code = run_process(storage, nullptr, captured);
+  if (!exit_code.has_value()) {
+    throw UserError("cannot execute external diff tool: " + storage.front());
   }
-  int status = 0;
-  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for external diff tool");  // GG_COV_EXCL_BRANCH
-  if (!WIFEXITED(status)) throw UserError("external diff tool terminated by a signal");  // GG_COV_EXCL_BRANCH
-  const int exit_code = WEXITSTATUS(status);
-  const bool accepted = exit_code == 0 ||
-                        (format.tool == "diff" && exit_code == 1);  // GG_COV_EXCL_BRANCH
+  const bool accepted = *exit_code == 0 ||
+                        (format.tool == "diff" && *exit_code == 1);  // GG_COV_EXCL_BRANCH
   if (!accepted) {
     throw UserError("external diff tool exited with status " +
-                    std::to_string(exit_code));
+                    std::to_string(*exit_code));
   }
   std::ifstream input(captured);
   output << input.rdbuf();
@@ -291,23 +268,13 @@ git_oid run_external_editor(Repository& repo,
   export_tree(repo, right_tree, paths, right);
   std::vector<std::string> storage =
       tool_command(repo, "mergetool", tool, left, right);
-  const std::string& program = storage.front();
-  std::vector<char*> argv;
-  argv.reserve(storage.size() + 1);
-  for (std::string& argument : storage) argv.push_back(argument.data());
-  argv.push_back(nullptr);
-  pid_t process = 0;
-  const int spawned = posix_spawnp(&process, program.c_str(), nullptr, nullptr,
-                                   argv.data(), environ);
-  if (spawned != 0) {
-    throw UserError("cannot execute external diff editor: " + program);
+  const std::optional<int> exit_code = run_process(storage);
+  if (!exit_code.has_value()) {
+    throw UserError("cannot execute external diff editor: " + storage.front());
   }
-  int status = 0;
-  if (waitpid(process, &status, 0) < 0) throw UserError("cannot wait for external diff editor");  // GG_COV_EXCL_BRANCH
-  if (!WIFEXITED(status)) throw UserError("external diff editor terminated by a signal");  // GG_COV_EXCL_BRANCH
-  if (WEXITSTATUS(status) != 0) {
+  if (*exit_code != 0) {
     throw UserError("external diff editor exited with status " +
-                    std::to_string(WEXITSTATUS(status)));
+                    std::to_string(*exit_code));
   }
   return import_tree(repo, right_tree, paths, right);
 }

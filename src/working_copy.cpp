@@ -6,7 +6,9 @@
 
 #include <git2/sys/errors.h>
 
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 #include <algorithm>
 #include <fstream>
@@ -212,6 +214,7 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
     names.insert(name);
   }
   names.insert(deletes.begin(), deletes.end());
+#ifndef _WIN32
   struct rlimit limit {};
   const rlim_t needed = names.size() + 64;
   if (getrlimit(RLIMIT_NOFILE, &limit) == 0 &&  // GG_COV_EXCL_BRANCH
@@ -219,6 +222,7 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
     limit.rlim_cur = std::min(limit.rlim_max, needed);
     (void)setrlimit(RLIMIT_NOFILE, &limit);
   }
+#endif
   for (const std::string& name : names) {
     check(git_transaction_lock_ref(transaction.get(), name.c_str()),
           "lock reference");

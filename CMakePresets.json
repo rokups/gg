@@ -1,0 +1,31 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-x64-static",
+      "displayName": "Windows x64 static",
+      "description": "Standalone Windows x64 executable built with MinGW-w64.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-x86_64-static.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "GG_BUILD_TESTS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x64-static",
+      "configurePreset": "windows-x64-static",
+      "targets": [
+        "gg_cli"
+      ]
+    }
+  ]
+}
