@@ -319,5 +319,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                       std::ostream& output,
                       std::ostream& error);
 std::vector<std::string> replay_arguments(const Command& command);
+int run_cli(std::span<const std::string_view> arguments,
+            std::ostream& output,
+            std::ostream& error);
 
 }  // namespace gg::detail

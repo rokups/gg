@@ -4,6 +4,7 @@
 
 #include "test_support.hpp"
 #include "repository.hpp"
+#include "gg/gg.h"
 
 #include <iostream>
 
@@ -32,6 +33,22 @@ TEST_F(RepositoryTest, RecordsAndResolvesConflictsWithoutPausing) {
             std::string::npos);
   EXPECT_EQ(invoke({"continue"}).code, 2);
   EXPECT_EQ(invoke({"abort"}).code, 2);
+
+  gg_repository* api = nullptr;
+  ASSERT_EQ(gg_repository_attach(&api, repository_.get()), GIT_OK);
+  git_oid conflicted_revision{};
+  ASSERT_EQ(gg_repository_resolve(&conflicted_revision, api,
+                                  source_id.c_str()),
+            GIT_OK);
+  gg_conflict_array conflicts{};
+  ASSERT_EQ(gg_repository_conflicts(&conflicts, api, &conflicted_revision),
+            GIT_OK);
+  ASSERT_EQ(conflicts.count, 1U);
+  EXPECT_STREQ(conflicts.items[0].path, "tracked.txt");
+  EXPECT_GT(conflicts.items[0].remove_count, 0U);
+  EXPECT_GT(conflicts.items[0].add_count, 1U);
+  gg_conflict_array_dispose(&conflicts);
+  gg_repository_free(api);
 
   ASSERT_EQ(invoke({"edit", source_id}).code, 0);
   EXPECT_NE(file().find("<<<<<<< Conflict"), std::string::npos);

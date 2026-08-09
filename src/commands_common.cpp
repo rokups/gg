@@ -4,7 +4,6 @@
 
 #include "commands.hpp"
 
-#include <CLI/CLI.hpp>
 #include <git2/sys/errors.h>
 
 #include <spawn.h>
@@ -16,6 +15,7 @@
 #include <array>
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <cstdlib>
 #include <fnmatch.h>
 #include <fstream>
@@ -30,6 +30,38 @@ extern char** environ;
 
 namespace gg::detail {
 namespace {
+
+std::vector<std::string> split_command(std::string_view command) {
+  std::vector<std::string> result;
+  std::string argument;
+  char quote = '\0';
+  bool escaped = false;
+  for (const char value : command) {
+    if (escaped) {
+      argument.push_back(value);
+      escaped = false;
+    } else if (value == '\\' && quote != '\'') {
+      escaped = true;
+    } else if (quote != '\0') {
+      if (value == quote) quote = '\0';
+      else argument.push_back(value);
+    } else if (value == '\'' || value == '"') {
+      quote = value;
+    } else if (std::isspace(static_cast<unsigned char>(value)) != 0) {
+      if (!argument.empty()) {
+        result.push_back(std::move(argument));
+        argument.clear();
+      }
+    } else {
+      argument.push_back(value);
+    }
+  }
+  if (escaped || quote != '\0') {
+    throw UserError("invalid editor command");
+  }
+  if (!argument.empty()) result.push_back(std::move(argument));
+  return result;
+}
 
 class WorkspaceLock {
  public:
@@ -624,9 +656,7 @@ void edit_file_with_editor(Repository& repo,
     throw UserError(
         "GIT_EDITOR, core.editor, VISUAL, or EDITOR must name an editor");
   }
-  std::vector<std::string> argument_storage =
-      CLI::detail::split_up(editor);
-  CLI::detail::remove_quotes(argument_storage);
+  std::vector<std::string> argument_storage = split_command(editor);
   if (argument_storage.empty()) {
     throw UserError("editor command must name an executable");
   }
@@ -728,7 +758,7 @@ int command_util_exec(const UtilExecCommand& options,
 void command_util_gc(Repository& repo,
                      const UtilGcCommand& options,
                      std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   UtilExecCommand command{
       "git",
       {"--git-dir=" + std::string(git_repository_path(repo.raw())), "gc"}};
@@ -913,7 +943,7 @@ void command_workspace(Repository& repo,
   }
   if (options.action == WorkspaceAction::add) {
     WorkspaceLock lock(repo.raw());
-    repo.sync_workspace();
+    repo.sync_for_command();
     if (!options.name.empty()) {
       int valid = 0;
       const std::string reference =

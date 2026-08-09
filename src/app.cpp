@@ -2,8 +2,6 @@
 // This work is licensed under the terms of the GNU General Public License version 2.
 // For a copy, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0.html> or the accompanying LICENSE file.
 
-#include "gg/app.hpp"
-
 #include "cli.hpp"
 #include "commands.hpp"
 
@@ -300,25 +298,22 @@ int dispatch(std::span<const std::string_view> arguments,
 }
 
 }  // namespace
-}  // namespace gg::detail
 
-namespace gg {
-
-int run(std::span<const std::string_view> arguments,
-        std::ostream& output,
-        std::ostream& error) {
+int run_cli(std::span<const std::string_view> arguments,
+            std::ostream& output,
+            std::ostream& error) {
   try {
-    detail::Libgit2 libgit2;
-    return detail::dispatch(arguments, output, error);
-  } catch (const detail::UserError& exception) {  // GG_COV_EXCL_BRANCH
-    error << detail::styled(error, "error:", detail::OutputStyle::removed)
+    Libgit2 libgit2;
+    return dispatch(arguments, output, error);
+  } catch (const UserError& exception) {  // GG_COV_EXCL_BRANCH
+    error << styled(error, "error:", OutputStyle::removed)
           << ' ' << exception.what() << '\n';
     return 2;
   } catch (const std::exception& exception) {
-    error << detail::styled(error, "error:", detail::OutputStyle::removed)
+    error << styled(error, "error:", OutputStyle::removed)
           << ' ' << exception.what() << '\n';
     return 1;
   }
 }
 
-}  // namespace gg
+}  // namespace gg::detail

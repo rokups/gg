@@ -273,7 +273,7 @@ void chmod_files(Repository& repo,
 void command_file(Repository& repo,
                   const FileCommand& options,
                   std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   std::vector<std::string> normalized_paths;
   normalized_paths.reserve(options.paths.size());
   for (const std::string& path : options.paths) {
@@ -284,7 +284,7 @@ void command_file(Repository& repo,
       throw UserError("this command requires a working-copy change");
     }
     repo.track_paths(normalized_paths, options.include_ignored);
-    repo.sync_workspace();
+    repo.sync_for_command();
     output << "Started tracking " << normalized_paths.size() << " path(s).\n";
     return;
   }
@@ -297,7 +297,7 @@ void command_file(Repository& repo,
       select_entries(entries, options.paths, require_matches);
   if (options.action == FileAction::untrack) {
     repo.untrack_paths(normalized_paths);
-    repo.sync_workspace();
+    repo.sync_for_command();
     output << "Stopped tracking " << normalized_paths.size() << " path(s).\n";
     return;
   }

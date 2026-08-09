@@ -374,7 +374,7 @@ void command_tracking(Repository& repo,
 void command_bookmark(Repository& repo,
                       const BookmarkCommand& options,
                       std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   if (options.action == BookmarkAction::track ||
       options.action == BookmarkAction::untrack) {
     command_tracking(repo, options.names, options.remotes,
@@ -630,7 +630,7 @@ void command_bookmark(Repository& repo,
 void command_tag(Repository& repo,
                  const TagCommand& options,
                  std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   if (options.action == TagAction::track ||
       options.action == TagAction::untrack) {
     command_tracking(repo, options.names, options.remotes, TrackedRefKind::tag,
@@ -840,7 +840,7 @@ int create_clone_remote(git_remote** output,
 void command_fetch(Repository& repo,
                    const GitFetchCommand& options,
                    std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   git_strarray listed{};
   check(git_remote_list(&listed, repo.raw()), "list remotes");
   std::vector<std::string> available_remotes;
@@ -1001,7 +1001,7 @@ void command_fetch(Repository& repo,
 void command_push(Repository& repo,
                   const GitPushCommand& options,
                   std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const bool default_selection =
       !options.all && !options.tracked && !options.deleted &&
       options.bookmarks.empty() && options.tags.empty() &&
@@ -1173,7 +1173,7 @@ void command_push(Repository& repo,
 }
 
 void command_undo(Repository& repo, std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   if (!repo.operation().has_value()) {
     throw UserError("nothing to undo");
   }
@@ -1191,7 +1191,7 @@ void command_undo(Repository& repo, std::ostream& output) {
 }
 
 void command_redo(Repository& repo, std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   if (!repo.operation().has_value()) {
     throw UserError("nothing to redo");
   }
@@ -1214,7 +1214,7 @@ void command_redo(Repository& repo, std::ostream& output) {
 void command_operation_log(Repository& repo,
                            const OperationLogCommand& options,
                            std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   auto current = repo.operation();
   if (!current.has_value()) {
     output << "No operations.\n";
@@ -1333,7 +1333,7 @@ void command_operation_log(Repository& repo,
 void command_operation_restore(Repository& repo,
                                const OperationRestoreCommand& options,
                                std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const git_oid operation = repo.resolve_operation(options.operation);
   const bool all = options.what.empty();
   const bool restore_repository =

@@ -67,7 +67,7 @@ if (error != nullptr && error->message != nullptr) {  // GG_COV_EXCL_BRANCH
   message += ": ";
   message += error->message;
 }
-throw GitError(message);
+throw GitError(message, result);
 }
 
 Libgit2::Libgit2() { check(git_libgit2_init(), "initialize libgit2"); }
@@ -103,8 +103,24 @@ Repository::Repository(const std::filesystem::path& path,
                                 GIT_REPOSITORY_OPEN_CROSS_FS, nullptr),
         "open repository");
   repo_.reset(repository);
+  initialize();
+}
+
+Repository::Repository(git_repository* repository,
+                       bool ignore_working_copy,
+                       bool synchronize_commands)
+    : repo_(repository, RepositoryDeleter{false}),
+      ignore_working_copy_(ignore_working_copy),
+      synchronize_commands_(synchronize_commands) {
+  if (repository == nullptr) {
+    throw UserError("repository must not be null");
+  }
+  initialize();
+}
+
+void Repository::initialize() {
   if (git_repository_is_bare(repo_.get()) != 0) {
-    throw UserError("this command requires a working tree");
+    throw UserError("this command requires a working tree", GIT_EBAREREPO);
   }
 
   linked_worktree_ = git_repository_is_worktree(repo_.get()) != 0;

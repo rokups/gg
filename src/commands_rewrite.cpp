@@ -15,7 +15,7 @@ namespace gg::detail {
 void command_rebase(Repository& repo,
                     const RebaseCommand& options,
                     std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const git_oid old = repo.resolve(options.source);
   const git_oid parent = repo.resolve(options.destination);
   const int destination_is_descendant =
@@ -50,7 +50,7 @@ void command_rebase(Repository& repo,
 void command_split(Repository& repo,
                    const SplitCommand& options,
                    std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const git_oid old =
       repo.resolve(options.revision.empty() ? "@" : options.revision);
   const auto old_parents = repo.parents(old);
@@ -101,7 +101,7 @@ void command_split(Repository& repo,
 void command_squash(Repository& repo,
                     const SquashCommand& options,
                     std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   std::string source = options.source;
   if (!options.revision.empty()) {
     source = options.revision;
@@ -161,7 +161,7 @@ void command_squash(Repository& repo,
 void command_abandon(Repository& repo,
                      const AbandonCommand& options,
                      std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());
@@ -274,7 +274,7 @@ void command_abandon(Repository& repo,
 void command_restore(Repository& repo,
                      const RestoreCommand& options,
                      std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
@@ -342,7 +342,7 @@ void command_restore(Repository& repo,
 void command_simplify_parents(Repository& repo,
                               const SimplifyParentsCommand& options,
                               std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");

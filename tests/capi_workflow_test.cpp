@@ -1,0 +1,215 @@
+// Copyright (c) 2026-2026 the gg project.
+// This work is licensed under the terms of the GNU General Public License version 2.
+// For a copy, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0.html> or the accompanying LICENSE file.
+
+#include "gg/gg.h"
+
+#include "test_support.hpp"
+
+#include <cstring>
+
+namespace gg::test {
+
+TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
+  gg_operation_options operation = GG_OPERATION_OPTIONS_INIT;
+  gg_new_options new_options = GG_NEW_OPTIONS_INIT;
+  gg_commit_options commit_options = GG_COMMIT_OPTIONS_INIT;
+  gg_describe_options describe_options = GG_DESCRIBE_OPTIONS_INIT;
+  gg_metaedit_options metaedit_options = GG_METAEDIT_OPTIONS_INIT;
+  gg_rebase_options rebase_options = GG_REBASE_OPTIONS_INIT;
+  gg_split_options split_options = GG_SPLIT_OPTIONS_INIT;
+  gg_squash_options squash_options = GG_SQUASH_OPTIONS_INIT;
+  gg_abandon_options abandon_options = GG_ABANDON_OPTIONS_INIT;
+  gg_restore_options restore_options = GG_RESTORE_OPTIONS_INIT;
+  gg_simplify_parents_options simplify_options =
+      GG_SIMPLIFY_PARENTS_OPTIONS_INIT;
+  gg_bookmark_options bookmark_options = GG_BOOKMARK_OPTIONS_INIT;
+  gg_tag_options tag_options = GG_TAG_OPTIONS_INIT;
+  gg_move_options move_options = GG_MOVE_OPTIONS_INIT;
+  gg_workspace_add_options workspace_options = GG_WORKSPACE_ADD_OPTIONS_INIT;
+  gg_fetch_options fetch_options = GG_FETCH_OPTIONS_INIT;
+  gg_push_options push_options = GG_PUSH_OPTIONS_INIT;
+  gg_revision_query_options revision_options =
+      GG_REVISION_QUERY_OPTIONS_INIT;
+  gg_status_options status_options = GG_STATUS_OPTIONS_INIT;
+  EXPECT_EQ(gg_operation_options_init(&operation, 1), GIT_OK);
+  EXPECT_EQ(gg_new_options_init(&new_options, 1), GIT_OK);
+  EXPECT_EQ(gg_commit_options_init(&commit_options, 1), GIT_OK);
+  EXPECT_EQ(gg_describe_options_init(&describe_options, 1), GIT_OK);
+  EXPECT_EQ(gg_metaedit_options_init(&metaedit_options, 1), GIT_OK);
+  EXPECT_EQ(gg_rebase_options_init(&rebase_options, 1), GIT_OK);
+  EXPECT_EQ(gg_split_options_init(&split_options, 1), GIT_OK);
+  EXPECT_EQ(gg_squash_options_init(&squash_options, 1), GIT_OK);
+  EXPECT_EQ(gg_abandon_options_init(&abandon_options, 1), GIT_OK);
+  EXPECT_EQ(gg_restore_options_init(&restore_options, 1), GIT_OK);
+  EXPECT_EQ(gg_simplify_parents_options_init(&simplify_options, 1), GIT_OK);
+  EXPECT_EQ(gg_bookmark_options_init(&bookmark_options, 1), GIT_OK);
+  EXPECT_EQ(gg_tag_options_init(&tag_options, 1), GIT_OK);
+  EXPECT_EQ(gg_move_options_init(&move_options, 1), GIT_OK);
+  EXPECT_EQ(gg_workspace_add_options_init(&workspace_options, 1), GIT_OK);
+  EXPECT_EQ(gg_fetch_options_init(&fetch_options, 1), GIT_OK);
+  EXPECT_EQ(gg_push_options_init(&push_options, 1), GIT_OK);
+  EXPECT_EQ(gg_revision_query_options_init(&revision_options, 1), GIT_OK);
+  EXPECT_EQ(gg_status_options_init(&status_options, 1), GIT_OK);
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  revision_options.revisions = "HEAD";
+  gg_revision_array revisions{};
+  ASSERT_EQ(gg_repository_revisions(&revisions, repository, &revision_options),
+            GIT_OK);
+  ASSERT_EQ(revisions.count, 1U);
+  EXPECT_NE(revisions.items[0].change_id, nullptr);
+  EXPECT_STREQ(revisions.items[0].description, "base");
+  EXPECT_STREQ(revisions.items[0].author->name, "GG Test");
+  gg_revision_array_dispose(&revisions);
+
+  gg_status status{};
+  ASSERT_EQ(gg_repository_status(&status, repository, &status_options), GIT_OK);
+  EXPECT_FALSE(status.has_working_copy);
+  gg_status_dispose(&status);
+
+  new_options.message = "work";
+  gg_mutation_result mutation{};
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &new_options,
+                                     nullptr),
+            GIT_OK);
+  ASSERT_TRUE(mutation.changed);
+  ASSERT_TRUE(mutation.has_working_copy);
+  const git_oid working = mutation.working_copy;
+  gg_mutation_result_dispose(&mutation);
+  git_oid queried_working{};
+  ASSERT_EQ(gg_repository_working_copy(&queried_working, repository), GIT_OK);
+  EXPECT_TRUE(git_oid_equal(&working, &queried_working));
+
+  char* change_id = nullptr;
+  ASSERT_EQ(gg_repository_change_id(&change_id, repository, &working), GIT_OK);
+  EXPECT_EQ(std::strlen(change_id), 32U);
+  gg_string_dispose(change_id);
+
+  gg_workspace_array workspaces{};
+  ASSERT_EQ(gg_repository_workspaces(&workspaces, repository), GIT_OK);
+  ASSERT_EQ(workspaces.count, 1U);
+  EXPECT_STREQ(workspaces.items[0].name, "default");
+  EXPECT_FALSE(workspaces.items[0].stale);
+  gg_workspace_array_dispose(&workspaces);
+
+  write("tracked.txt", "changed\n");
+  int changed = 0;
+  ASSERT_EQ(gg_repository_snapshot_working_copy(&changed, repository, nullptr),
+            GIT_OK);
+  EXPECT_TRUE(changed);
+  ASSERT_EQ(gg_repository_status(&status, repository, &status_options), GIT_OK);
+  ASSERT_TRUE(status.has_working_copy);
+  ASSERT_EQ(status.entry_count, 1U);
+  EXPECT_EQ(status.entries[0].status, GIT_DELTA_MODIFIED);
+  EXPECT_STREQ(status.entries[0].new_path, "tracked.txt");
+  gg_status_dispose(&status);
+
+  const char* tracked_path[] = {"tracked.txt"};
+  const gg_string_array tracked_paths{tracked_path, 1};
+  ASSERT_EQ(gg_repository_untrack_paths(&mutation, repository, tracked_paths,
+                                        nullptr),
+            GIT_OK);
+  EXPECT_TRUE(mutation.changed);
+  gg_mutation_result_dispose(&mutation);
+  ASSERT_EQ(gg_repository_track_paths(&mutation, repository, tracked_paths, 0,
+                                      nullptr),
+            GIT_OK);
+  EXPECT_TRUE(mutation.changed);
+  gg_mutation_result_dispose(&mutation);
+
+  const char* topic[] = {"topic"};
+  bookmark_options.action = GG_BOOKMARK_CREATE;
+  bookmark_options.names = {topic, 1};
+  bookmark_options.revision = "@";
+  ASSERT_EQ(gg_repository_bookmark(&mutation, repository, &bookmark_options,
+                                   nullptr),
+            GIT_OK);
+  EXPECT_TRUE(mutation.changed);
+  gg_mutation_result_dispose(&mutation);
+  tag_options.action = GG_TAG_SET;
+  tag_options.names = {topic, 1};
+  tag_options.revision = "@";
+  ASSERT_EQ(gg_repository_tag(&mutation, repository, &tag_options, nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+
+  gg_reference_array references{};
+  ASSERT_EQ(gg_repository_references(&references, repository), GIT_OK);
+  EXPECT_GT(references.count, 3U);
+  gg_reference_array_dispose(&references);
+  gg_named_ref_array named_refs{};
+  ASSERT_EQ(gg_repository_named_refs(&named_refs, repository), GIT_OK);
+  ASSERT_EQ(named_refs.count, 3U);
+  bool found_bookmark = false;
+  bool found_tag = false;
+  for (size_t index = 0; index < named_refs.count; ++index) {
+    const gg_named_ref& item = named_refs.items[index];
+    if (std::strcmp(item.name, "topic") == 0 &&
+        item.kind == GG_NAMED_REF_LOCAL_BOOKMARK) {
+      found_bookmark = true;
+    }
+    if (std::strcmp(item.name, "topic") == 0 &&
+        item.kind == GG_NAMED_REF_LOCAL_TAG) {
+      found_tag = true;
+    }
+    EXPECT_STREQ(item.remote, "");
+    EXPECT_FALSE(item.conflicted);
+  }
+  EXPECT_TRUE(found_bookmark);
+  EXPECT_TRUE(found_tag);
+  gg_named_ref_array_dispose(&named_refs);
+  gg_conflict_array conflicts{};
+  ASSERT_EQ(gg_repository_conflicts(&conflicts, repository, &working), GIT_OK);
+  EXPECT_EQ(conflicts.count, 0U);
+  gg_conflict_array_dispose(&conflicts);
+  gg_operation_array operations{};
+  ASSERT_EQ(gg_repository_operations(&operations, repository, 100), GIT_OK);
+  EXPECT_GT(operations.count, 0U);
+  gg_operation_array_dispose(&operations);
+  gg_owned_string_array sparse{};
+  ASSERT_EQ(gg_repository_sparse_patterns(&sparse, repository), GIT_OK);
+  ASSERT_EQ(sparse.count, 1U);
+  EXPECT_STREQ(sparse.strings[0], ".");
+  gg_owned_string_array_dispose(&sparse);
+
+  git_remote* remote = nullptr;
+  ASSERT_EQ(git_remote_create(&remote, repository_.get(), "origin",
+                              path_.string().c_str()),
+            GIT_OK);
+  git_remote_free(remote);
+  push_options.bookmarks = {topic, 1};
+  gg_transport_plan push_plan{};
+  ASSERT_EQ(gg_repository_plan_push(&push_plan, repository, &push_options),
+            GIT_OK);
+  ASSERT_EQ(push_plan.refspec_count, 1U);
+  EXPECT_TRUE(push_plan.atomic);
+  ASSERT_EQ(gg_repository_complete_push(&mutation, repository, &push_plan,
+                                        nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+  gg_transport_plan_dispose(&push_plan);
+
+  const git_oid head = ref("HEAD");
+  const gg_advertised_ref advertised{
+      "origin", "main", head, GG_REMOTE_BRANCH};
+  fetch_options.advertised_refs = &advertised;
+  fetch_options.advertised_ref_count = 1;
+  gg_transport_plan fetch_plan{};
+  ASSERT_EQ(gg_repository_plan_fetch(&fetch_plan, repository, &fetch_options),
+            GIT_OK);
+  ASSERT_EQ(fetch_plan.refspec_count, 1U);
+  set_ref("refs/remotes/origin/main", head);
+  ASSERT_EQ(gg_repository_complete_fetch(&mutation, repository, &fetch_plan,
+                                         nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+  gg_transport_plan_dispose(&fetch_plan);
+
+  gg_repository_free(repository);
+}
+
+}  // namespace gg::test

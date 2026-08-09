@@ -34,12 +34,24 @@ inline constexpr std::string_view kTagTrackingPrefix =
 
 class UserError : public std::runtime_error {
  public:
-  using std::runtime_error::runtime_error;
+  explicit UserError(const std::string& message, int code = GIT_EINVALID)
+      : std::runtime_error(message), code_(code) {}
+
+  int code() const { return code_; }
+
+ private:
+  int code_;
 };
 
 class GitError : public std::runtime_error {
  public:
-  using std::runtime_error::runtime_error;
+  explicit GitError(const std::string& message, int code = GIT_ERROR)
+      : std::runtime_error(message), code_(code) {}
+
+  int code() const { return code_; }
+
+ private:
+  int code_;
 };
 
 void check(int result, std::string_view action);
@@ -61,7 +73,13 @@ struct GitDeleter {
 template <typename T, void (*Free)(T*)>
 using GitPtr = std::unique_ptr<T, GitDeleter<T, Free>>;
 
-using RepositoryPtr = GitPtr<git_repository, git_repository_free>;
+struct RepositoryDeleter {
+  bool owned{true};
+  void operator()(git_repository* value) const {
+    if (owned && value != nullptr) git_repository_free(value);
+  }
+};
+using RepositoryPtr = std::unique_ptr<git_repository, RepositoryDeleter>;
 using ReferencePtr = GitPtr<git_reference, git_reference_free>;
 using ReferenceIteratorPtr = GitPtr<git_reference_iterator, git_reference_iterator_free>;
 using CommitPtr = GitPtr<git_commit, git_commit_free>;
@@ -123,6 +141,9 @@ class Repository {
  public:
   explicit Repository(const std::filesystem::path& path,
                       bool ignore_working_copy = false);
+  explicit Repository(git_repository* repository,
+                      bool ignore_working_copy = false,
+                      bool synchronize_commands = false);
 
   git_repository* raw() const;
 
@@ -300,6 +321,8 @@ class Repository {
 
   bool sync_workspace() const;
 
+  bool sync_for_command() const;
+
   void track_paths(const std::vector<std::string>& paths,
                    bool include_ignored) const;
 
@@ -308,10 +331,13 @@ class Repository {
   std::vector<std::string> bookmarks(const git_oid& oid) const;
 
  private:
+  void initialize();
+
   git_oid resolve_atom(std::string_view revision) const;
 
   RepositoryPtr repo_;
   bool ignore_working_copy_{false};
+  bool synchronize_commands_{true};
   std::optional<OperationState> operation_view_;
   std::optional<git_oid> viewed_operation_;
   mutable std::optional<std::map<std::string, git_oid>> data_refs_cache_;

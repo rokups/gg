@@ -694,7 +694,7 @@ git_oid select_diff_tree(Repository& repo,
 void command_diff(Repository& repo,
                   const DiffCommand& options,
                   std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   git_oid from_tree{};
   git_oid to_tree{};
   if (!options.from.empty() || !options.to.empty()) {
@@ -719,7 +719,7 @@ void command_diff(Repository& repo,
 void command_show(Repository& repo,
                   const ShowCommand& options,
                   std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());

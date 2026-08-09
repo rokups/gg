@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "gg/app.hpp"
+#include "cli.hpp"
 
 #include <git2.h>
 #include <gtest/gtest.h>
@@ -38,7 +38,7 @@ inline Result run(std::vector<std::string> arguments) {
   }
   std::ostringstream output;
   std::ostringstream error;
-  const int code = gg::run(views, output, error);
+  const int code = gg::detail::run_cli(views, output, error);
   return {code, output.str(), error.str()};
 }
 

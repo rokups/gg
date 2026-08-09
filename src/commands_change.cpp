@@ -161,7 +161,7 @@ bool same_signature(const git_signature* left, const git_signature* right) {
 void command_new(Repository& repo,
                  const NewCommand& options,
                  std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const auto old_workspace = repo.workspace();
   std::vector<git_oid> parents;
   const std::vector<git_oid> after =
@@ -292,7 +292,7 @@ void command_new(Repository& repo,
 void command_commit(Repository& repo,
                     const CommitCommand& options,
                     std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
@@ -353,7 +353,7 @@ void command_commit(Repository& repo,
 void command_status(Repository& repo,
                     const StatusCommand& options,
                     std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   std::vector<std::string> paths;
   for (const std::string& value : options.paths) {
     (void)fileset_matches(value, "");
@@ -455,7 +455,7 @@ void command_status(Repository& repo,
 void command_log(Repository& repo,
                  const LogCommand& options,
                  std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   git_revwalk* raw_walk = nullptr;
   check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
   RevwalkPtr walk(raw_walk);
@@ -589,7 +589,7 @@ void command_log(Repository& repo,
 void command_metaedit(Repository& repo,
                       const MetaeditCommand& options,
                       std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());
@@ -754,7 +754,7 @@ void command_metaedit(Repository& repo,
 void command_edit(Repository& repo,
                   const EditCommand& options,
                   std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const git_oid target = repo.resolve(options.revision);
   std::map<std::string, git_oid> updates;
   auto id = repo.change_id(target);
@@ -770,7 +770,7 @@ void command_edit(Repository& repo,
 void command_describe(Repository& repo,
                       const DescribeCommand& options,
                       std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());
@@ -874,7 +874,7 @@ void command_describe(Repository& repo,
 void command_move(Repository& repo,
                   const MovementCommand& options,
                   std::ostream& output) {
-  repo.sync_workspace();
+  repo.sync_for_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");

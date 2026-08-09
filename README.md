@@ -240,13 +240,48 @@ newest-first operation graph with IDs, timestamps, and descriptions. `gg
 operation restore` restores all state from a logged operation by default, or
 only repository or remote-tracking state with repeated `--what` options.
 
+## Library API
+
+`libgg` exposes the gg workflow as a versioned C API in `<gg/gg.h>`. It borrows
+an existing `git_repository*`, uses `git_oid` for object IDs, returns libgit2
+`GIT_*` status codes, and reports details through `git_error_last()`. The caller
+owns libgit2 initialization and the underlying repository handle.
+
+```c
+gg_repository *gg = NULL;
+gg_new_options options = GG_NEW_OPTIONS_INIT;
+gg_mutation_result result = {0};
+
+options.message = "Add the parser";
+if (gg_repository_attach(&gg, repository) == GIT_OK &&
+    gg_repository_adopt_git_history(gg, NULL) == GIT_OK &&
+    gg_repository_new_change(&result, gg, &options, NULL) == GIT_OK) {
+  /* result.working_copy and result.references are structured GUI data. */
+}
+gg_mutation_result_dispose(&result);
+gg_repository_free(gg);
+```
+
+Synchronization is explicit: call `gg_repository_adopt_git_history()` after
+native Git history changes and `gg_repository_snapshot_working_copy()` after
+filesystem or index changes. Queries do not modify repository state. Fetch and
+push use plan/complete pairs so a GUI can perform transport itself and record gg
+tracking state only after success. Long calls accept synchronous progress and
+cancellation callbacks through `gg_operation_options`.
+
+Install the project and consume it from CMake with
+`find_package(gg CONFIG REQUIRED)` and `target_link_libraries(app PRIVATE
+gg::gg)`.
+
 ## Project structure
 
-The public runner and CLI dispatch are thin. Repository access, working-copy
-snapshots, revision lookup, rewrites, operation history, conflict state, and
-command families live in separate translation units under `src/`. Tests are
-split by CLI validation, core workflows, rewrites, conflicts, remotes, and
-internal state invariants, with one shared fixture in `tests/test_support.hpp`.
+The `gg_lib` target builds `libgg` and the public C API. The `gg_cli` target
+builds the `gg` executable; CLI11, argument parsing, and text rendering stay in
+this application layer. The C API accepts final messages and transport results,
+so command-line editors, external diff tools, and arbitrary subprocesses are
+not part of its interface.
+Repository access, snapshots, revision lookup, rewrites, operation history,
+and conflict state remain shared workflow implementation under `src/`.
 
 ## Build and test
 

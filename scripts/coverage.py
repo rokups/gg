@@ -47,8 +47,10 @@ def main() -> int:
         profile.unlink()
     run(["ctest", "--test-dir", str(build_dir), "--output-on-failure"])
 
-    notes = sorted((build_dir / "CMakeFiles/gg_core.dir/src").glob("*.gcno"))
-    notes += sorted((build_dir / "CMakeFiles/gg.dir/src").glob("*.gcno"))
+    notes = sorted((build_dir / "CMakeFiles/gg_impl.dir/src").glob("*.gcno"))
+    notes += sorted((build_dir / "CMakeFiles/gg_lib.dir/src").glob("*.gcno"))
+    notes += sorted((build_dir / "CMakeFiles/gg_cli_lib.dir/src").glob("*.gcno"))
+    notes += sorted((build_dir / "CMakeFiles/gg_cli.dir/src").glob("*.gcno"))
     if not notes:
         raise SystemExit("no coverage notes found; configure with GG_COVERAGE=ON")
 

@@ -316,6 +316,10 @@ bool Repository::sync_workspace() const {
   return true;
 }
 
+bool Repository::sync_for_command() const {
+  return synchronize_commands_ && sync_workspace();
+}
+
 void Repository::track_paths(const std::vector<std::string>& paths,
                              bool include_ignored) const {
   FileTrackingState state = read_tracking(*this);
