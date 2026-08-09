@@ -98,6 +98,7 @@ void command_squash(Repository&, const SquashCommand&, std::ostream&);
 void command_abandon(Repository&, const AbandonCommand&, std::ostream&);
 void command_commit(Repository&, const CommitCommand&, std::ostream&);
 void command_restore(Repository&, const RestoreCommand&, std::ostream&);
+void command_move_files(Repository&, const MoveFilesCommand&, std::ostream&);
 void command_simplify_parents(Repository&, const SimplifyParentsCommand&,
                               std::ostream&);
 void command_file(Repository&, const FileCommand&, std::ostream&);

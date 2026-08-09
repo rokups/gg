@@ -378,4 +378,66 @@ RewritePlan Repository::descendants(
   return plan;
 }
 
+RewritePlan Repository::move_files(const git_oid& source,
+                                   const git_oid& destination,
+                                   const std::vector<std::string>& paths) const {
+  const std::vector<git_oid> source_parents = parents(source);
+  const git_oid source_tree = *git_commit_tree_id(commit(source).get());
+  const git_oid base_tree = *git_commit_tree_id(commit(source_parents.front()).get());
+  const git_oid selected_change = selected_tree(base_tree, source_tree, paths);
+  if (selected_change == base_tree) {
+    throw UserError("selected paths are not changed in the source revision");
+  }
+
+  RewritePlan plan;
+  const auto refs = rewrite_refs();
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo_.get()), "walk revisions");
+  RevwalkPtr walk(raw_walk);
+  git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+  for (const auto& [name, oid] : refs) {
+    (void)name;
+    const int pushed = git_revwalk_push(walk.get(), &oid);
+    if (pushed != GIT_EINVALIDSPEC) check(pushed, "walk revisions");
+  }
+
+  git_oid oid{};
+  while (git_revwalk_next(&oid, walk.get()) == 0) {
+    const std::vector<git_oid> old_parents = parents(oid);
+    std::vector<git_oid> new_parents;
+    new_parents.reserve(old_parents.size());
+    bool parent_changed = false;
+    for (const git_oid& parent : old_parents) {
+      const auto replacement = plan.commits.find(parent);
+      parent_changed = parent_changed || replacement != plan.commits.end();
+      new_parents.push_back(replacement == plan.commits.end()
+                                ? parent
+                                : replacement->second);
+    }
+    if (!parent_changed && !(oid == source) && !(oid == destination)) continue;
+
+    git_oid tree = *git_commit_tree_id(commit(oid).get());
+    if (parent_changed && !old_parents.empty() && !new_parents.empty()) {
+      tree = replay(old_parents.front(), new_parents.front(), tree);
+    }
+    if (oid == source) {
+      const git_oid parent_tree =
+          *git_commit_tree_id(commit(new_parents.front()).get());
+      tree = selected_tree(tree, parent_tree, paths);
+    }
+    if (oid == destination) {
+      tree = merge_trees(base_tree, tree, selected_change);
+    }
+    plan.commits.emplace(oid, rewrite_commit(oid, new_parents, tree));
+  }
+
+  for (const auto& [name, target] : refs) {
+    const auto replacement = plan.commits.find(target);
+    if (replacement != plan.commits.end()) {
+      plan.updates.emplace(name, replacement->second);
+    }
+  }
+  return plan;
+}
+
 }  // namespace gg::detail

@@ -22,6 +22,7 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   gg_squash_options squash_options = GG_SQUASH_OPTIONS_INIT;
   gg_abandon_options abandon_options = GG_ABANDON_OPTIONS_INIT;
   gg_restore_options restore_options = GG_RESTORE_OPTIONS_INIT;
+  gg_move_files_options move_files_options = GG_MOVE_FILES_OPTIONS_INIT;
   gg_simplify_parents_options simplify_options =
       GG_SIMPLIFY_PARENTS_OPTIONS_INIT;
   gg_bookmark_options bookmark_options = GG_BOOKMARK_OPTIONS_INIT;
@@ -44,6 +45,7 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   EXPECT_EQ(gg_squash_options_init(&squash_options, 1), GIT_OK);
   EXPECT_EQ(gg_abandon_options_init(&abandon_options, 1), GIT_OK);
   EXPECT_EQ(gg_restore_options_init(&restore_options, 1), GIT_OK);
+  EXPECT_EQ(gg_move_files_options_init(&move_files_options, 1), GIT_OK);
   EXPECT_EQ(gg_simplify_parents_options_init(&simplify_options, 1), GIT_OK);
   EXPECT_EQ(gg_bookmark_options_init(&bookmark_options, 1), GIT_OK);
   EXPECT_EQ(gg_tag_options_init(&tag_options, 1), GIT_OK);
@@ -241,6 +243,87 @@ TEST_F(RepositoryTest, RefreshesCachedReferencesAfterAdoptingGitChanges) {
   }
   EXPECT_TRUE(found_external);
   gg_named_ref_array_dispose(&refs);
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, MovesFilesBetweenChangesAtomically) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  gg_mutation_result mutation{};
+  gg_new_options create = GG_NEW_OPTIONS_INIT;
+  create.message = "source";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+  write("tracked.txt", "moved\n");
+  int changed = 0;
+  ASSERT_EQ(gg_repository_snapshot_working_copy(&changed, repository, nullptr),
+            GIT_OK);
+  ASSERT_TRUE(changed);
+  git_oid source{};
+  ASSERT_EQ(gg_repository_working_copy(&source, repository), GIT_OK);
+
+  create.message = "destination";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  const git_oid destination = mutation.working_copy;
+  gg_mutation_result_dispose(&mutation);
+
+  const char* path[] = {"tracked.txt"};
+  const std::string source_text = git_oid_tostr_s(&source);
+  const std::string destination_text = git_oid_tostr_s(&destination);
+  gg_move_files_options move = GG_MOVE_FILES_OPTIONS_INIT;
+  move.source = source_text.c_str();
+  move.destination = destination_text.c_str();
+  move.filesets = {path, 1};
+  ASSERT_EQ(gg_repository_move_files(&mutation, repository, &move, nullptr),
+            GIT_OK)
+      << git_error_last()->message;
+  ASSERT_TRUE(mutation.changed);
+
+  git_oid rewritten_source{};
+  git_oid rewritten_destination{};
+  bool found_source = false;
+  bool found_destination = false;
+  for (size_t index = 0; index < mutation.rewrite_count; ++index) {
+    if (git_oid_equal(&mutation.rewrites[index].before, &source) != 0) {
+      rewritten_source = mutation.rewrites[index].after;
+      found_source = true;
+    }
+    if (git_oid_equal(&mutation.rewrites[index].before, &destination) != 0) {
+      rewritten_destination = mutation.rewrites[index].after;
+      found_destination = true;
+    }
+  }
+  ASSERT_TRUE(found_source);
+  ASSERT_TRUE(found_destination);
+
+  const auto delta_count = [&](const git_oid& oid) {
+    git_commit* commit = nullptr;
+    EXPECT_EQ(git_commit_lookup(&commit, repository_.get(), &oid), GIT_OK);
+    git_commit* parent = nullptr;
+    EXPECT_EQ(git_commit_parent(&parent, commit, 0), GIT_OK);
+    git_tree* tree = nullptr;
+    git_tree* parent_tree = nullptr;
+    EXPECT_EQ(git_commit_tree(&tree, commit), GIT_OK);
+    EXPECT_EQ(git_commit_tree(&parent_tree, parent), GIT_OK);
+    git_diff* diff = nullptr;
+    EXPECT_EQ(git_diff_tree_to_tree(&diff, repository_.get(), parent_tree, tree,
+                                    nullptr),
+              GIT_OK);
+    const size_t result = git_diff_num_deltas(diff);
+    git_diff_free(diff);
+    git_tree_free(parent_tree);
+    git_tree_free(tree);
+    git_commit_free(parent);
+    git_commit_free(commit);
+    return result;
+  };
+  EXPECT_EQ(delta_count(rewritten_source), 0U);
+  EXPECT_EQ(delta_count(rewritten_destination), 1U);
+  gg_mutation_result_dispose(&mutation);
   gg_repository_free(repository);
 }
 

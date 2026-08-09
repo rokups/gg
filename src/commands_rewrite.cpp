@@ -450,6 +450,47 @@ void command_restore(Repository& repo,
   output << "Restored into " << oid_string(rewritten, 8) << ".\n";
 }
 
+void command_move_files(Repository& repo,
+                        const MoveFilesCommand& options,
+                        std::ostream& output) {
+  repo.sync_for_command();
+  const auto workspace = repo.workspace();
+  if (!workspace.has_value()) {
+    throw UserError("this command requires a working-copy change");
+  }
+  const git_oid source = repo.resolve(options.source);
+  const git_oid destination = repo.resolve(options.destination);
+  if (source == destination) {
+    throw UserError("source and destination revisions must be different");
+  }
+  if (repo.parents(source).size() != 1) {
+    throw UserError("source revision must have exactly one parent");
+  }
+  if (options.paths.empty()) throw UserError("at least one path is required");
+  std::vector<std::string> paths;
+  for (const std::string& path : options.paths) {
+    const std::filesystem::path parsed(path);
+    if (path.empty() || path.front() == '/') {
+      throw UserError("move paths must be repository-relative");
+    }
+    for (const auto& component : parsed) {
+      if (component == "..") {
+        throw UserError("move paths must not contain '..'");
+      }
+    }
+    paths.push_back(parsed.lexically_normal().generic_string());
+  }
+
+  RewritePlan plan = repo.move_files(source, destination, paths);
+  const git_oid new_workspace = plan.commits.contains(*workspace)
+                                    ? plan.commits.at(*workspace)
+                                    : *workspace;
+  finish_workspace(repo, new_workspace, std::move(plan.updates), {},
+                   "gg move files");
+  output << "Moved " << paths.size() << " file" << (paths.size() == 1 ? "" : "s")
+         << " into " << oid_string(plan.commits.at(destination), 8) << ".\n";
+}
+
 void command_simplify_parents(Repository& repo,
                               const SimplifyParentsCommand& options,
                               std::ostream& output) {

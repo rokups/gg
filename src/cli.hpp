@@ -117,6 +117,11 @@ struct RestoreCommand {
   bool interactive{false};
   bool restore_descendants{false};
 };
+struct MoveFilesCommand {
+  std::string source;
+  std::string destination;
+  std::vector<std::string> paths;
+};
 struct SimplifyParentsCommand {
   std::vector<std::string> sources;
   std::vector<std::string> revisions;

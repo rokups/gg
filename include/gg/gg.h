@@ -263,6 +263,16 @@ typedef struct gg_restore_options {
 #define GG_RESTORE_OPTIONS_INIT \
   { GG_OPTIONS_VERSION, { NULL, 0 }, NULL, NULL, NULL, 0 }
 
+typedef struct gg_move_files_options {
+  unsigned int version;
+  const char *source;
+  const char *destination;
+  gg_string_array filesets;
+} gg_move_files_options;
+
+#define GG_MOVE_FILES_OPTIONS_INIT \
+  { GG_OPTIONS_VERSION, NULL, NULL, { NULL, 0 } }
+
 typedef struct gg_simplify_parents_options {
   unsigned int version;
   gg_string_array sources;
@@ -513,6 +523,8 @@ GG_EXTERN int gg_abandon_options_init(gg_abandon_options *options,
                                       unsigned int version);
 GG_EXTERN int gg_restore_options_init(gg_restore_options *options,
                                       unsigned int version);
+GG_EXTERN int gg_move_files_options_init(gg_move_files_options *options,
+                                         unsigned int version);
 GG_EXTERN int gg_simplify_parents_options_init(
     gg_simplify_parents_options *options, unsigned int version);
 GG_EXTERN int gg_bookmark_options_init(gg_bookmark_options *options,
@@ -616,6 +628,10 @@ GG_EXTERN int gg_repository_abandon(
 GG_EXTERN int gg_repository_restore(
     gg_mutation_result *out, gg_repository *repository,
     const gg_restore_options *options, const gg_operation_options *operation);
+GG_EXTERN int gg_repository_move_files(
+    gg_mutation_result *out, gg_repository *repository,
+    const gg_move_files_options *options,
+    const gg_operation_options *operation);
 GG_EXTERN int gg_repository_simplify_parents(
     gg_mutation_result *out, gg_repository *repository,
     const gg_simplify_parents_options *options,

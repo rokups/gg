@@ -238,6 +238,10 @@ class Repository {
         const std::set<git_oid, OidLess>& skipped = {},
         bool preserve_content = false) const;
 
+  RewritePlan move_files(const git_oid& source,
+                           const git_oid& destination,
+                           const std::vector<std::string>& paths) const;
+
   void apply_refs(const std::map<std::string, git_oid>& updates,
                     const std::set<std::string>& deletes,
                     std::string_view message) const;

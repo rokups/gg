@@ -44,6 +44,7 @@ using gg::detail::FileCommand;
 using gg::detail::MetaeditCommand;
 using gg::detail::MovementCommand;
 using gg::detail::MovementDirection;
+using gg::detail::MoveFilesCommand;
 using gg::detail::NewCommand;
 using gg::detail::OperationRestoreCommand;
 using gg::detail::RebaseCommand;
@@ -424,6 +425,12 @@ int gg_restore_options_init(gg_restore_options* options,
                             unsigned int version) {
   return initialize(options, version,
                     gg_restore_options GG_RESTORE_OPTIONS_INIT);
+}
+
+int gg_move_files_options_init(gg_move_files_options* options,
+                               unsigned int version) {
+  return initialize(options, version,
+                    gg_move_files_options GG_MOVE_FILES_OPTIONS_INIT);
 }
 
 int gg_simplify_parents_options_init(gg_simplify_parents_options* options,
@@ -1166,6 +1173,21 @@ int gg_repository_restore(gg_mutation_result* out,
     command.changes_in = string(value.changes_in);
     command.restore_descendants = value.restore_descendants != 0;
     command_restore(repo, command, output);
+  });
+}
+
+int gg_repository_move_files(gg_mutation_result* out,
+                             gg_repository* repository,
+                             const gg_move_files_options* options,
+                             const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "move_files",
+                [&](Repository& repo, std::ostream& output) {
+    const auto& value = required(options);
+    command_move_files(repo,
+                       MoveFilesCommand{string(value.source),
+                                        string(value.destination),
+                                        strings(value.filesets)},
+                       output);
   });
 }
 
