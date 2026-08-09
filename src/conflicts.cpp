@@ -4,172 +4,159 @@
 
 #include "repository.hpp"
 
-#include <array>
-#include <filesystem>
-#include <fstream>
+#include <git2/sys/errors.h>
+
 #include <iomanip>
 #include <sstream>
 
 namespace gg::detail {
 
-std::optional<PendingRewrite> Repository::pending() const {
-  const auto pending_oid = ref_target(rewrite_ref_name());
-  if (!pending_oid.has_value()) {
-    return std::nullopt;
+bool Repository::has_legacy_rewrite() const {
+  return ref_target(rewrite_ref_name()).has_value();
+}
+
+TreeConflicts Repository::tree_conflicts(const git_oid& tree_oid) const {
+  if (const auto cached = conflict_cache_.find(tree_oid);
+      cached != conflict_cache_.end()) {
+    return cached->second;
   }
-  CommitPtr value = commit(*pending_oid);
-  std::istringstream input(git_commit_message(value.get()));
+  const std::string reference =
+      std::string(kConflictPrefix) + oid_string(tree_oid);
+  git_reference* raw_reference = nullptr;
+  const int lookup =
+      git_reference_lookup(&raw_reference, repo_.get(), reference.c_str());
+  if (lookup == GIT_ENOTFOUND) git_error_clear();  // GG_COV_EXCL_BRANCH
+  if (lookup != 0 && lookup != GIT_ENOTFOUND) check(lookup, "read conflict metadata");  // GG_COV_EXCL_BRANCH
+  ReferencePtr metadata_reference(raw_reference);
+  TreeConflicts result;
+  if (metadata_reference == nullptr) {  // GG_COV_EXCL_BRANCH
+    conflict_cache_.emplace(tree_oid, result);
+    return result;
+  }
+  if (git_reference_type(metadata_reference.get()) != GIT_REFERENCE_DIRECT) throw GitError("invalid conflict metadata reference");  // GG_COV_EXCL_BRANCH
+  CommitPtr holder = commit(*git_reference_target(metadata_reference.get()));
+  std::istringstream input(git_commit_message(holder.get()));
   std::string line;
-  if (!std::getline(input, line) || line != "gg-rewrite-v1") {  // GG_COV_EXCL_BRANCH
-    throw GitError("invalid pending rewrite");
+  if (!std::getline(input, line) || line != "gg-conflicts-v1") {  // GG_COV_EXCL_BRANCH
+    throw GitError("invalid conflict metadata");
   }
-  PendingRewrite pending{};
-  std::string keyword;
-  std::string text;
-  while (input >> keyword) {
-    if (keyword == "operation") {
-      input >> text;
-      check(git_oid_fromstr(&pending.operation, text.c_str()),
-            "parse pending operation");
-    } else if (keyword == "arg") {
-      input >> std::quoted(text);
-      pending.arguments.push_back(text);
-    } else if (keyword == "resolution") {
-      Resolution resolution{};
-      std::array<git_oid*, 4> values{&resolution.ancestor, &resolution.ours,
-                                    &resolution.theirs, &resolution.result};
-      for (git_oid* oid : values) {
-        input >> text;
-        check(git_oid_fromstr(oid, text.c_str()), "parse rewrite resolution");
+  std::string path;
+  while (input >> std::quoted(path)) {
+    ConflictValue conflict;
+    char kind = '\0';
+    std::string oid_text;
+    unsigned int mode = 0;
+    while (input >> kind && kind != 'E') {  // GG_COV_EXCL_BRANCH
+      if (!(input >> oid_text >> mode) ||  // GG_COV_EXCL_BRANCH
+          (kind != 'R' && kind != 'A')) {
+        throw GitError("invalid conflict metadata entry");
       }
-      pending.resolutions.push_back(resolution);
-    } else if (keyword == "conflict") {
-      std::array<git_oid*, 4> values{&pending.ancestor, &pending.ours,
-                                    &pending.theirs, &pending.marker_tree};
-      for (git_oid* oid : values) {
-        input >> text;
-        check(git_oid_fromstr(oid, text.c_str()), "parse rewrite conflict");
+      FileValue value;
+      value.present = oid_text != "-";
+      value.mode = static_cast<git_filemode_t>(mode);
+      if (value.present) {  // GG_COV_EXCL_BRANCH
+        check(git_oid_fromstr(&value.oid, oid_text.c_str()),
+              "parse conflict object");
       }
-    } else if (keyword == "path") {
-      input >> std::quoted(text);
-      pending.paths.push_back(text);
-    } else {
-      throw GitError("invalid pending rewrite field");
+      (kind == 'R' ? conflict.removes : conflict.adds).push_back(value);
     }
+    if (kind != 'E' || conflict.adds.empty()) {  // GG_COV_EXCL_BRANCH
+      throw GitError("invalid conflict metadata entry");
+    }
+    result.emplace(path, std::move(conflict));
   }
-  return pending;
+  conflict_cache_[tree_oid] = result;
+  return result;
 }
 
-std::string Repository::serialize(const PendingRewrite& pending) const {
+void Repository::record_conflicts(const git_oid& tree_oid,
+                                  TreeConflicts conflicts) const {
+  if (conflicts.empty()) return;
   std::ostringstream output;
-  output << "gg-rewrite-v1\noperation " << oid_string(pending.operation) << '\n';
-  for (const std::string& argument : pending.arguments) {
-    output << "arg " << std::quoted(argument) << '\n';
+  output << "gg-conflicts-v1\n";
+  for (const auto& [path, conflict] : conflicts) {
+    output << std::quoted(path) << '\n';
+    const auto write = [&](char kind, const FileValue& value) {
+      output << kind << ' '
+             << (value.present ? oid_string(value.oid) : "-") << ' '
+             << static_cast<unsigned int>(value.mode) << '\n';
+    };
+    for (const FileValue& value : conflict.removes) write('R', value);
+    for (const FileValue& value : conflict.adds) write('A', value);
+    output << "E\n";
   }
-  for (const Resolution& resolution : pending.resolutions) {
-    output << "resolution " << oid_string(resolution.ancestor) << ' '
-           << oid_string(resolution.ours) << ' '
-           << oid_string(resolution.theirs) << ' '
-           << oid_string(resolution.result) << '\n';
-  }
-  output << "conflict " << oid_string(pending.ancestor) << ' '
-         << oid_string(pending.ours) << ' ' << oid_string(pending.theirs) << ' '
-         << oid_string(pending.marker_tree) << '\n';
-  for (const std::string& path : pending.paths) {
-    output << "path " << std::quoted(path) << '\n';
-  }
-  return output.str();
+  const git_oid holder = create_commit(tree_oid, {}, output.str());
+  const std::string reference =
+      std::string(kConflictPrefix) + oid_string(tree_oid);
+  conflict_cache_[tree_oid] = std::move(conflicts);
+  pending_conflict_refs_[reference] = holder;
 }
 
-void Repository::write_pending(const PendingRewrite& pending) const {
-  const git_oid holder =
-      create_commit(pending.marker_tree, {pending.operation}, serialize(pending));
-  apply_refs({{rewrite_ref_name(), holder}}, {}, "gg pause rewrite");
+bool Repository::tree_has_conflicts(const git_oid& tree_oid) const {
+  return !tree_conflicts(tree_oid).empty();
 }
 
-void Repository::pause(const std::vector<std::string_view>& arguments,
-           MergeConflict& conflict) const {
-  git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
-  options.checkout_strategy = GIT_CHECKOUT_FORCE |
-                              GIT_CHECKOUT_RECREATE_MISSING |
-                              GIT_CHECKOUT_ALLOW_CONFLICTS |
-                              GIT_CHECKOUT_CONFLICT_STYLE_MERGE |
-                              GIT_CHECKOUT_DONT_UPDATE_INDEX;
-  options.ancestor_label = "base";
-  options.our_label = "destination";
-  options.their_label = "change";
-  check(git_checkout_index(repo_.get(), conflict.index.get(), &options),
-        "write rewrite conflicts");
-  PendingRewrite rewrite = pending().value_or(PendingRewrite{});
-  if (rewrite.arguments.empty()) {
-    rewrite.operation = ensure_operation();
-    for (std::string_view argument : arguments) {
-      rewrite.arguments.emplace_back(argument);
-    }
-  }
-  rewrite.ancestor = conflict.ancestor;
-  rewrite.ours = conflict.ours;
-  rewrite.theirs = conflict.theirs;
-  rewrite.paths = conflict.paths;
-  rewrite.marker_tree = snapshot_tree(conflict.ours);
-  write_pending(rewrite);
+bool Repository::commit_has_conflicts(const git_oid& commit_oid) const {
+  CommitPtr value = commit(commit_oid);
+  return tree_has_conflicts(*git_commit_tree_id(value.get()));
 }
 
-std::vector<std::string> Repository::prepare_continue() const {
-  PendingRewrite rewrite =
-      pending().value_or(PendingRewrite{});
-  if (rewrite.arguments.empty()) {
-    throw UserError("no rewrite is in progress");
+bool Repository::history_has_conflicts(const git_oid& commit_oid) const {
+  std::set<git_oid, OidLess> seen;
+  std::vector<git_oid> pending{commit_oid};
+  while (!pending.empty()) {
+    const git_oid oid = pending.back();
+    pending.pop_back();
+    if (!seen.insert(oid).second) continue;  // GG_COV_EXCL_BRANCH
+    if (commit_has_conflicts(oid)) return true;
+    const std::vector<git_oid> commit_parents = parents(oid);
+    pending.insert(pending.end(), commit_parents.begin(), commit_parents.end());
   }
-  const char* workdir = git_repository_workdir(repo_.get());
-  bool markers = false;
-  for (const std::string& path : rewrite.paths) {
-    std::ifstream file(std::filesystem::path(workdir) / path,
-                       std::ios::binary);
-    const std::string content((std::istreambuf_iterator<char>(file)),
-                              std::istreambuf_iterator<char>());
-    markers = markers || content.find("<<<<<<<") != std::string::npos ||
-              content.find("=======") != std::string::npos ||  // GG_COV_EXCL_BRANCH
-              content.find(">>>>>>>") != std::string::npos;
-  }
-  const git_oid resolved = snapshot_tree(rewrite.ours);
-  if (markers || resolved == rewrite.marker_tree) {
-    throw UserError("rewrite conflicts are not resolved");
-  }
-  rewrite.resolutions.push_back(
-      {rewrite.ancestor, rewrite.ours, rewrite.theirs, resolved});
-  rewrite.marker_tree = resolved;
-  write_pending(rewrite);
-  restore_operation(rewrite.operation);
-  return rewrite.arguments;
+  return false;
 }
 
-void Repository::finish_rewrite() const {
-  const std::string reference = rewrite_ref_name();
-  if (ref_target(reference).has_value()) {
-    apply_refs({}, {reference}, "gg finish rewrite");
+std::vector<std::string> Repository::conflict_paths(
+    const git_oid& commit_oid) const {
+  CommitPtr value = commit(commit_oid);
+  const TreeConflicts conflicts =
+      tree_conflicts(*git_commit_tree_id(value.get()));
+  std::vector<std::string> result;
+  result.reserve(conflicts.size());
+  for (const auto& [path, conflict] : conflicts) {
+    (void)conflict;
+    result.push_back(path);
   }
+  return result;
 }
 
-void Repository::abort_rewrite() const {
-  const auto rewrite = pending();
-  if (!rewrite.has_value()) {
-    throw UserError("no rewrite is in progress");
+void Repository::preserve_conflicts(const git_oid& old_tree,
+                                    const git_oid& new_tree) const {
+  const TreeConflicts old = tree_conflicts(old_tree);
+  if (old.empty()) return;
+  TreePtr before = tree(old_tree);
+  TreePtr after = tree(new_tree);
+  TreeConflicts retained;
+  for (const auto& [path, conflict] : old) {
+    git_tree_entry* raw_before = nullptr;
+    git_tree_entry* raw_after = nullptr;
+    const int before_result =
+        git_tree_entry_bypath(&raw_before, before.get(), path.c_str());
+    const int after_result =
+        git_tree_entry_bypath(&raw_after, after.get(), path.c_str());
+    TreeEntryPtr before_entry(raw_before);
+    TreeEntryPtr after_entry(raw_after);
+    const bool same = before_result == after_result &&  // GG_COV_EXCL_BRANCH
+                      (before_result == GIT_ENOTFOUND ||  // GG_COV_EXCL_BRANCH
+                       (before_result == 0 &&
+                        git_tree_entry_filemode(before_entry.get()) ==
+                            git_tree_entry_filemode(after_entry.get()) &&  // GG_COV_EXCL_BRANCH
+                        *git_tree_entry_id(before_entry.get()) ==
+                            *git_tree_entry_id(after_entry.get())));
+    if (before_result != 0 && before_result != GIT_ENOTFOUND) check(before_result, "read conflict materialization");  // GG_COV_EXCL_BRANCH
+    if (after_result != 0 && after_result != GIT_ENOTFOUND) check(after_result, "read conflict snapshot");  // GG_COV_EXCL_BRANCH
+    if (same) retained.emplace(path, conflict);
   }
-  restore_operation(rewrite->operation);
-  apply_refs({}, {rewrite_ref_name()}, "gg abort rewrite");
-}
-
-void Repository::pending_status(std::ostream& output) const {
-  const auto rewrite = pending();
-  if (!rewrite.has_value()) {
-    return;
-  }
-  output << "A rewrite is paused with conflicts:\n";
-  for (const std::string& path : rewrite->paths) {
-    output << "C " << path << '\n';
-  }
-  output << "Resolve the files, then run `gg continue`, or run `gg abort`.\n";
+  record_conflicts(new_tree, std::move(retained));
 }
 
 

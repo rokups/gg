@@ -224,11 +224,8 @@ struct GitPushCommand {
   bool deleted{false};
   bool allow_empty_description{false};
   bool allow_private{false};
-  bool allow_conflicts{false};
   bool dry_run{false};
 };
-struct ContinueCommand {};
-struct AbortCommand {};
 struct UndoCommand {};
 struct RedoCommand {};
 struct OperationLogCommand {
@@ -253,6 +250,8 @@ struct UtilGcCommand {
   std::string expire;
 };
 struct UtilSnapshotCommand {};
+struct UtilInstallGitHooksCommand {};
+struct UtilCheckPushConflictsCommand {};
 
 enum class WorkspaceAction { list, root, add, forget, rename };
 struct WorkspaceCommand {
@@ -301,12 +300,14 @@ using RepositoryCommand =
                  BookmarkCommand, TagCommand,
                  GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
-                 UtilGcCommand, UtilSnapshotCommand, WorkspaceCommand,
+                 UtilGcCommand, UtilSnapshotCommand,
+                 UtilInstallGitHooksCommand, UtilCheckPushConflictsCommand,
+                 WorkspaceCommand,
                  SparseCommand,
                  MovementCommand,
                  ConfigCommand>;
 using Command = std::variant<RepositoryCommand, GitCloneCommand, GitInitCommand,
-                             UtilExecCommand, ContinueCommand, AbortCommand>;
+                             UtilExecCommand>;
 
 struct Invocation {
   std::filesystem::path repository{"."};

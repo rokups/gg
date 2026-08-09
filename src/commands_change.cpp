@@ -453,6 +453,20 @@ void command_status(Repository& repo,
              << '\n';
     }
   }
+  std::vector<std::string> conflicts = repo.conflict_paths(*workspace);
+  if (!paths.empty()) {  // GG_COV_EXCL_BRANCH
+    std::erase_if(conflicts, [&](const std::string& path) {
+      return std::ranges::none_of(paths, [&](const auto& prefix) {
+        return path == prefix || path.starts_with(prefix + "/");  // GG_COV_EXCL_BRANCH
+      });
+    });
+  }
+  if (!conflicts.empty()) {
+    output << "Unresolved conflicts:\n";
+    for (const std::string& path : conflicts) output << "C " << path << '\n';
+    output << "Edit the files to resolve them, then run any gg command to "
+              "snapshot the result.\n";
+  }
 }
 
 void command_log(Repository& repo,
@@ -578,6 +592,7 @@ void command_log(Repository& repo,
       }
       const std::string description =
           first_line(git_commit_message(value.get()));
+      if (repo.commit_has_conflicts(oid)) content << " conflict";
       content << (options.no_graph ? " " : "\n")
               << (description.empty() ? "(no description set)" : description)
               << '\n';
@@ -886,9 +901,6 @@ void command_move(Repository& repo,
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }
-  if (options.conflict) {
-    throw UserError("gg has no first-class conflicted revisions");
-  }
   bool edit = options.edit;
   if (!edit && !options.no_edit) {
     const std::string configured =
@@ -918,6 +930,9 @@ void command_move(Repository& repo,
           options.direction == MovementDirection::next ? repo.children(oid)
                                                        : repo.parents(oid);
       for (const git_oid& candidate : candidates) {
+        if (options.conflict && !repo.commit_has_conflicts(candidate)) {  // GG_COV_EXCL_BRANCH
+          continue;
+        }
         if (!(options.direction == MovementDirection::next && !edit &&  // GG_COV_EXCL_BRANCH
               step == 0 && candidate == *workspace)) {
           next.insert(candidate);

@@ -421,9 +421,6 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("--allow-empty-description");
             }
             if (value.allow_private) result.emplace_back("--allow-private");
-            if (value.allow_conflicts) {
-              result.emplace_back("--allow-conflicts");
-            }
             if (value.dry_run) result.emplace_back("--dry-run");
             return result;
           },
@@ -460,6 +457,12 @@ std::vector<std::string> repository_replay_arguments(
           },
           [](const UtilSnapshotCommand&) {
             return std::vector<std::string>{"util", "snapshot"};
+          },
+          [](const UtilInstallGitHooksCommand&) {
+            return std::vector<std::string>{"util", "install-git-hooks"};
+          },
+          [](const UtilCheckPushConflictsCommand&) {
+            return std::vector<std::string>{"util", "check-push-conflicts"};
           },
           [](const WorkspaceCommand& value) {
             std::vector<std::string> result{"workspace"};
@@ -597,11 +600,7 @@ std::vector<std::string> replay_arguments(const Command& command) {
             result.insert(result.end(), value.arguments.begin(),
                           value.arguments.end());
             return result;
-          },
-          [](const ContinueCommand&) {
-            return std::vector<std::string>{"continue"};
-          },
-          [](const AbortCommand&) { return std::vector<std::string>{"abort"}; }},
+          }},
       command);
 }
 

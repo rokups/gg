@@ -25,15 +25,6 @@ struct Overloaded : Values... {
   using Values::operator()...;
 };
 
-std::vector<std::string_view> views(const std::vector<std::string>& values) {
-  std::vector<std::string_view> result;
-  result.reserve(values.size());
-  for (const std::string& value : values) {
-    result.push_back(value);
-  }
-  return result;
-}
-
 OutputColorMode output_color_mode(std::string_view requested,
                                   std::ostream& output) {
   if (requested == "always") return OutputColorMode::ansi;
@@ -132,11 +123,10 @@ bool reads_revisions(const Command& command) {
 
 int execute(Repository& repository,
             const RepositoryCommand& command,
-            const std::vector<std::string>& replay,
+            const std::vector<std::string>&,
             std::ostream& output,
             std::ostream& status_output) {
-  try {
-    std::visit(
+  std::visit(
         Overloaded{
             [&](const StatusCommand& value) {
               command_status(repository, value, output);
@@ -212,6 +202,12 @@ int execute(Repository& repository,
             [&](const UtilSnapshotCommand&) {
               command_util_snapshot(repository, output);
             },
+            [&](const UtilInstallGitHooksCommand&) {
+              command_util_install_git_hooks(repository, output);
+            },
+            [&](const UtilCheckPushConflictsCommand&) {
+              command_util_check_push_conflicts(repository, std::cin);
+            },
             [&](const WorkspaceCommand& value) {
               command_workspace(repository, value, output);
             },
@@ -225,14 +221,13 @@ int execute(Repository& repository,
               command_config(repository, value, output);
             }},
         command);
-    return 0;
-  } catch (MergeConflict& conflict) {
-    const std::vector<std::string_view> replay_views = views(replay);
-    repository.pause(replay_views, conflict);
-    status_output << "Rewrite stopped because of conflicts.\n";
-    repository.pending_status(status_output);
-    return 1;
+  const auto workspace = repository.workspace();
+  if (!std::holds_alternative<UtilCheckPushConflictsCommand>(command) &&
+      workspace.has_value() && repository.commit_has_conflicts(*workspace)) {
+    status_output << "Warning: the working-copy change has unresolved "
+                     "conflicts.\n";
   }
+  return 0;
 }
 
 int dispatch(std::span<const std::string_view> arguments,
@@ -287,39 +282,9 @@ int dispatch(std::span<const std::string_view> arguments,
   if (!invocation.at_operation.empty()) {
     repository.view_at_operation(invocation.at_operation);
   }
-  if (repository.pending().has_value()) {
-    const auto* repository_command =
-        std::get_if<RepositoryCommand>(&invocation.command);
-    if (repository_command != nullptr &&
-        std::holds_alternative<StatusCommand>(*repository_command)) {
-      repository.pending_status(output);
-      return 0;
-    }
-    if (std::holds_alternative<AbortCommand>(invocation.command)) {
-      repository.abort_rewrite();
-      command_output << "Aborted rewrite.\n";
-      return 0;
-    }
-    if (std::holds_alternative<ContinueCommand>(invocation.command)) {
-      std::vector<std::string> stored = repository.prepare_continue();
-      const std::vector<std::string_view> stored_views = views(stored);
-      ParseResult resumed = parse_cli(stored_views, output, error);
-      Invocation resumed_invocation =
-          std::move(std::get<Invocation>(resumed.invocation));
-      const int result = execute(
-          repository,
-          std::get<RepositoryCommand>(resumed_invocation.command), stored,
-          command_output, output);
-      if (result == 0) {
-        repository.finish_rewrite();
-      }
-      return result;
-    }
-    throw UserError("a rewrite is in progress; run `gg continue` or `gg abort`");
-  }
-  if (std::holds_alternative<ContinueCommand>(invocation.command) ||
-      std::holds_alternative<AbortCommand>(invocation.command)) {
-    throw UserError("no rewrite is in progress");
+  if (repository.has_legacy_rewrite()) {
+    throw UserError("legacy paused rewrite found; use the previous gg version "
+                    "to abort it before upgrading");
   }
   if (invocation.at_operation.empty() && reads_revisions(invocation.command)) {
     repository.import_git_history(&error);

@@ -47,6 +47,7 @@ struct RefListItem {
   std::string committer_name;
   std::string committer_email;
   git_time_t committer_date;
+  bool conflict;
 };
 
 int compare_text(std::string_view left, std::string_view right) {
@@ -82,7 +83,8 @@ int compare_refs(const RefListItem& left,
 RefListItem ref_list_item(std::string name,
                           std::string remote,
                           const git_oid& oid,
-                          const git_commit* commit) {
+                          const git_commit* commit,
+                          bool conflict) {
   const git_signature* author = git_commit_author(commit);
   const git_signature* committer = git_commit_committer(commit);
   const std::string display_name =
@@ -96,7 +98,8 @@ RefListItem ref_list_item(std::string name,
           author->when.time,
           committer->name,
           committer->email,
-          committer->when.time};
+          committer->when.time,
+          conflict};
 }
 
 std::map<std::string, std::string> ref_template_values(
@@ -105,7 +108,7 @@ std::map<std::string, std::string> ref_template_values(
   return {{"name", item.name},
           {"remote", item.remote},
           {"present", "true"},
-          {"conflict", "false"},
+          {"conflict", item.conflict ? "true" : "false"},
           {"normal_target", target},
           {"removed_targets", ""},
           {"added_targets", target}};
@@ -434,7 +437,6 @@ void command_bookmark(Repository& repo,
     return;
   }
   if (options.action == BookmarkAction::list) {
-    if (options.conflicted) return;
     validate_ref_template(options.template_value);
 
     std::set<git_oid, OidLess> revisions;
@@ -485,9 +487,11 @@ void command_bookmark(Repository& repo,
           !revision_matches) {
         continue;
       }
+      if (options.conflicted && !repo.commit_has_conflicts(oid)) continue;
 
       CommitPtr commit = repo.commit(oid);
-      items.push_back(ref_list_item(name, remote, oid, commit.get()));
+      items.push_back(ref_list_item(name, remote, oid, commit.get(),
+                                    repo.commit_has_conflicts(oid)));
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
@@ -723,7 +727,6 @@ void command_tag(Repository& repo,
   };
 
   if (options.action == TagAction::list) {
-    if (options.conflicted) return;
     validate_ref_template(options.template_value);
     std::set<git_oid, OidLess> revisions;
     const std::vector<git_oid> resolved =
@@ -773,8 +776,10 @@ void command_tag(Repository& repo,
           !revision_matches) {
         continue;
       }
+      if (options.conflicted && !repo.commit_has_conflicts(*target)) continue;  // GG_COV_EXCL_BRANCH
       CommitPtr commit = repo.commit(*target);
-      items.push_back(ref_list_item(name, remote, *target, commit.get()));
+      items.push_back(ref_list_item(name, remote, *target, commit.get(),
+                                    repo.commit_has_conflicts(*target)));
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
@@ -1211,6 +1216,12 @@ void command_push(Repository& repo,
       if (first_line(git_commit_message(commit.get())).empty()) {
         throw UserError("refusing to push an empty description: " + source);
       }
+    }
+  }
+
+  for (const auto& [destination, target] : targets) {
+    if (repo.history_has_conflicts(target)) {
+      throw UserError("refusing to push conflicted history: " + destination);
     }
   }
 

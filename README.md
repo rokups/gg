@@ -88,12 +88,11 @@ gg commit -m "Add the parser" src/parser.cpp include/parser.hpp
 
 ### Using only `gg` commands
 
-Lean mode is the default and hides only top-level command families that native
-Git already handles well. Retained families are complete, so every `bookmark`,
-`file`, `util`, and `workspace` subcommand remains available. Set `GG_LEAN=0`
-to additionally expose clone, init, status, diff, show, tag management, fetch,
-push, and sparse commands. Workspace commands remain available in lean mode
-because they coordinate gg state that Git worktrees do not know about:
+Lean mode is the default and hides only clone, init, status, diff, show, and
+sparse commands. Tag, fetch, and push remain available alongside the complete
+bookmark, file, util, and workspace families. Set `GG_LEAN=0` to expose the
+remaining commands. Workspace commands remain available in lean mode because
+they coordinate gg state that Git worktrees do not know about:
 
 ```sh
 export GG_LEAN=0
@@ -176,8 +175,6 @@ gg init [DESTINATION]
 gg clone URL [DESTINATION]
 gg fetch [-b BRANCH...] [-t TAG...] [--remote REMOTE... | --all-remotes]
 gg push [-b BOOKMARK...] [-t TAG...] [-r REVISION...] [-c REVISION...] [--named NAME=REVISION...] [--all | --tracked | --deleted] [--remote REMOTE] [--dry-run]
-gg continue
-gg abort
 gg undo
 gg redo
 gg operation log
@@ -186,9 +183,11 @@ gg util completion (bash|elvish|fish|nushell|power-shell|zsh)
 gg util config-schema
 gg util exec -- COMMAND [ARG...]
 gg util gc [--expire now]
+gg util install-git-hooks
 gg util install-man-pages PATH
 gg util markdown-help
 gg util snapshot
+gg util check-push-conflicts
 gg workspace add DESTINATION [--name NAME] [-r REVISION] [-m DESCRIPTION]
 gg workspace forget [NAME...]
 gg workspace list
@@ -204,11 +203,14 @@ gg config unset (--user|--repo|--workspace) NAME
 gg config edit (--user|--repo|--workspace)
 ```
 
-Rewrites restack descendants and move affected local refs together. If libgit2
-reports a merge conflict, the rewrite pauses before moving its refs and writes
-conflict markers into the working tree. Resolve the files and run `gg continue`,
-or run `gg abort` to restore the pre-rewrite operation. First-class conflicted
-commits are intentionally outside this MVP.
+Rewrites restack descendants and move affected local refs together. Conflicts
+are recorded as local logical merge terms, so operations still succeed and
+conflicted descendants can be rewritten again without nesting marker text.
+Editing a conflicted change materializes its sides in the working tree. Resolve
+the files normally; the next gg command snapshots the resolution. `gg push`
+refuses any selection whose reachable history contains a conflict. Run
+`gg util install-git-hooks` to install a managed `pre-push` hook that applies
+the same check to native `git push`; an existing hook is preserved and chained.
 
 Change IDs use Jujutsu's 32-character reverse-hex format (`z` through `k`).
 Commands show the shortest unique prefix with a minimum length of eight.

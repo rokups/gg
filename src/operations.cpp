@@ -370,7 +370,9 @@ void Repository::record(std::map<std::string, git_oid> updates,
   const git_oid operation_oid =
       create_operation(next, ensure_operation(), description);
   updates[operation_ref_name()] = operation_oid;
+  updates.insert(pending_conflict_refs_.begin(), pending_conflict_refs_.end());
   apply_refs(updates, deletes, description);
+  pending_conflict_refs_.clear();
 }
 
 void Repository::restore_operation(const git_oid& operation_oid,

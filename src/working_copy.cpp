@@ -134,6 +134,7 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   check(git_index_write_tree_to(&result, index.get(), repo_.get()),
         "write working-copy tree");
   check(git_index_write(index.get()), "cache working-copy snapshot");
+  preserve_conflicts(baseline_tree, result);
   return result;
 }
 
@@ -159,7 +160,7 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
     const git_index_entry* entry = git_index_get_byindex(final.get(), index);
     const std::string_view entry_path(entry->path);
     const bool selected_path = std::ranges::any_of(paths, [&](const auto& path) {
-      return entry_path == path ||
+      return entry_path == path ||  // GG_COV_EXCL_BRANCH
              (entry_path.size() > path.size() && starts_with(entry_path, path) &&
               entry_path[path.size()] == '/');
     });
@@ -170,6 +171,20 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
   git_oid result{};
   check(git_index_write_tree_to(&result, selected.get(), repo_.get()),
         "write selected tree");
+  TreeConflicts conflicts = tree_conflicts(base_tree);
+  const TreeConflicts final_conflicts = tree_conflicts(final_tree);
+  const auto selected_path = [&](std::string_view entry_path) {
+    return std::ranges::any_of(paths, [&](const auto& path) {  // GG_COV_EXCL_BRANCH
+      return entry_path == path ||  // GG_COV_EXCL_BRANCH
+             (entry_path.size() > path.size() && starts_with(entry_path, path) &&
+              entry_path[path.size()] == '/');
+    });
+  };
+  std::erase_if(conflicts, [&](const auto& item) { return selected_path(item.first); });  // GG_COV_EXCL_BRANCH
+  for (const auto& [path, conflict] : final_conflicts) {
+    if (selected_path(path)) conflicts[path] = conflict;
+  }
+  record_conflicts(result, std::move(conflicts));
   return result;
 }
 

@@ -309,6 +309,7 @@ git_oid import_tree(Repository& repo,
   git_oid result{};
   check(git_index_write_tree_to(&result, index.get(), repo.raw()),
         "write edited tree");
+  repo.preserve_conflicts(base_tree, result);
   return result;
 }
 
@@ -444,7 +445,9 @@ const std::map<std::string, std::string> kEmptyDiffTemplateValues{
     {"target.executable", ""}};  // GG_COV_EXCL_BRANCH
 
 std::map<std::string, std::string> diff_template_values(
-    const git_diff_delta& delta) {
+    const git_diff_delta& delta,
+    const TreeConflicts& source_conflicts,
+    const TreeConflicts& target_conflicts) {
   const std::string old_path = delta.old_file.path;
   const std::string new_path = delta.new_file.path;
   auto values = kEmptyDiffTemplateValues;
@@ -468,16 +471,35 @@ std::map<std::string, std::string> diff_template_values(
   values["target.file_type"] = file_type(delta.new_file.mode);
   values["target.executable"] =
       delta.new_file.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false";
+  if (const auto conflict = source_conflicts.find(old_path);
+      conflict != source_conflicts.end()) {
+    values["source.conflict"] = "true";
+    values["source.conflict_side_count"] =
+        std::to_string(conflict->second.adds.size());
+  }
+  if (const auto conflict = target_conflicts.find(new_path);
+      conflict != target_conflicts.end()) {
+    values["target.conflict"] = "true";
+    values["target.conflict_side_count"] =
+        std::to_string(conflict->second.adds.size());
+  }
   return values;
 }
 
-void render_diff_template(git_diff* diff,
+void render_diff_template(Repository& repo,
+                          const git_oid& from_tree,
+                          const git_oid& to_tree,
+                          git_diff* diff,
                           std::string_view template_value,
                           std::ostream& output) {
   (void)render_template(template_value, kEmptyDiffTemplateValues);
+  const TreeConflicts source_conflicts = repo.tree_conflicts(from_tree);
+  const TreeConflicts target_conflicts = repo.tree_conflicts(to_tree);
   for (std::size_t index = 0; index < git_diff_num_deltas(diff); ++index) {
     output << render_template(
-        template_value, diff_template_values(*git_diff_get_delta(diff, index)));
+        template_value,
+        diff_template_values(*git_diff_get_delta(diff, index),
+                             source_conflicts, target_conflicts));
   }
 }
 
@@ -830,7 +852,8 @@ void command_diff(Repository& repo,
     render_diff(repo, from_tree, to_tree, options.paths, diff.get(),
                 options.format, output);
   } else {
-    render_diff_template(diff.get(), options.template_value, output);
+    render_diff_template(repo, from_tree, to_tree, diff.get(),
+                         options.template_value, output);
   }
 }
 

@@ -442,6 +442,7 @@ std::map<std::string, std::string> revision_template_values(
           {"committer.name", committer->name},
           {"committer.email", committer->email},
           {"bookmarks", bookmarks.str()},
+          {"conflict", repo.commit_has_conflicts(oid) ? "true" : "false"},  // GG_COV_EXCL_BRANCH
           {"working_copy",
            workspace.has_value() && *workspace == oid ? "true" : "false"}};
 }
@@ -723,6 +724,146 @@ void command_util_gc(Repository& repo,
 void command_util_snapshot(Repository& repo, std::ostream& output) {
   output << (repo.sync_workspace() ? "Created working-copy snapshot.\n"
                                    : "Nothing changed.\n");
+}
+
+namespace {
+
+std::filesystem::path hooks_directory(Repository& repo) {
+  git_config* raw_config = nullptr;
+  check(git_repository_config(&raw_config, repo.raw()), "read Git config");
+  GitPtr<git_config, git_config_free> config(raw_config);
+  git_buf configured = GIT_BUF_INIT;
+  const int result = git_config_get_path(&configured, config.get(),
+                                         "core.hookspath");
+  if (result == GIT_ENOTFOUND) {
+    git_error_clear();
+    return std::filesystem::path(git_repository_commondir(repo.raw())) /
+           "hooks";
+  }
+  check(result, "read core.hooksPath");
+  std::filesystem::path path(configured.ptr);
+  git_buf_dispose(&configured);
+  if (path.empty()) throw UserError("core.hooksPath must not be empty");  // GG_COV_EXCL_BRANCH
+  if (path.is_relative()) {  // GG_COV_EXCL_BRANCH
+    path = std::filesystem::path(git_repository_workdir(repo.raw())) / path;
+  }
+  return path.lexically_normal();
+}
+
+bool path_exists(const std::filesystem::path& path) {
+  std::error_code error;
+  const auto status = std::filesystem::symlink_status(path, error);
+  if (error == std::errc::no_such_file_or_directory) return false;
+  if (error) throw UserError("cannot inspect Git hook: " + error.message());  // GG_COV_EXCL_BRANCH
+  return status.type() != std::filesystem::file_type::not_found;
+}
+
+constexpr std::string_view kManagedPrePush = "# gg managed pre-push hook v1";
+
+bool managed_hook(const std::filesystem::path& path) {
+  std::ifstream input(path);
+  std::string first;
+  std::string second;
+  return std::getline(input, first) && std::getline(input, second) &&  // GG_COV_EXCL_BRANCH
+         second == kManagedPrePush;
+}
+
+std::string pre_push_hook() {
+  return R"HOOK(#!/bin/sh
+# gg managed pre-push hook v1
+set -eu
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+input=$(mktemp "${TMPDIR:-/tmp}/gg-pre-push.XXXXXX")
+trap 'rm -f "$input"' EXIT HUP INT TERM
+cat >"$input"
+if [ -x "$hook_dir/pre-push.gg-user" ]; then
+  "$hook_dir/pre-push.gg-user" "$@" <"$input"
+fi
+root=$(git rev-parse --show-toplevel)
+gg_executable=${GG_EXECUTABLE:-gg}
+"$gg_executable" --ignore-working-copy -R "$root" util check-push-conflicts <"$input"
+)HOOK";
+}
+
+}  // namespace
+
+void command_util_install_git_hooks(Repository& repo, std::ostream& output) {
+  const std::filesystem::path directory = hooks_directory(repo);
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error) throw UserError("cannot create Git hooks directory: " + error.message());  // GG_COV_EXCL_BRANCH
+  const std::filesystem::path hook = directory / "pre-push";
+  const std::filesystem::path backup = directory / "pre-push.gg-user";
+  if (path_exists(hook) && managed_hook(hook)) {  // GG_COV_EXCL_BRANCH
+    std::filesystem::permissions(
+        hook, std::filesystem::perms::owner_exec |
+                  std::filesystem::perms::group_exec |
+                  std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add, error);
+    if (error) throw UserError("cannot make Git hook executable: " + error.message());  // GG_COV_EXCL_BRANCH
+    output << "Git pre-push hook is already installed.\n";
+    return;
+  }
+  if (path_exists(hook) && path_exists(backup)) {  // GG_COV_EXCL_BRANCH
+    throw UserError("cannot preserve pre-push hook: " + backup.string() +
+                    " already exists");
+  }
+  std::string temporary_template =
+      (directory / "pre-push.gg-new-XXXXXX").string();
+  const int descriptor = mkstemp(temporary_template.data());
+  if (descriptor < 0) throw UserError("cannot create Git pre-push hook");  // GG_COV_EXCL_BRANCH
+  close(descriptor);
+  const std::filesystem::path temporary(temporary_template);
+  {
+    std::ofstream file(temporary, std::ios::trunc);
+    if (!file || !(file << pre_push_hook())) { file.close(); std::filesystem::remove(temporary); throw UserError("cannot write Git pre-push hook"); }  // GG_COV_EXCL_BRANCH
+  }
+  std::filesystem::permissions(
+      temporary, std::filesystem::perms::owner_exec |
+                     std::filesystem::perms::group_exec |
+                     std::filesystem::perms::others_exec,
+      std::filesystem::perm_options::add, error);
+  if (error) { std::filesystem::remove(temporary); throw UserError("cannot make Git hook executable: " + error.message()); }  // GG_COV_EXCL_BRANCH
+  const bool preserve = path_exists(hook);
+  if (preserve) {  // GG_COV_EXCL_BRANCH
+    std::filesystem::rename(hook, backup, error);
+    if (error) { std::filesystem::remove(temporary); throw UserError("cannot preserve pre-push hook: " + error.message()); }  // GG_COV_EXCL_BRANCH
+  }
+  std::filesystem::rename(temporary, hook, error);
+  if (error) { if (preserve) { std::error_code ignored; std::filesystem::rename(backup, hook, ignored); } std::filesystem::remove(temporary); throw UserError("cannot install Git pre-push hook: " + error.message()); }  // GG_COV_EXCL_BRANCH
+  output << "Installed Git pre-push hook at " << hook.string() << ".\n";
+}
+
+void command_util_check_push_conflicts(Repository& repo, std::istream& input) {
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.empty()) continue;  // GG_COV_EXCL_BRANCH
+    std::istringstream fields(line);
+    std::string local_ref;
+    std::string local_oid;
+    std::string remote_ref;
+    std::string remote_oid;
+    std::string extra;
+    if (!(fields >> local_ref >> local_oid >> remote_ref >> remote_oid) ||  // GG_COV_EXCL_BRANCH
+        fields >> extra) {  // GG_COV_EXCL_BRANCH
+      throw UserError("invalid Git pre-push input");
+    }
+    git_oid oid{};
+    check(git_oid_fromstr(&oid, local_oid.c_str()), "parse pushed object");
+    if (git_oid_is_zero(&oid)) continue;
+    git_object* raw_object = nullptr;
+    check(git_object_lookup(&raw_object, repo.raw(), &oid, GIT_OBJECT_ANY),
+          "read pushed object");
+    ObjectPtr object(raw_object);
+    git_object* raw_commit = nullptr;
+    check(git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT),
+          "resolve pushed commit");
+    ObjectPtr commit(raw_commit);
+    if (repo.history_has_conflicts(*git_object_id(commit.get()))) {
+      throw UserError("refusing to push conflicted history: " + local_ref +
+                      " -> " + remote_ref);
+    }
+  }
 }
 
 void command_workspace(Repository& repo,

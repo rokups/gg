@@ -127,12 +127,6 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   EXPECT_EQ(short_commit.value.size(), 8U);
 
   repo.apply_refs({}, {}, "no changes");
-  EXPECT_THROW(repo.abort_rewrite(), detail::UserError);
-  EXPECT_THROW(repo.prepare_continue(), detail::UserError);
-  std::ostringstream status;
-  repo.pending_status(status);
-  EXPECT_TRUE(status.str().empty());
-  repo.finish_rewrite();
 }
 
 TEST_F(RepositoryTest, RendersJujutsuStyleGraphRows) {
@@ -482,37 +476,31 @@ TEST_F(RepositoryTest, RejectsMalformedOperationSnapshots) {
   EXPECT_EQ(invoke({"redo"}).code, 1);
 }
 
-TEST_F(RepositoryTest, RejectsMalformedPendingRewrites) {
-  detail::Repository repo(path_);
+TEST_F(RepositoryTest, RejectsLegacyPendingRewrites) {
   set_ref(detail::kRewriteRef, raw_commit("bad"));
-  EXPECT_THROW(repo.pending(), detail::GitError);
+  const Result result = invoke({"status"});
+  EXPECT_EQ(result.code, 2);
+  EXPECT_NE(result.error.find("legacy paused rewrite"), std::string::npos);
+}
 
-  set_ref(detail::kRewriteRef, raw_commit("gg-rewrite-v1\nunknown value\n"));
-  EXPECT_THROW(repo.pending(), detail::GitError);
+TEST_F(RepositoryTest, RejectsMalformedConflictMetadata) {
+  const git_oid head = ref("HEAD");
+  git_commit* raw_head = nullptr;
+  ASSERT_EQ(git_commit_lookup(&raw_head, repository_.get(), &head), 0);
+  const git_oid tree = *git_commit_tree_id(raw_head);
+  git_commit_free(raw_head);
+  const std::string reference =
+      std::string(detail::kConflictPrefix) + detail::oid_string(tree);
 
-  const git_oid operation = ref("HEAD");
-  git_commit* commit = nullptr;
-  ASSERT_EQ(git_commit_lookup(&commit, repository_.get(), &operation), 0);
-  const git_oid marker_tree = *git_commit_tree_id(commit);
-  git_commit_free(commit);
-  detail::PendingRewrite pending{};
-  pending.operation = operation;
-  pending.ancestor = marker_tree;
-  pending.ours = marker_tree;
-  pending.theirs = marker_tree;
-  pending.marker_tree = marker_tree;
-  repo.write_pending(pending);
-  EXPECT_THROW(repo.prepare_continue(), detail::UserError);
-  std::ostringstream status;
-  repo.pending_status(status);
-  EXPECT_NE(status.str().find("paused"), std::string::npos);
-  repo.finish_rewrite();
-  EXPECT_FALSE(repo.pending().has_value());
-
-  pending.arguments = {"status"};
-  repo.write_pending(pending);
-  EXPECT_THROW(repo.prepare_continue(), detail::UserError);
-  repo.finish_rewrite();
+  set_ref(reference, raw_commit("bad"));
+  EXPECT_THROW(detail::Repository(path_).tree_conflicts(tree),
+               detail::GitError);
+  set_ref(reference, raw_commit("gg-conflicts-v1\n\"path\"\nX - 0\nE\n"));
+  EXPECT_THROW(detail::Repository(path_).tree_conflicts(tree),
+               detail::GitError);
+  set_ref(reference, raw_commit("gg-conflicts-v1\n\"path\"\nR - 0\nE\n"));
+  EXPECT_THROW(detail::Repository(path_).tree_conflicts(tree),
+               detail::GitError);
 }
 
 TEST_F(RepositoryTest, SelectsSupportedCredentialKinds) {

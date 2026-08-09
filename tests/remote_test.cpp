@@ -408,7 +408,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   ASSERT_EQ(invoke({"tag", "set", "release"}).code, 0);
   const Result multi_push =
       invoke({"push", "-b", "glob:to*", "-b", "regex:^second$", "-t",
-              "glob:rel*", "--allow-private", "--allow-conflicts"});
+              "glob:rel*", "--allow-private"});
   ASSERT_EQ(multi_push.code, 0) << multi_push.error;
   EXPECT_TRUE(has_ref("refs/gg/remotes/origin/tags/release"));
   const Result tracked_tag = invoke({"push", "--tracked", "--dry-run"});

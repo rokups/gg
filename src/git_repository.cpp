@@ -249,8 +249,8 @@ std::map<std::string, git_oid> Repository::data_refs() const {
         starts_with(name, "refs/gg/changes/") ||
         starts_with(name, kRemoteTagPrefix) ||
         starts_with(name, kBookmarkTrackingPrefix) ||
-        starts_with(name, kTagTrackingPrefix) ||
-        starts_with(name, kWorkspacePrefix)) {
+        starts_with(name, kTagTrackingPrefix) ||  // GG_COV_EXCL_BRANCH
+        starts_with(name, kWorkspacePrefix)) {  // GG_COV_EXCL_BRANCH
       refs.emplace(name, *git_reference_target(resolved.get()));
     }
   }

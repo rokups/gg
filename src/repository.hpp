@@ -25,6 +25,7 @@ inline constexpr std::string_view kWorkspacePrefix = "refs/gg/workspaces/";
 inline constexpr std::string_view kWorkspaceRef = "refs/gg/workspaces/default";
 inline constexpr std::string_view kOperationRef = "refs/gg/operations/current";
 inline constexpr std::string_view kRewriteRef = "refs/gg/rewrite";
+inline constexpr std::string_view kConflictPrefix = "refs/gg/conflicts/";
 inline constexpr std::string_view kRemoteTagPrefix = "refs/gg/remotes/";
 inline constexpr std::string_view kBookmarkTrackingPrefix =
     "refs/gg/tracking/bookmarks/";
@@ -77,13 +78,16 @@ using TransactionPtr = GitPtr<git_transaction, git_transaction_free>;
 using RemotePtr = GitPtr<git_remote, git_remote_free>;
 using WorktreePtr = GitPtr<git_worktree, git_worktree_free>;
 
-struct MergeConflict {
-  git_oid ancestor;
-  git_oid ours;
-  git_oid theirs;
-  IndexPtr index;
-  std::vector<std::string> paths;
+struct FileValue {
+  bool present{false};
+  git_oid oid{};
+  git_filemode_t mode{GIT_FILEMODE_UNREADABLE};
 };
+struct ConflictValue {
+  std::vector<FileValue> removes;
+  std::vector<FileValue> adds;
+};
+using TreeConflicts = std::map<std::string, ConflictValue>;
 
 class Libgit2 {
  public:
@@ -112,17 +116,6 @@ struct RewritePlan {
   std::map<git_oid, git_oid, OidLess> commits;
   std::map<std::string, git_oid> updates;
   std::set<std::string> deletes;
-};
-struct Resolution { git_oid ancestor; git_oid ours; git_oid theirs; git_oid result; };
-struct PendingRewrite {
-  git_oid operation;
-  std::vector<std::string> arguments;
-  std::vector<Resolution> resolutions;
-  git_oid ancestor;
-  git_oid ours;
-  git_oid theirs;
-  git_oid marker_tree;
-  std::vector<std::string> paths;
 };
 
 class Repository {
@@ -189,6 +182,22 @@ class Repository {
                         const git_oid& ours_oid,
                         const git_oid& theirs_oid) const;
 
+  TreeConflicts tree_conflicts(const git_oid& tree_oid) const;
+
+  bool tree_has_conflicts(const git_oid& tree_oid) const;
+
+  bool commit_has_conflicts(const git_oid& commit_oid) const;
+
+  bool history_has_conflicts(const git_oid& commit_oid) const;
+
+  std::vector<std::string> conflict_paths(const git_oid& commit_oid) const;
+
+  void record_conflicts(const git_oid& tree_oid,
+                        TreeConflicts conflicts) const;
+
+  void preserve_conflicts(const git_oid& old_tree,
+                          const git_oid& new_tree) const;
+
   git_oid replay(const git_oid& old_parent,
                    const git_oid& new_parent,
                    const git_oid& old_tree) const;
@@ -252,22 +261,7 @@ class Repository {
 
   void view_at_operation(std::string_view expression);
 
-  std::optional<PendingRewrite> pending() const;
-
-  std::string serialize(const PendingRewrite& pending) const;
-
-  void write_pending(const PendingRewrite& pending) const;
-
-  void pause(const std::vector<std::string_view>& arguments,
-               MergeConflict& conflict) const;
-
-  std::vector<std::string> prepare_continue() const;
-
-  void finish_rewrite() const;
-
-  void abort_rewrite() const;
-
-  void pending_status(std::ostream& output) const;
+  bool has_legacy_rewrite() const;
 
   git_oid ensure_operation() const;
 
@@ -332,6 +326,8 @@ class Repository {
   mutable std::optional<std::map<std::string, git_oid>> changes_cache_;
   mutable std::optional<std::map<git_oid, std::string, OidLess>>
       change_ids_by_oid_cache_;
+  mutable std::map<git_oid, TreeConflicts, OidLess> conflict_cache_;
+  mutable std::map<std::string, git_oid> pending_conflict_refs_;
   std::optional<std::vector<std::string>> scoped_change_ids_;
   std::optional<std::vector<std::string>> scoped_commit_ids_;
   bool ref_cache_enabled_{false};

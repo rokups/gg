@@ -34,10 +34,15 @@ void command_rebase(Repository& repo,
   const git_oid rewritten = repo.rewrite_commit(old, {parent}, tree);
   RewritePlan plan = repo.descendants({{old, rewritten}});
   const auto workspace = repo.workspace();
-  const git_oid new_workspace = plan.commits.contains(*workspace)
-                                    ? plan.commits.at(*workspace)
-                                    : *workspace;
-  finish_workspace(repo, new_workspace, std::move(plan.updates), {}, "gg rebase");
+  if (workspace.has_value()) {
+    const git_oid new_workspace = plan.commits.contains(*workspace)
+                                      ? plan.commits.at(*workspace)
+                                      : *workspace;
+    finish_workspace(repo, new_workspace, std::move(plan.updates), {},
+                     "gg rebase");
+  } else {
+    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg rebase");
+  }
   output << "Rebased " << oid_string(old, 8) << " as "
          << oid_string(rewritten, 8) << '\n';
 }

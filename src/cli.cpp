@@ -738,15 +738,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                  "Allow empty commit descriptions");
   push->add_flag("--allow-private", push_value.allow_private,
                  "Allow private commits");
-  push->add_flag("--allow-conflicts", push_value.allow_conflicts,
-                 "Allow conflicted commits");
   push->add_flag("--dry-run", push_value.dry_run,
                  "Show updates without pushing");
   push->add_option("-o,--option", push_value.options, "Push option");
 
-  auto* continue_rewrite =
-      app.add_subcommand("continue", "Continue a paused rewrite");
-  auto* abort_rewrite = app.add_subcommand("abort", "Abort a paused rewrite");
   auto* undo = app.add_subcommand("undo", "Restore the previous operation");
   auto* redo = app.add_subcommand("redo", "Redo the most recently undone operation");
   auto* operation = app.add_subcommand("operation", "Manage operation history");
@@ -815,6 +810,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       util->add_subcommand("markdown-help", "Print Markdown command help");
   auto* util_snapshot =
       util->add_subcommand("snapshot", "Snapshot the working copy");
+  auto* util_install_git_hooks = util->add_subcommand(
+      "install-git-hooks", "Install Git hooks that protect gg state");
+  auto* util_check_push_conflicts = util->add_subcommand(
+      "check-push-conflicts", "Check pre-push input for conflicted history");
   auto* workspace = app.add_subcommand("workspace", "Inspect workspaces");
   workspace->require_subcommand(1);
   WorkspaceCommand workspace_list_value;
@@ -951,8 +950,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   add_config_scopes(config_unset, config_unset_value);
   const bool lean = lean_mode_enabled();
   if (lean) {
-    for (CLI::App* command :
-         {status, diff, show, tag, clone, init, fetch, push, sparse}) {
+    for (CLI::App* command : {status, diff, show, clone, init, sparse}) {
       command->disabled()->group("");
     }
   }
@@ -1100,10 +1098,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(fetch_value)};
   } else if (push->parsed()) {
     command = RepositoryCommand{std::move(push_value)};
-  } else if (continue_rewrite->parsed()) {
-    command = ContinueCommand{};
-  } else if (abort_rewrite->parsed()) {
-    command = AbortCommand{};
   } else if (undo->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UndoCommand{}};
   } else if (redo->parsed()) {
@@ -1118,6 +1112,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(util_gc_value)};
   } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UtilSnapshotCommand{}};
+  } else if (util_install_git_hooks->parsed()) {
+    command = RepositoryCommand{UtilInstallGitHooksCommand{}};
+  } else if (util_check_push_conflicts->parsed()) {
+    command = RepositoryCommand{UtilCheckPushConflictsCommand{}};
   } else if (workspace_list->parsed()) {
     command = RepositoryCommand{std::move(workspace_list_value)};
   } else if (workspace_root->parsed()) {

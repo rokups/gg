@@ -17,6 +17,8 @@ struct FileEntry {
   std::string path;
   git_oid oid;
   git_filemode_t mode;
+  std::size_t conflict_sides{1};
+  bool conflict{false};
 };
 
 int collect_entry(const char* root,
@@ -37,6 +39,15 @@ std::vector<FileEntry> tree_entries(Repository& repo, const git_oid& revision) {
   std::vector<FileEntry> entries;
   check(git_tree_walk(tree.get(), GIT_TREEWALK_PRE, collect_entry, &entries),
         "walk revision tree");
+  const TreeConflicts conflicts =
+      repo.tree_conflicts(*git_commit_tree_id(commit.get()));
+  for (FileEntry& entry : entries) {
+    if (const auto conflict = conflicts.find(entry.path);
+        conflict != conflicts.end()) {
+      entry.conflict_sides = conflict->second.adds.size();
+      entry.conflict = true;
+    }
+  }
   return entries;
 }
 
@@ -123,8 +134,8 @@ std::map<std::string, std::string> file_template_values(
       {GIT_FILEMODE_COMMIT, "git-submodule"},
   };  // GG_COV_EXCL_BRANCH
   return {{"path", entry.path},
-          {"conflict", "false"},
-          {"conflict_side_count", "1"},
+          {"conflict", entry.conflict ? "true" : "false"},
+          {"conflict_side_count", std::to_string(entry.conflict_sides)},
           {"file_type", file_types.at(entry.mode)},
           {"executable",
            entry.mode == GIT_FILEMODE_BLOB_EXECUTABLE ? "true" : "false"}};
@@ -273,6 +284,7 @@ void chmod_files(Repository& repo,
   git_oid tree_oid{};
   check(git_index_write_tree_to(&tree_oid, index.get(), repo.raw()),
         "write file modes");
+  repo.preserve_conflicts(*git_commit_tree_id(old_commit.get()), tree_oid);
   const git_oid rewritten =
       repo.rewrite_commit(old, repo.parents(old), tree_oid);
   RewritePlan plan = repo.descendants({{old, rewritten}});
