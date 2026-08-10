@@ -247,6 +247,7 @@ std::set<std::string> Repository::invalid_change_id_refs() const {
 }
 
 void Repository::import_git_history(std::ostream* progress) const {
+  apply_refs({}, {}, "compact internal references");
   const bool initializing = !operation().has_value();
   if (initializing && progress != nullptr && head_oid().has_value()) {
     *progress << "Initializing gg for this "

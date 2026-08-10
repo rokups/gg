@@ -185,12 +185,33 @@ TEST_F(RepositoryTest, ReplacesCommitHashChangeIdsWhenReadingARepository) {
 TEST_F(RepositoryTest, AppliesLargeAtomicReferenceUpdates) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
+  const auto loose_ref_count = [&] {
+    std::size_t count = 0;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator entry(path_ / ".git/refs", error), end;
+         !error && entry != end; entry.increment(error)) {
+      count += entry->is_regular_file();
+    }
+    return count;
+  };
   std::map<std::string, git_oid> updates;
   for (int index = 0; index < 1100; ++index) {
     updates.emplace("refs/heads/large-" + std::to_string(index), base);
   }
   EXPECT_NO_THROW(repo.apply_refs(updates, {}, "large update"));
   EXPECT_TRUE(repo.ref_target("refs/heads/large-1099").has_value());
+  EXPECT_LT(loose_ref_count(), 100U);
+
+  for (int index = 0; index < 1100; ++index) {
+    std::string id(32, 'k');
+    for (int digit = 0, value = index; value != 0; ++digit, value /= 16) {
+      id[id.size() - 1 - digit] = static_cast<char>('k' + value % 16);
+    }
+    set_ref(std::string(detail::kChangePrefix) + id, base);
+  }
+  EXPECT_GE(loose_ref_count(), 1024U);
+  EXPECT_NO_THROW(repo.apply_refs({}, {}, "compact existing references"));
+  EXPECT_LT(loose_ref_count(), 100U);
 }
 
 TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {

@@ -79,6 +79,28 @@ bool selects(std::string_view selector, std::string_view path) {
           path[selector.size()] == '/');
 }
 
+bool has_many_loose_change_refs(git_repository* repository) {
+  const std::filesystem::path directory =
+      std::filesystem::path(git_repository_commondir(repository)) /
+      "refs/gg/changes";
+  std::error_code error;
+  std::size_t count = 0;
+  for (std::filesystem::directory_iterator entry(directory, error), end;
+       !error && entry != end; entry.increment(error)) {
+    if (++count >= 1024) return true;
+  }
+  return false;
+}
+
+void compress_refs(git_repository* repository) {
+  git_refdb* raw_refdb = nullptr;
+  check(git_repository_refdb(&raw_refdb, repository),
+        "open reference database");
+  std::unique_ptr<git_refdb, decltype(&git_refdb_free)> refdb(raw_refdb,
+                                                               git_refdb_free);
+  check(git_refdb_compress(refdb.get()), "pack references");
+}
+
 void remove_selector(git_index* index, const std::string& selector) {
   if (selector == ".") {
     check(git_index_clear(index), "exclude working-copy paths");
@@ -201,7 +223,10 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
 void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
                 const std::set<std::string>& deletes,
                 std::string_view message) const {
+  const bool should_compress = updates.size() + deletes.size() >= 1024 ||
+                               has_many_loose_change_refs(repo_.get());
   if (updates.empty() && deletes.empty()) {
+    if (should_compress) compress_refs(repo_.get());
     return;
   }
   git_transaction* raw_transaction = nullptr;
@@ -245,6 +270,7 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
       check(result, "delete reference log");
     }
   }
+  if (should_compress) compress_refs(repo_.get());
   invalidate_ref_cache();
 }
 
