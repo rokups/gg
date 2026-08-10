@@ -239,6 +239,12 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
           "queue reference deletion");
   }
   check(git_transaction_commit(transaction.get()), "update references");
+  for (const std::string& name : deletes) {
+    const int result = git_reflog_delete(repo_.get(), name.c_str());
+    if (result != 0 && result != GIT_ENOTFOUND) {
+      check(result, "delete reference log");
+    }
+  }
   invalidate_ref_cache();
 }
 

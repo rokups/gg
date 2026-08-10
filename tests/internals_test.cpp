@@ -80,6 +80,20 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   EXPECT_EQ(short_commit.value.size(), 8U);
 
   repo.apply_refs({}, {}, "no changes");
+
+  constexpr const char* reflogged = "refs/heads/reflogged";
+  repo.apply_refs({{reflogged, base}}, {}, "create logged reference");
+  git_reflog* raw_reflog = nullptr;
+  ASSERT_EQ(git_reflog_read(&raw_reflog, repository_.get(), reflogged), 0);
+  ASSERT_NE(raw_reflog, nullptr);
+  EXPECT_GT(git_reflog_entrycount(raw_reflog), 0U);
+  git_reflog_free(raw_reflog);
+  repo.apply_refs({}, {reflogged}, "delete logged reference");
+  raw_reflog = nullptr;
+  ASSERT_EQ(git_reflog_read(&raw_reflog, repository_.get(), reflogged), 0);
+  ASSERT_NE(raw_reflog, nullptr);
+  EXPECT_EQ(git_reflog_entrycount(raw_reflog), 0U);
+  git_reflog_free(raw_reflog);
 }
 
 TEST_F(RepositoryTest, RendersJujutsuStyleGraphRows) {
