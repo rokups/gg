@@ -11,9 +11,12 @@
 #include <functional>
 #include <limits>
 #include <random>
+#include <sstream>
 
 namespace gg::detail {
 namespace {
+
+constexpr std::string_view kChangeMapV1 = "gg-change-map-v1";
 
 std::string random_change_id() {
   constexpr std::string_view alphabet = "zyxwvutsrqponmlk";
@@ -165,6 +168,91 @@ std::size_t unique_prefix_length(
 
 }  // namespace
 
+std::map<std::string, git_oid> Repository::read_change_map() const {
+  const auto map_oid = ref_target(kChangeMapRef);
+  if (!map_oid.has_value()) return {};
+
+  CommitPtr map_commit = commit(*map_oid);
+  git_tree* raw_tree = nullptr;
+  check(git_commit_tree(&raw_tree, map_commit.get()), "read change map tree");
+  TreePtr map_tree(raw_tree);
+  git_tree_entry* raw_entry = nullptr;
+  check(git_tree_entry_bypath(&raw_entry, map_tree.get(), "changes"),
+        "read change map");
+  TreeEntryPtr entry(raw_entry);
+  if (git_tree_entry_type(entry.get()) != GIT_OBJECT_BLOB) {
+    throw GitError("invalid change map");
+  }
+  git_blob* raw_blob = nullptr;
+  check(git_blob_lookup(&raw_blob, repo_.get(), git_tree_entry_id(entry.get())),
+        "read change map");
+  BlobPtr blob(raw_blob);
+  std::istringstream input(std::string(
+      static_cast<const char*>(git_blob_rawcontent(blob.get())),
+      git_blob_rawsize(blob.get())));
+  std::string line;
+  if (!std::getline(input, line) || line != kChangeMapV1) {
+    throw GitError("invalid change map");
+  }
+
+  std::map<std::string, git_oid> result;
+  std::string oid_text;
+  std::string id;
+  while (input >> oid_text >> id) {
+    git_oid oid{};
+    check(git_oid_fromstr(&oid, oid_text.c_str(),
+                          git_repository_oid_type(repo_.get())),
+          "parse change map");
+    if (!result.emplace(id, oid).second) {
+      throw GitError("duplicate change ID in change map");
+    }
+  }
+  if (!input.eof()) throw GitError("invalid change map");
+  return result;
+}
+
+git_oid Repository::write_change_map(
+    const std::map<std::string, git_oid>& values) const {
+  std::ostringstream output;
+  output << kChangeMapV1 << '\n';
+  for (const auto& [id, oid] : values) {
+    output << oid_string(oid) << ' ' << id << '\n';
+  }
+  const std::string serialized = output.str();
+  git_oid blob_oid{};
+  check(git_blob_create_from_buffer(&blob_oid, repo_.get(), serialized.data(),
+                                    serialized.size()),
+        "write change map");
+  git_treebuilder* raw_builder = nullptr;
+  check(git_treebuilder_new(&raw_builder, repo_.get(), nullptr),
+        "create change map tree");
+  GitPtr<git_treebuilder, git_treebuilder_free> builder(raw_builder);
+  check(git_treebuilder_insert(nullptr, builder.get(), "changes", &blob_oid,
+                               GIT_FILEMODE_BLOB),
+        "add change map");
+  git_oid tree_oid{};
+  check(git_treebuilder_write(&tree_oid, builder.get()),
+        "write change map tree");
+  return create_commit(tree_oid, {}, "gg change map");
+}
+
+std::set<std::string> Repository::legacy_change_refs() const {
+  git_reference_iterator* raw_iterator = nullptr;
+  check(git_reference_iterator_glob_new(&raw_iterator, repo_.get(),
+                                        "refs/gg/changes/*"),
+        "list legacy change references");
+  ReferenceIteratorPtr iterator(raw_iterator);
+  std::set<std::string> result;
+  while (true) {
+    const char* name = nullptr;
+    const int next = git_reference_next_name(&name, iterator.get());
+    if (next == GIT_ITEROVER) break;
+    check(next, "list legacy change references");
+    result.emplace(name);
+  }
+  return result;
+}
+
 const std::map<std::string, git_oid>& Repository::changes() const {
   if (!ref_cache_enabled_) changes_cache_.reset();
   if (changes_cache_.has_value()) return *changes_cache_;
@@ -248,6 +336,7 @@ std::set<std::string> Repository::invalid_change_id_refs() const {
 
 void Repository::import_git_history(std::ostream* progress) const {
   apply_refs({}, {}, "compact internal references");
+  migrate_operation_history();
   const bool initializing = !operation().has_value();
   if (initializing && progress != nullptr && head_oid().has_value()) {
     *progress << "Initializing gg for this "

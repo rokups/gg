@@ -23,6 +23,45 @@ bool refs_equal(const std::map<std::string, git_oid>& left,
 
 constexpr std::string_view kOperationV2 = "gg-operation-v2";
 constexpr std::string_view kOperationV3 = "gg-operation-v3";
+constexpr std::size_t kMaxOperationParents = 128;
+
+git_oid create_keepalive(const Repository& repo,
+                         std::vector<git_oid> targets) {
+  const git_oid tree = repo.empty_tree();
+  while (targets.size() > kMaxOperationParents) {
+    std::vector<git_oid> next;
+    for (std::size_t begin = 0; begin < targets.size();
+         begin += kMaxOperationParents) {
+      const std::size_t end =
+          std::min(targets.size(), begin + kMaxOperationParents);
+      next.push_back(repo.create_commit(
+          tree, {targets.begin() + static_cast<std::ptrdiff_t>(begin),
+                 targets.begin() + static_cast<std::ptrdiff_t>(end)},
+          "gg operation keepalive"));
+    }
+    targets = std::move(next);
+  }
+  return repo.create_commit(tree, targets, "gg operation keepalive");
+}
+
+std::string migrate_operation_description(
+    std::string description,
+    const std::map<git_oid, git_oid, OidLess>& rewritten) {
+  for (const std::string_view prefix : {
+           "undo: restore to operation ",
+           "redo: restore to operation ",
+       }) {
+    if (!starts_with(description, prefix)) continue;
+    const std::string_view target(description.data() + prefix.size(),
+                                  description.size() - prefix.size());
+    for (const auto& [old_oid, new_oid] : rewritten) {
+      if (target == oid_string(old_oid)) {
+        return std::string(prefix) + oid_string(new_oid);
+      }
+    }
+  }
+  return description;
+}
 
 OperationState parse_operation_state(std::string_view text,
                                      git_oid_t oid_type) {
@@ -237,6 +276,13 @@ git_oid Repository::create_operation(const OperationState& state,
       git_error_clear();
     }
   }
+  if (parents.size() > kMaxOperationParents) {
+    const auto first_target = parents.begin() + (previous.has_value() ? 1 : 0);
+    const git_oid keepalive =
+        create_keepalive(*this, {first_target, parents.end()});
+    parents.erase(first_target, parents.end());
+    parents.push_back(keepalive);
+  }
   const std::string serialized = serialize(state, previous, description);
   git_oid state_oid{};
   check(git_blob_create_from_buffer(&state_oid, repo_.get(), serialized.data(),
@@ -255,6 +301,42 @@ git_oid Repository::create_operation(const OperationState& state,
   return create_commit(tree_oid, parents,
                        operation_metadata(previous, description,
                                           state.workspace_name));
+}
+
+void Repository::migrate_operation_history() const {
+  std::vector<git_oid> history;
+  std::set<git_oid, OidLess> seen;
+  bool migration_needed = false;
+  auto current = operation();
+  while (current.has_value()) {
+    if (!seen.insert(*current).second) {
+      throw GitError("operation history contains a cycle");
+    }
+    CommitPtr value = commit(*current);
+    migration_needed |=
+        git_commit_parentcount(value.get()) > kMaxOperationParents;
+    history.push_back(*current);
+    current = operation_previous(value.get());
+  }
+  if (!migration_needed) return;
+
+  std::optional<git_oid> rewritten;
+  std::map<git_oid, git_oid, OidLess> rewritten_oids;
+  for (auto iterator = history.rbegin(); iterator != history.rend();
+       ++iterator) {
+    const std::string description = migrate_operation_description(
+        operation_description(*iterator), rewritten_oids);
+    rewritten = create_operation(parse_operation(*iterator), rewritten,
+                                 description);
+    rewritten_oids.emplace(*iterator, *rewritten);
+  }
+  apply_refs({{operation_ref_name(), *rewritten}}, {},
+             "gg migrate operation history");
+  const int reflog = git_reflog_delete(repo_.get(),
+                                       operation_ref_name().c_str());
+  if (reflog != 0 && reflog != GIT_ENOTFOUND) {
+    check(reflog, "delete legacy operation log");
+  }
 }
 
 std::optional<git_oid> Repository::operation() const {
@@ -322,6 +404,7 @@ void Repository::view_at_operation(std::string_view expression) {
 }
 
 git_oid Repository::ensure_operation() const {
+  migrate_operation_history();
   const auto current = operation();
   if (current.has_value()) {
     const OperationState recorded = parse_operation(*current);

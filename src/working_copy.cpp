@@ -223,9 +223,55 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
 void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
                 const std::set<std::string>& deletes,
                 std::string_view message) const {
-  const bool should_compress = updates.size() + deletes.size() >= 1024 ||
-                               has_many_loose_change_refs(repo_.get());
-  if (updates.empty() && deletes.empty()) {
+  std::map<std::string, git_oid> physical_updates = updates;
+  std::set<std::string> physical_deletes = deletes;
+  std::map<std::string, git_oid> mapped_changes = changes();
+  bool change_map_modified = false;
+  for (auto iterator = physical_updates.begin();
+       iterator != physical_updates.end();) {
+    if (!starts_with(iterator->first, kChangePrefix)) {
+      ++iterator;
+      continue;
+    }
+    mapped_changes[iterator->first.substr(kChangePrefix.size())] =
+        iterator->second;
+    iterator = physical_updates.erase(iterator);
+    change_map_modified = true;
+  }
+  for (auto iterator = physical_deletes.begin();
+       iterator != physical_deletes.end();) {
+    if (!starts_with(*iterator, kChangePrefix)) {
+      ++iterator;
+      continue;
+    }
+    mapped_changes.erase(iterator->substr(kChangePrefix.size()));
+    iterator = physical_deletes.erase(iterator);
+    change_map_modified = true;
+  }
+  const std::set<std::string> legacy_refs = legacy_change_refs();
+  if (!legacy_refs.empty()) {
+    for (const std::string& name : legacy_refs) {
+      const std::string id = name.substr(kChangePrefix.size());
+      if (mapped_changes.contains(id)) continue;
+      const auto target = ref_target(name);
+      if (target.has_value()) mapped_changes.emplace(id, *target);
+    }
+    physical_deletes.insert(legacy_refs.begin(), legacy_refs.end());
+    change_map_modified = true;
+  }
+  if (change_map_modified) {
+    if (mapped_changes.empty()) {
+      physical_deletes.insert(std::string(kChangeMapRef));
+    } else {
+      physical_updates[std::string(kChangeMapRef)] =
+          write_change_map(mapped_changes);
+    }
+  }
+
+  const bool should_compress =
+      physical_updates.size() + physical_deletes.size() >= 1024 ||
+      has_many_loose_change_refs(repo_.get());
+  if (physical_updates.empty() && physical_deletes.empty()) {
     if (should_compress) compress_refs(repo_.get());
     return;
   }
@@ -234,11 +280,11 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
         "create reference transaction");
   TransactionPtr transaction(raw_transaction);
   std::set<std::string> names;
-  for (const auto& [name, oid] : updates) {
+  for (const auto& [name, oid] : physical_updates) {
     (void)oid;
     names.insert(name);
   }
-  names.insert(deletes.begin(), deletes.end());
+  names.insert(physical_deletes.begin(), physical_deletes.end());
 #ifndef _WIN32
   struct rlimit limit {};
   const rlim_t needed = names.size() + 64;
@@ -254,17 +300,17 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
   }
   SignaturePtr actor = signature();
   const std::string owned_message(message);
-  for (const auto& [name, oid] : updates) {
+  for (const auto& [name, oid] : physical_updates) {
     check(git_transaction_set_target(transaction.get(), name.c_str(), &oid,
                                      actor.get(), owned_message.c_str()),
           "queue reference update");
   }
-  for (const std::string& name : deletes) {
+  for (const std::string& name : physical_deletes) {
     check(git_transaction_remove(transaction.get(), name.c_str()),
           "queue reference deletion");
   }
   check(git_transaction_commit(transaction.get()), "update references");
-  for (const std::string& name : deletes) {
+  for (const std::string& name : physical_deletes) {
     const int result = git_reflog_delete(repo_.get(), name.c_str());
     if (result != 0 && result != GIT_ENOTFOUND) {
       check(result, "delete reference log");

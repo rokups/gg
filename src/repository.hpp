@@ -21,6 +21,7 @@
 namespace gg::detail {
 
 inline constexpr std::string_view kChangePrefix = "refs/gg/changes/";
+inline constexpr std::string_view kChangeMapRef = "refs/gg/change-map";
 inline constexpr std::string_view kWorkspacePrefix = "refs/gg/workspaces/";
 inline constexpr std::string_view kWorkspaceRef = "refs/gg/workspaces/default";
 inline constexpr std::string_view kOperationRef = "refs/gg/operations/current";
@@ -338,6 +339,15 @@ class Repository {
   void initialize();
 
   git_oid resolve_atom(std::string_view revision) const;
+
+  void migrate_operation_history() const;
+
+  std::map<std::string, git_oid> read_change_map() const;
+
+  git_oid write_change_map(
+      const std::map<std::string, git_oid>& changes) const;
+
+  std::set<std::string> legacy_change_refs() const;
 
   RepositoryPtr repo_;
   bool ignore_working_copy_{false};

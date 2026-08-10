@@ -182,7 +182,7 @@ TEST_F(RepositoryTest, ReplacesCommitHashChangeIdsWhenReadingARepository) {
   EXPECT_FALSE(detail::Repository(path_).ref_target(legacy).has_value());
 }
 
-TEST_F(RepositoryTest, AppliesLargeAtomicReferenceUpdates) {
+TEST_F(RepositoryTest, AppliesLargeUpdatesAndMigratesLegacyChangeRefs) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
   const auto loose_ref_count = [&] {
@@ -212,6 +212,11 @@ TEST_F(RepositoryTest, AppliesLargeAtomicReferenceUpdates) {
   EXPECT_GE(loose_ref_count(), 1024U);
   EXPECT_NO_THROW(repo.apply_refs({}, {}, "compact existing references"));
   EXPECT_LT(loose_ref_count(), 100U);
+  EXPECT_TRUE(repo.ref_target(detail::kChangeMapRef).has_value());
+  EXPECT_EQ(repo.changes().size(), 1100U);
+  EXPECT_FALSE(repo.ref_target(std::string(detail::kChangePrefix) +
+                               std::string(32, 'k'))
+                   .has_value());
 }
 
 TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
@@ -395,6 +400,55 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
     EXPECT_NE(git_oid_equal(&restored.refs.at(name), &oid), 0);
   }
   EXPECT_THROW(repo.create_operation(state, std::nullopt, ""), detail::GitError);
+}
+
+TEST_F(RepositoryTest, MigratesOperationsWithTooManyParents) {
+  detail::Repository repo(path_);
+  detail::OperationState state = repo.state();
+  std::vector<git_oid> targets;
+  for (int index = 0; index < 300; ++index) {
+    const git_oid target = raw_commit("target " + std::to_string(index));
+    targets.push_back(target);
+    state.refs["refs/heads/target-" + std::to_string(index)] = target;
+  }
+  const git_oid oversized = repo.create_commit(
+      repo.empty_tree(), targets,
+      repo.serialize(state, std::nullopt, "legacy oversized operation"));
+  constexpr std::string_view undo_prefix = "undo: restore to operation ";
+  const git_oid undo = repo.create_commit(
+      repo.empty_tree(), {oversized},
+      repo.serialize(state, oversized,
+                     std::string(undo_prefix) + detail::oid_string(oversized)));
+  set_ref(detail::kOperationRef, undo);
+
+  ASSERT_NO_THROW(repo.import_git_history());
+  const auto migrated = repo.operation();
+  ASSERT_TRUE(migrated.has_value());
+  EXPECT_EQ(git_oid_equal(&*migrated, &undo), 0);
+  const auto migrated_previous = repo.operation_previous(*migrated);
+  ASSERT_TRUE(migrated_previous.has_value());
+  const auto undo_target = repo.operation_target(*migrated, undo_prefix);
+  ASSERT_TRUE(undo_target.has_value());
+  EXPECT_NE(git_oid_equal(&*undo_target, &*migrated_previous), 0);
+  EXPECT_EQ(repo.parse_operation(*migrated).refs.size(), state.refs.size());
+
+  git_revwalk* raw_walk = nullptr;
+  ASSERT_EQ(git_revwalk_new(&raw_walk, repository_.get()), 0);
+  detail::RevwalkPtr walk(raw_walk);
+  ASSERT_EQ(git_revwalk_push(walk.get(), &*migrated), 0);
+  git_oid oid{};
+  while (git_revwalk_next(&oid, walk.get()) == 0) {
+    detail::CommitPtr value = repo.commit(oid);
+    EXPECT_LE(git_commit_parentcount(value.get()), 128U);
+  }
+
+  git_reflog* raw_reflog = nullptr;
+  ASSERT_EQ(git_reflog_read(&raw_reflog, repository_.get(),
+                            detail::kOperationRef.data()),
+            0);
+  ASSERT_NE(raw_reflog, nullptr);
+  EXPECT_EQ(git_reflog_entrycount(raw_reflog), 0U);
+  git_reflog_free(raw_reflog);
 }
 
 TEST_F(RepositoryTest, AssignsAStableIdWhenReadingAWorkspace) {

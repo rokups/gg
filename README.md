@@ -112,8 +112,10 @@ Each working copy is represented by a commit under
 `refs/gg/workspaces/<name>`. The primary checkout starts as `default`; linked
 Git worktrees have their own names, working changes, and operation histories
 while sharing commits, change IDs, bookmarks, and tags. Stable change
-IDs live under `refs/gg/changes/<id>`. Git `HEAD` stays at the working change's
-parent so existing tooling continues to see normal working-tree changes.
+IDs are stored together under `refs/gg/change-map` so repositories do not
+expose one Git reference for every commit. Git `HEAD` stays at the working
+change's parent so existing tooling continues to see normal working-tree
+changes.
 
 Use `gg workspace add` when creating another checkout so the Git worktree and
 its gg working change are created together:

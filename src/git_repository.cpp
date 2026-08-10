@@ -259,6 +259,9 @@ std::map<std::string, git_oid> Repository::data_refs() const {
       refs.emplace(name, *git_reference_target(resolved.get()));
     }
   }
+  for (const auto& [id, oid] : read_change_map()) {
+    refs.insert_or_assign(std::string(kChangePrefix) + id, oid);
+  }
   return refs;
 }
 
