@@ -278,7 +278,25 @@ bool Repository::sync_workspace() const {
   if (ignore_working_copy_) return false;
   const auto workspace_reference = workspace_ref();
   if (!workspace_reference.has_value()) {
-    return false;
+    const auto head = head_oid();
+    const git_oid base_tree = head.has_value()
+                                  ? *git_commit_tree_id(commit(*head).get())
+                                  : empty_tree();
+    const git_oid tree_oid = snapshot_tree(base_tree);
+    if (tree_oid == base_tree) return false;
+    const std::vector<git_oid> parents =
+        head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
+    const git_oid imported = create_commit(tree_oid, parents, "");
+    auto updates = missing_change_ids();
+    std::string id;
+    do {
+      id = new_change_id();
+    } while (updates.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
+    updates[workspace_ref_name()] = imported;
+    updates[std::string(kChangePrefix) + id] = imported;
+    record(std::move(updates), {}, head_for_workspace(imported),
+           "gg import working copy");
+    return true;
   }
   const auto workspace = ref_target(*workspace_reference);
   CommitPtr current = commit(*workspace);

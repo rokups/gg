@@ -8,6 +8,19 @@
 
 namespace gg::test {
 
+TEST_F(RepositoryTest, ImportsDirtyGitWorkingTreeAsInitialChange) {
+  write("tracked.txt", "modified\n");
+  write("untracked.txt", "new\n");
+
+  const Result status = invoke({"status"});
+  ASSERT_EQ(status.code, 0) << status.error;
+  EXPECT_NE(status.output.find("M tracked.txt"), std::string::npos);
+  EXPECT_NE(status.output.find("A untracked.txt"), std::string::npos);
+  expect_workspace_coherent();
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "modified\n");
+  EXPECT_EQ(read_path(path_ / "untracked.txt"), "new\n");
+}
+
 TEST_F(RepositoryTest, NewSnapshotsStagedAndUnstagedFilesForGit) {
   ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
   write("unstaged.txt", "unstaged\n");
