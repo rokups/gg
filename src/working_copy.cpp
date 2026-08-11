@@ -225,46 +225,52 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
                 std::string_view message) const {
   std::map<std::string, git_oid> physical_updates = updates;
   std::set<std::string> physical_deletes = deletes;
-  std::map<std::string, git_oid> mapped_changes = changes();
-  bool change_map_modified = false;
+  std::map<std::string, CommitAlias> mapped_aliases = read_alias_map();
+  bool alias_map_modified = false;
+  const std::int64_t now = commit_alias_time();
   for (auto iterator = physical_updates.begin();
        iterator != physical_updates.end();) {
-    if (!starts_with(iterator->first, kChangePrefix)) {
+    if (!starts_with(iterator->first, kAliasPrefix)) {
       ++iterator;
       continue;
     }
-    mapped_changes[iterator->first.substr(kChangePrefix.size())] =
-        iterator->second;
+    const std::string alias = iterator->first.substr(kAliasPrefix.size());
+    const auto existing = mapped_aliases.find(alias);
+    const std::int64_t last_used =
+        existing == mapped_aliases.end() ||
+                (oid_string(existing->second.target) == alias &&
+                 !(existing->second.target == iterator->second))
+            ? now
+            : existing->second.last_used;
+    mapped_aliases[alias] = {iterator->second, last_used};
     iterator = physical_updates.erase(iterator);
-    change_map_modified = true;
+    alias_map_modified = true;
   }
   for (auto iterator = physical_deletes.begin();
        iterator != physical_deletes.end();) {
-    if (!starts_with(*iterator, kChangePrefix)) {
+    if (!starts_with(*iterator, kAliasPrefix)) {
       ++iterator;
       continue;
     }
-    mapped_changes.erase(iterator->substr(kChangePrefix.size()));
+    mapped_aliases.erase(iterator->substr(kAliasPrefix.size()));
     iterator = physical_deletes.erase(iterator);
-    change_map_modified = true;
+    alias_map_modified = true;
   }
   const std::set<std::string> legacy_refs = legacy_change_refs();
   if (!legacy_refs.empty()) {
-    for (const std::string& name : legacy_refs) {
-      const std::string id = name.substr(kChangePrefix.size());
-      if (mapped_changes.contains(id)) continue;
-      const auto target = ref_target(name);
-      if (target.has_value()) mapped_changes.emplace(id, *target);
-    }
     physical_deletes.insert(legacy_refs.begin(), legacy_refs.end());
-    change_map_modified = true;
   }
-  if (change_map_modified) {
-    if (mapped_changes.empty()) {
-      physical_deletes.insert(std::string(kChangeMapRef));
+  if (ref_target(kLegacyChangeMapRef).has_value()) {
+    physical_deletes.insert(std::string(kLegacyChangeMapRef));
+  }
+  if (alias_map_modified) {
+    if (mapped_aliases.empty()) {
+      if (ref_target(kAliasMapRef).has_value()) {
+        physical_deletes.insert(std::string(kAliasMapRef));
+      }
     } else {
-      physical_updates[std::string(kChangeMapRef)] =
-          write_change_map(mapped_changes);
+      physical_updates[std::string(kAliasMapRef)] =
+          write_alias_map(mapped_aliases);
     }
   }
 
@@ -365,14 +371,7 @@ bool Repository::sync_workspace() const {
     const std::vector<git_oid> parents =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
     const git_oid imported = create_commit(tree_oid, parents, "");
-    auto updates = missing_change_ids();
-    std::string id;
-    do {
-      id = new_change_id();
-    } while (updates.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
-    updates[workspace_ref_name()] = imported;
-    updates[std::string(kChangePrefix) + id] = imported;
-    record(std::move(updates), {}, head_for_workspace(imported),
+    record({{workspace_ref_name(), imported}}, {}, head_for_workspace(imported),
            "gg import working copy");
     return true;
   }
@@ -390,16 +389,8 @@ bool Repository::sync_workspace() const {
     const std::vector<git_oid> parent_oids =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
     const git_oid imported = create_commit(tree_oid, parent_oids, "");
-    auto missing_ids = missing_change_ids();
-    std::string id;
-    do {
-      id = new_change_id();
-    } while (missing_ids.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
-    std::map<std::string, git_oid> updates{
-        {*workspace_reference, imported},
-        {std::string(kChangePrefix) + id, imported}};
-    updates.merge(missing_ids);
-    record(updates, {}, head_for_workspace(imported), "gg import state");
+    record({{*workspace_reference, imported}}, {}, head_for_workspace(imported),
+           "gg import state");
     return true;
   }
 

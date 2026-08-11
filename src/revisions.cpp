@@ -8,33 +8,37 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <limits>
-#include <random>
 #include <sstream>
 
 namespace gg::detail {
 namespace {
 
-constexpr std::string_view kChangeMapV1 = "gg-change-map-v1";
+constexpr std::string_view kAliasMapV1 = "gg-commit-aliases-v1";
+constexpr auto kAliasLifetime = std::chrono::hours(24 * 7);
 
-std::string random_change_id() {
-  constexpr std::string_view alphabet = "zyxwvutsrqponmlk";
-  std::random_device random;
-  std::string result;
-  result.reserve(32);
-  for (int index = 0; index < 16; ++index) {
-    const unsigned int byte = random() & 0xffU;
-    result.push_back(alphabet[byte >> 4U]);
-    result.push_back(alphabet[byte & 0xfU]);
+}  // namespace
+
+std::int64_t commit_alias_time() {
+  if (const char* test_time = std::getenv("GG_TEST_ALIAS_TIME");
+      test_time != nullptr) {
+    std::int64_t value = 0;
+    const std::string_view text(test_time);
+    const auto parsed =
+        std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) {
+      return value;
+    }
   }
-  return result;
+  return std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
-bool valid_change_id(std::string_view id) {
-  return id.size() == 32 &&
-         id.find_first_not_of("zyxwvutsrqponmlk") == std::string_view::npos;
-}
+namespace {
 
 std::string_view trim(std::string_view value) {
   const std::size_t begin = value.find_first_not_of(" \t\n\r");
@@ -168,8 +172,8 @@ std::size_t unique_prefix_length(
 
 }  // namespace
 
-std::map<std::string, git_oid> Repository::read_change_map() const {
-  const auto map_oid = ref_target(kChangeMapRef);
+std::map<std::string, CommitAlias> Repository::read_alias_map() const {
+  const auto map_oid = ref_target(kAliasMapRef);
   if (!map_oid.has_value()) return {};
 
   CommitPtr map_commit = commit(*map_oid);
@@ -177,63 +181,70 @@ std::map<std::string, git_oid> Repository::read_change_map() const {
   check(git_commit_tree(&raw_tree, map_commit.get()), "read change map tree");
   TreePtr map_tree(raw_tree);
   git_tree_entry* raw_entry = nullptr;
-  check(git_tree_entry_bypath(&raw_entry, map_tree.get(), "changes"),
-        "read change map");
+  check(git_tree_entry_bypath(&raw_entry, map_tree.get(), "aliases"),
+        "read commit aliases");
   TreeEntryPtr entry(raw_entry);
   if (git_tree_entry_type(entry.get()) != GIT_OBJECT_BLOB) {
-    throw GitError("invalid change map");
+    throw GitError("invalid commit alias map");
   }
   git_blob* raw_blob = nullptr;
   check(git_blob_lookup(&raw_blob, repo_.get(), git_tree_entry_id(entry.get())),
-        "read change map");
+        "read commit aliases");
   BlobPtr blob(raw_blob);
   std::istringstream input(std::string(
       static_cast<const char*>(git_blob_rawcontent(blob.get())),
       git_blob_rawsize(blob.get())));
   std::string line;
-  if (!std::getline(input, line) || line != kChangeMapV1) {
-    throw GitError("invalid change map");
+  if (!std::getline(input, line) || line != kAliasMapV1) {
+    throw GitError("invalid commit alias map");
   }
 
-  std::map<std::string, git_oid> result;
-  std::string oid_text;
-  std::string id;
-  while (input >> oid_text >> id) {
-    git_oid oid{};
-    check(git_oid_fromstr(&oid, oid_text.c_str(),
+  std::map<std::string, CommitAlias> result;
+  std::string alias_text;
+  std::string target_text;
+  std::int64_t last_used = 0;
+  while (input >> alias_text >> target_text >> last_used) {
+    git_oid alias{};
+    git_oid target{};
+    check(git_oid_fromstr(&alias, alias_text.c_str(),
                           git_repository_oid_type(repo_.get())),
-          "parse change map");
-    if (!result.emplace(id, oid).second) {
-      throw GitError("duplicate change ID in change map");
+          "parse commit alias");
+    check(git_oid_fromstr(&target, target_text.c_str(),
+                          git_repository_oid_type(repo_.get())),
+          "parse commit alias target");
+    if (!result.emplace(oid_string(alias), CommitAlias{target, last_used})
+             .second) {
+      throw GitError("duplicate commit alias");
     }
   }
-  if (!input.eof()) throw GitError("invalid change map");
+  if (!input.eof()) throw GitError("invalid commit alias map");
   return result;
 }
 
-git_oid Repository::write_change_map(
-    const std::map<std::string, git_oid>& values) const {
+git_oid Repository::write_alias_map(
+    const std::map<std::string, CommitAlias>& values) const {
   std::ostringstream output;
-  output << kChangeMapV1 << '\n';
-  for (const auto& [id, oid] : values) {
-    output << oid_string(oid) << ' ' << id << '\n';
+  output << kAliasMapV1 << '\n';
+  for (const auto& [alias, value] : values) {
+    output << alias << ' ' << oid_string(value.target) << ' '
+           << value.last_used << '\n';
   }
   const std::string serialized = output.str();
   git_oid blob_oid{};
   check(git_blob_create_from_buffer(&blob_oid, repo_.get(), serialized.data(),
                                     serialized.size()),
-        "write change map");
+        "write commit aliases");
   git_treebuilder* raw_builder = nullptr;
   check(git_treebuilder_new(&raw_builder, repo_.get(), nullptr),
-        "create change map tree");
+        "create commit alias tree");
   GitPtr<git_treebuilder, git_treebuilder_free> builder(raw_builder);
-  check(git_treebuilder_insert(nullptr, builder.get(), "changes", &blob_oid,
+  check(git_treebuilder_insert(nullptr, builder.get(), "aliases", &blob_oid,
                                GIT_FILEMODE_BLOB),
-        "add change map");
+        "add commit aliases");
   git_oid tree_oid{};
   check(git_treebuilder_write(&tree_oid, builder.get()),
-        "write change map tree");
-  return create_commit(tree_oid, {}, "gg change map");
+        "write commit alias tree");
+  return create_commit(tree_oid, {}, "gg commit aliases");
 }
 
 std::set<std::string> Repository::legacy_change_refs() const {
@@ -253,89 +264,20 @@ std::set<std::string> Repository::legacy_change_refs() const {
   return result;
 }
 
-const std::map<std::string, git_oid>& Repository::changes() const {
-  if (!ref_cache_enabled_) changes_cache_.reset();
-  if (changes_cache_.has_value()) return *changes_cache_;
-  changes_cache_.emplace();
-  auto& result = *changes_cache_;
+const std::map<std::string, git_oid>& Repository::aliases() const {
+  if (!ref_cache_enabled_) aliases_cache_.reset();
+  if (aliases_cache_.has_value()) return *aliases_cache_;
+  aliases_cache_.emplace();
+  auto& result = *aliases_cache_;
   for (const auto& [name, oid] : data_refs()) {
-    if (starts_with(name, kChangePrefix)) {
-      result.emplace(name.substr(kChangePrefix.size()), oid);
+    if (starts_with(name, kAliasPrefix)) {
+      result.emplace(name.substr(kAliasPrefix.size()), oid);
     }
   }
   return result;
-}
-
-std::string Repository::new_change_id() const {
-  std::string result;
-  do {
-    result = random_change_id();
-  } while (changes().contains(result));  // GG_COV_EXCL_BRANCH
-  return result;
-}
-
-std::map<std::string, git_oid> Repository::missing_change_ids() const {
-  std::set<std::string> ids;
-  std::set<git_oid, OidLess> assigned;
-  for (const auto& [id, oid] : changes()) {
-    if (!valid_change_id(id)) continue;
-    ids.insert(id);
-    assigned.insert(oid);
-  }
-
-  git_revwalk* raw_walk = nullptr;
-  check(git_revwalk_new(&raw_walk, repo_.get()), "create change ID walk");
-  RevwalkPtr walk(raw_walk);
-  const auto push = [&](std::string_view reference, const git_oid& oid) {
-    git_object* raw_object = nullptr;
-    check(git_object_lookup(&raw_object, repo_.get(), &oid, GIT_OBJECT_ANY),
-          "read change ID root " + std::string(reference));
-    ObjectPtr object(raw_object);
-    git_object* raw_commit = nullptr;
-    if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
-      git_error_clear();
-      return;
-    }
-    ObjectPtr commit(raw_commit);
-    check(git_revwalk_push(walk.get(), git_object_id(commit.get())),
-          "walk change ID roots");
-  };
-  for (const auto& [reference, oid] : data_refs()) {
-    push(reference, oid);
-  }
-  if (const auto head = head_oid(); head.has_value()) push("HEAD", *head);
-
-  std::map<std::string, git_oid> updates;
-  while (true) {
-    git_oid oid{};
-    const int result = git_revwalk_next(&oid, walk.get());
-    if (result == GIT_ITEROVER) break;
-    check(result, "walk commits for change IDs");
-    if (assigned.contains(oid)) continue;
-    std::string id;
-    do {
-      id = random_change_id();
-    } while (ids.contains(id));  // GG_COV_EXCL_BRANCH
-    ids.insert(id);
-    assigned.insert(oid);
-    updates.emplace(std::string(kChangePrefix) + id, oid);
-  }
-  return updates;
-}
-
-std::set<std::string> Repository::invalid_change_id_refs() const {
-  std::set<std::string> refs;
-  for (const auto& [id, oid] : changes()) {
-    (void)oid;
-    if (!valid_change_id(id)) {
-      refs.insert(std::string(kChangePrefix) + id);
-    }
-  }
-  return refs;
 }
 
 void Repository::import_git_history(std::ostream* progress) const {
-  apply_refs({}, {}, "compact internal references");
   migrate_operation_history();
   const bool initializing = !operation().has_value();
   if (initializing && progress != nullptr && head_oid().has_value()) {
@@ -343,9 +285,6 @@ void Repository::import_git_history(std::ostream* progress) const {
               << (linked_worktree_ ? "workspace" : "repository")
               << "; this may take a moment...\n";
   }
-  std::set<std::string> deletes = invalid_change_id_refs();
-  if (!initializing && deletes.empty()) return;
-  std::map<std::string, git_oid> updates = missing_change_ids();
   if (linked_worktree_ &&  // GG_COV_EXCL_BRANCH
       !workspace().has_value()) {  // GG_COV_EXCL_BRANCH
     const auto head = head_oid();
@@ -353,43 +292,14 @@ void Repository::import_git_history(std::ostream* progress) const {
       const git_oid tree = snapshot_tree(
           *git_commit_tree_id(commit(*head).get()));
       const git_oid imported = create_commit(tree, {*head}, "");
-      std::string id;
-      do {
-        id = new_change_id();
-      } while (updates.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
-      updates[workspace_ref_name()] = imported;
-      updates[std::string(kChangePrefix) + id] = imported;
+      record({{workspace_ref_name(), imported}}, {}, head_for_workspace(imported),
+             "gg import history");
+      return;
     }
   }
-  if (updates.empty() && deletes.empty()) {
-    (void)ensure_operation();
-    return;
+  if (initializing) {
+    record({}, {}, head_state(), "gg import history");
   }
-  record(std::move(updates), std::move(deletes), head_state(),
-         "gg import history");
-}
-
-std::string Repository::short_change_id(std::string_view id) const {
-  return short_change_id_parts(id).value;
-}
-
-ShortId Repository::short_change_id_parts(std::string_view id) const {
-  std::vector<std::string_view> ids;
-  if (scoped_change_ids_.has_value()) {
-    ids.reserve(scoped_change_ids_->size());
-    for (const std::string& other : *scoped_change_ids_) {
-      ids.push_back(other);
-    }
-  } else {
-    const auto& values = changes();
-    ids.reserve(values.size());
-    for (const auto& [other, oid] : values) {
-      (void)oid;
-      ids.push_back(other);
-    }
-  }
-  const std::size_t unique = unique_prefix_length(id, ids);
-  return {std::string(id.substr(0, std::max<std::size_t>(8, unique))), unique};
 }
 
 ShortId Repository::short_commit_id(const git_oid& oid) const {
@@ -398,11 +308,14 @@ ShortId Repository::short_commit_id(const git_oid& oid) const {
   if (scoped_commit_ids_.has_value()) {
     storage = *scoped_commit_ids_;
   } else {
-    const auto& revisions = changes();
-    storage.reserve(revisions.size());
-    for (const auto& [id, target] : revisions) {
-      (void)id;
-      storage.push_back(oid_string(target));
+    const std::vector<git_oid> revisions = resolve_set("all()");
+    storage.reserve(revisions.size() + aliases().size());
+    for (const git_oid& revision : revisions) {
+      storage.push_back(oid_string(revision));
+    }
+    for (const auto& [alias, target] : aliases()) {
+      (void)target;
+      storage.push_back(alias);
     }
   }
   std::vector<std::string_view> ids(storage.begin(), storage.end());
@@ -411,30 +324,84 @@ ShortId Repository::short_commit_id(const git_oid& oid) const {
 }
 
 void Repository::set_short_id_scope(std::span<const git_oid> revisions) {
-  scoped_change_ids_.emplace();
   scoped_commit_ids_.emplace();
-  scoped_change_ids_->reserve(revisions.size());
-  scoped_commit_ids_->reserve(revisions.size());
+  scoped_commit_ids_->reserve(revisions.size() + aliases().size());
   for (const git_oid& revision : revisions) {
     scoped_commit_ids_->push_back(oid_string(revision));
-    if (const auto id = change_id(revision); id.has_value()) {
-      scoped_change_ids_->push_back(*id);
+    for (const git_oid& alias : commit_aliases(revision)) {
+      scoped_commit_ids_->push_back(oid_string(alias));
     }
   }
 }
 
-std::optional<std::string> Repository::change_id(const git_oid& oid) const {
-  if (!ref_cache_enabled_) change_ids_by_oid_cache_.reset();
-  if (!change_ids_by_oid_cache_.has_value()) {
-    change_ids_by_oid_cache_.emplace();
-    for (const auto& [id, target] : changes()) {
-      change_ids_by_oid_cache_->emplace(target, id);
+std::vector<git_oid> Repository::commit_aliases(const git_oid& oid) const {
+  std::vector<git_oid> result;
+  for (const auto& [alias, target] : aliases()) {
+    if (!(target == oid) || alias == oid_string(oid)) continue;
+    git_oid value{};
+    check(git_oid_fromstr(&value, alias.c_str(),
+                          git_repository_oid_type(repo_.get())),
+          "parse commit alias");
+    result.push_back(value);
+  }
+  return result;
+}
+
+void Repository::add_alias_updates(RewritePlan& plan) const {
+  for (const auto& [alias, target] : aliases()) {
+    const auto rewritten = plan.commits.find(target);
+    if (rewritten != plan.commits.end()) {
+      plan.updates[std::string(kAliasPrefix) + alias] = rewritten->second;
     }
   }
-  const auto found = change_ids_by_oid_cache_->find(oid);
-  return found == change_ids_by_oid_cache_->end()
-             ? std::nullopt
-             : std::optional<std::string>{found->second};
+  for (const auto& [old_oid, new_oid] : plan.commits) {
+    if (!(old_oid == new_oid)) {
+      plan.updates[std::string(kAliasPrefix) + oid_string(old_oid)] = new_oid;
+      plan.updates[std::string(kAliasPrefix) + oid_string(new_oid)] = new_oid;
+    }
+  }
+}
+
+std::set<std::string> Repository::expired_alias_refs() const {
+  std::set<std::string> result;
+  const std::int64_t threshold =
+      commit_alias_time() -
+      std::chrono::duration_cast<std::chrono::seconds>(kAliasLifetime).count();
+  for (const auto& [alias, value] : read_alias_map()) {
+    if (alias != oid_string(value.target) && value.last_used <= threshold) {
+      result.insert(std::string(kAliasPrefix) + alias);
+    }
+  }
+  return result;
+}
+
+bool Repository::collect_expired_aliases(std::string_view description) const {
+  std::set<std::string> expired = expired_alias_refs();
+  if (expired.empty()) return false;
+  record({}, std::move(expired), head_state(), description);
+  return true;
+}
+
+void Repository::touch_aliases(const std::vector<std::string>& touched) const {
+  if (touched.empty() || operation_view_.has_value()) return;
+  auto values = read_alias_map();
+  const std::int64_t now = commit_alias_time();
+  bool modified = false;
+  for (const std::string& alias : touched) {
+    const auto found = values.find(alias);
+    if (found != values.end() && found->second.last_used != now) {
+      found->second.last_used = now;
+      modified = true;
+    }
+  }
+  if (!modified) return;
+  const git_oid map_oid = write_alias_map(values);
+  git_reference* raw_reference = nullptr;
+  check(git_reference_create(&raw_reference, repo_.get(), kAliasMapRef.data(),
+                             &map_oid, 1, "touch commit aliases"),
+        "touch commit aliases");
+  git_reference_free(raw_reference);
+  invalidate_ref_cache();
 }
 
 git_oid Repository::resolve_atom(std::string_view revision) const {
@@ -458,17 +425,23 @@ git_oid Repository::resolve_atom(std::string_view revision) const {
     return current;
   }
 
-  std::optional<git_oid> match;
-  for (const auto& [id, oid] : changes()) {
-    if (starts_with(id, revision)) {
-      if (match.has_value() && !(*match == oid)) {
-        throw UserError("ambiguous change ID: " + std::string(revision));
-      }
-      match = oid;
+  std::set<git_oid, OidLess> matches;
+  std::vector<std::string> touched;
+  for (const auto& [alias, oid] : aliases()) {
+    if (starts_with(alias, revision)) {
+      matches.insert(oid);
+      touched.push_back(alias);
     }
   }
-  if (match.has_value()) {
-    return *match;
+  for (const git_oid& oid : resolve_set("all()")) {
+    if (starts_with(oid_string(oid), revision)) matches.insert(oid);
+  }
+  if (matches.size() > 1) {
+    throw UserError("ambiguous commit ID: " + std::string(revision));
+  }
+  if (!matches.empty()) {
+    touch_aliases(touched);
+    return *matches.begin();
   }
 
   const std::string bookmark = "refs/heads/" + std::string(revision);
@@ -543,7 +516,20 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
     Selection seeds;
     for (const auto& [reference, oid] : rewrite_refs()) {
       (void)reference;
-      seeds.push_back(oid);
+      git_object* raw_object = nullptr;
+      if (git_object_lookup(&raw_object, repo_.get(), &oid, GIT_OBJECT_ANY) <
+          0) {
+        git_error_clear();
+        continue;
+      }
+      ObjectPtr object(raw_object);
+      git_object* raw_commit = nullptr;
+      if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
+        git_error_clear();
+        continue;
+      }
+      ObjectPtr commit(raw_commit);
+      seeds.push_back(*git_object_id(commit.get()));
     }
     return ancestors(seeds);
   };
@@ -753,19 +739,25 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
         }
         return result;
       }
-      if (function == "change_id" || function == "commit_id") {
+      if (function == "commit_id") {
         if (arguments.size() != 1) {
           throw UserError(std::string(function) + "() takes one prefix");
         }
         const std::string_view prefix = unquote(arguments.front());
         Selection result;
+        std::vector<std::string> touched;
         for (const git_oid& oid : all()) {
-          const std::string value =
-              function == "commit_id"
-                  ? oid_string(oid)
-                  : change_id(oid).value_or(std::string{});
-          if (starts_with(value, prefix)) result.push_back(oid);
+          bool matches = starts_with(oid_string(oid), prefix);
+          for (const git_oid& alias : commit_aliases(oid)) {
+            const std::string value = oid_string(alias);
+            if (starts_with(value, prefix)) {
+              matches = true;
+              touched.push_back(value);
+            }
+          }
+          if (matches) result.push_back(oid);
         }
+        touch_aliases(touched);
         return result;
       }
       if (function == "remote_bookmarks" ||

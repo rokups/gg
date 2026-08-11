@@ -206,7 +206,7 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   const Result shown = invoke({"show"});
   ASSERT_EQ(shown.code, 0) << shown.error;
   EXPECT_NE(shown.output.find("Commit ID: "), std::string::npos);
-  EXPECT_NE(shown.output.find("Change ID: "), std::string::npos);
+  EXPECT_NE(shown.output.find("Aliases: "), std::string::npos);
   EXPECT_NE(shown.output.find("Description: work"), std::string::npos);
   EXPECT_NE(shown.output.find("diff --git"), std::string::npos);
 
@@ -216,7 +216,7 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   const Result colored =
       invoke({"--color", "debug", "show", "main", "--no-patch"});
   EXPECT_NE(colored.output.find("<<commit_id::"), std::string::npos);
-  EXPECT_NE(colored.output.find("<<change_id::"), std::string::npos);
+  EXPECT_EQ(colored.output.find("Aliases:"), std::string::npos);
   EXPECT_NE(colored.output.find("<<bookmark::main>>"), std::string::npos);
 
   const Result ordered = invoke({"show", "main | @", "--no-patch"});
@@ -253,7 +253,7 @@ TEST_F(RepositoryTest, ValidatesDiffAndShowRequests) {
   const Result raw_show =
       invoke({"show", git_oid_tostr_s(&untracked), "--no-patch"});
   EXPECT_EQ(raw_show.code, 0);
-  EXPECT_EQ(raw_show.output.find("Change ID:"), std::string::npos);
+  EXPECT_EQ(raw_show.output.find("Aliases:"), std::string::npos);
 
   const git_oid side = raw_commit("side");
   set_ref("refs/heads/side", side);

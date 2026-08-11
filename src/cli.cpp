@@ -300,8 +300,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->add_option("-r,--revision", metaedit_value.revision_options,
                    "Revision")
       ->expected(1);
-  metaedit->add_flag("--update-change-id", metaedit_value.update_change_id,
-                     "Generate a new change ID");
   CLI::Option* metaedit_message = metaedit->add_option(
       "-m,--message", metaedit_value.message, "Description");
   CLI::Option* update_author_timestamp = metaedit->add_flag(

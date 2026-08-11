@@ -37,40 +37,21 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   EXPECT_FALSE(
       repo.rewrite_refs().contains("refs/gg/remotes/origin/tags/v1"));
 
-  const std::string id = repo.new_change_id();
-  EXPECT_EQ(id.size(), 32U);
-  for (char digit : id) {
-    EXPECT_GE(digit, 'k');
-    EXPECT_LE(digit, 'z');
-  }
-  repo.apply_refs({{std::string(detail::kChangePrefix) + id, base}}, {},
-                  "test change");
-  EXPECT_EQ(repo.short_change_id(id), id.substr(0, 8));
   const git_oid other = raw_commit("other");
-  repo.apply_refs({{std::string(detail::kChangePrefix) + "a1", base},
-                   {std::string(detail::kChangePrefix) + "a2", other}},
-                  {}, "test ambiguous changes");
+  const std::string first_alias(39, 'a');
+  const std::string second_alias = first_alias + "b";
+  repo.apply_refs({{std::string(detail::kAliasPrefix) + first_alias + "a", base},
+                   {std::string(detail::kAliasPrefix) + second_alias, other}},
+                  {}, "test ambiguous aliases");
   EXPECT_THROW(repo.resolve("a"), detail::UserError);
-  repo.apply_refs({{std::string(detail::kChangePrefix) + "b1", base},
-                   {std::string(detail::kChangePrefix) + "b2", base}},
-                  {}, "test matching changes");
-  const git_oid matching = repo.resolve("b");
+  const std::string matching_one(40, 'b');
+  std::string matching_two = matching_one;
+  matching_two.back() = 'c';
+  repo.apply_refs({{std::string(detail::kAliasPrefix) + matching_one, base},
+                   {std::string(detail::kAliasPrefix) + matching_two, base}},
+                  {}, "test matching aliases");
+  const git_oid matching = repo.resolve("bbbbbbbb");
   EXPECT_TRUE(git_oid_equal(&matching, &base) != 0);
-  EXPECT_EQ(repo.short_change_id("a"), "a");
-
-  std::string first(32, 'k');
-  std::string second = first;
-  first.replace(0, 9, "zzzzzzzzl");
-  second.replace(0, 9, "zzzzzzzzm");
-  repo.apply_refs({{std::string(detail::kChangePrefix) + "zzzz", base},
-                   {std::string(detail::kChangePrefix) + first, base},
-                   {std::string(detail::kChangePrefix) + second, other}},
-                  {}, "test long prefixes");
-  EXPECT_EQ(repo.short_change_id(first), first.substr(0, 9));
-  EXPECT_EQ(repo.short_change_id(second), second.substr(0, 9));
-  const detail::ShortId short_change = repo.short_change_id_parts(first);
-  EXPECT_EQ(short_change.value, first.substr(0, 9));
-  EXPECT_EQ(short_change.prefix_length, 9U);
   const detail::ShortId short_commit = repo.short_commit_id(base);
   const std::string base_text = detail::oid_string(base);
   const std::string other_text = detail::oid_string(other);
@@ -127,59 +108,64 @@ TEST_F(RepositoryTest, RendersJujutsuStyleGraphRows) {
   EXPECT_NE(output.str().find("╯"), std::string::npos);
 }
 
-TEST_F(RepositoryTest, AssignsGgIdsToReachableHistory) {
+TEST_F(RepositoryTest, RecordsCommitAliasesAndDropsLegacyIds) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
   const git_oid child = raw_commit("child", {base});
   set_ref("refs/heads/side", child);
-  git_oid blob{};
-  ASSERT_EQ(git_blob_create_from_buffer(&blob, repository_.get(), "blob", 4),
-            0);
-  set_ref("refs/tags/blob", blob);
-
-  const auto updates = repo.missing_change_ids();
-  ASSERT_EQ(updates.size(), 2U);
-  for (const auto& [reference, oid] : updates) {
-    (void)oid;
-    ASSERT_TRUE(detail::starts_with(reference, detail::kChangePrefix));
-    const std::string id = reference.substr(detail::kChangePrefix.size());
-    EXPECT_EQ(id.size(), 32U);
-    EXPECT_EQ(id.find_first_not_of("zyxwvutsrqponmlk"), std::string::npos);
-  }
-  repo.apply_refs(updates, {}, "assign change IDs");
-  EXPECT_TRUE(repo.change_id(base).has_value());
-  EXPECT_TRUE(repo.change_id(child).has_value());
-  EXPECT_TRUE(repo.missing_change_ids().empty());
-  EXPECT_NO_THROW(repo.import_git_history());
-
-  const std::string invalid(32, 'a');
-  set_ref(std::string(detail::kChangePrefix) + invalid, base);
-  EXPECT_TRUE(repo.invalid_change_id_refs().contains(
-      std::string(detail::kChangePrefix) + invalid));
+  const std::string legacy = std::string(detail::kLegacyChangePrefix) +
+                             std::string(32, 'k');
+  set_ref(legacy, base);
+  const git_oid rewritten = repo.rewrite_commit(child, {base}, std::nullopt,
+                                                 "rewritten");
+  detail::RewritePlan plan;
+  plan.commits.emplace(child, rewritten);
+  repo.add_alias_updates(plan);
+  plan.updates["refs/heads/side"] = rewritten;
+  repo.record(std::move(plan.updates), {}, repo.head_state(), "rewrite child");
+  ASSERT_EQ(repo.commit_aliases(rewritten).size(), 1U);
+  const git_oid resolved = repo.resolve(detail::oid_string(child, 8));
+  EXPECT_NE(git_oid_equal(&resolved, &rewritten), 0);
+  EXPECT_FALSE(detail::Repository(path_).ref_target(legacy).has_value());
 }
 
-TEST_F(RepositoryTest, ReplacesCommitHashChangeIdsWhenReadingARepository) {
-  const git_oid base = ref("HEAD");
-  const git_oid child = raw_commit("child", {base});
-  set_ref("refs/heads/side", child);
-  const std::string legacy =
-      std::string(detail::kChangePrefix) + detail::oid_string(base);
-  set_ref(legacy, base);
-
-  const Result log = invoke({"log", "-r", "ancestors(side)", "--no-graph"});
-  ASSERT_EQ(log.code, 0) << log.error;
+TEST_F(RepositoryTest, CollectsCommitAliasesAfterAWeekOfDisuse) {
+  constexpr std::int64_t start = 1'000'000;
+  constexpr std::int64_t week = 7 * 24 * 60 * 60;
+  ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME", std::to_string(start).c_str(), 1), 0);
+  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
   detail::Repository repo(path_);
-  EXPECT_FALSE(repo.ref_target(legacy).has_value());
-  EXPECT_TRUE(repo.change_id(base).has_value());
-  EXPECT_TRUE(repo.change_id(child).has_value());
-  for (const auto& [id, oid] : repo.changes()) {
-    (void)oid;
-    EXPECT_EQ(id.size(), 32U);
-    EXPECT_EQ(id.find_first_not_of("zyxwvutsrqponmlk"), std::string::npos);
-  }
-  set_ref(legacy, base);
-  ASSERT_EQ(invoke({"log", "-r", "side", "--no-graph"}).code, 0);
-  EXPECT_FALSE(detail::Repository(path_).ref_target(legacy).has_value());
+  const git_oid original = repo.resolve("@");
+  const std::string alias = detail::oid_string(original);
+  ASSERT_EQ(invoke({"describe", "-m", "rewritten"}).code, 0);
+  EXPECT_TRUE(repo.aliases().contains(alias));
+
+  ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
+                   std::to_string(start + week - 1).c_str(), 1),
+            0);
+  ASSERT_EQ(invoke({"show", alias, "--no-patch"}).code, 0);
+  ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
+                   std::to_string(start + 2 * week - 2).c_str(), 1),
+            0);
+  ASSERT_EQ(invoke({"bookmark", "create", "retained"}).code, 0);
+  EXPECT_TRUE(repo.aliases().contains(alias));
+
+  ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
+                   std::to_string(start + 2 * week - 1).c_str(), 1),
+            0);
+  ASSERT_EQ(invoke({"bookmark", "create", "collected"}).code, 0);
+  EXPECT_FALSE(repo.aliases().contains(alias));
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_TRUE(repo.aliases().contains(alias));
+
+  ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
+                   std::to_string(start + 3 * week - 1).c_str(), 1),
+            0);
+  ASSERT_EQ(invoke({"util", "gc"}).code, 0);
+  EXPECT_FALSE(repo.aliases().contains(alias));
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_TRUE(repo.aliases().contains(alias));
+  ASSERT_EQ(unsetenv("GG_TEST_ALIAS_TIME"), 0);
 }
 
 TEST_F(RepositoryTest, AppliesLargeUpdatesAndMigratesLegacyChangeRefs) {
@@ -202,20 +188,13 @@ TEST_F(RepositoryTest, AppliesLargeUpdatesAndMigratesLegacyChangeRefs) {
   EXPECT_TRUE(repo.ref_target("refs/heads/large-1099").has_value());
   EXPECT_LT(loose_ref_count(), 100U);
 
-  for (int index = 0; index < 1100; ++index) {
-    std::string id(32, 'k');
-    for (int digit = 0, value = index; value != 0; ++digit, value /= 16) {
-      id[id.size() - 1 - digit] = static_cast<char>('k' + value % 16);
-    }
-    set_ref(std::string(detail::kChangePrefix) + id, base);
-  }
+  for (int index = 0; index < 1100; ++index)
+    set_ref(std::string(detail::kLegacyChangePrefix) + std::to_string(index), base);
   EXPECT_GE(loose_ref_count(), 1024U);
   EXPECT_NO_THROW(repo.apply_refs({}, {}, "compact existing references"));
   EXPECT_LT(loose_ref_count(), 100U);
-  EXPECT_TRUE(repo.ref_target(detail::kChangeMapRef).has_value());
-  EXPECT_EQ(repo.changes().size(), 1100U);
-  EXPECT_FALSE(repo.ref_target(std::string(detail::kChangePrefix) +
-                               std::string(32, 'k'))
+  EXPECT_FALSE(repo.ref_target(detail::kLegacyChangeMapRef).has_value());
+  EXPECT_FALSE(repo.ref_target(std::string(detail::kLegacyChangePrefix) + "0")
                    .has_value());
 }
 
@@ -281,10 +260,10 @@ TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
          {base, left, right, merge, tip, other});
   expect("empty()", {left, right, tip, other});
   expect("commit_id('" + detail::oid_string(tip, 8) + "')", {tip});
-  const std::string tip_change(32, 'k');
-  repo.apply_refs({{std::string(detail::kChangePrefix) + tip_change, tip}}, {},
-                  "test revset IDs");
-  expect("change_id('kkkkkkkk')", {tip});
+  const std::string tip_alias(40, 'a');
+  repo.apply_refs({{std::string(detail::kAliasPrefix) + tip_alias, tip}}, {},
+                  "test revset aliases");
+  expect("commit_id('aaaaaaaa')", {tip});
   set_ref("refs/remotes/origin/HEAD", tip);
   set_ref("refs/remotes/origin/tracked", left);
   set_ref("refs/remotes/origin/untracked", right);
@@ -375,7 +354,8 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
   ASSERT_EQ(git_commit_lookup(&commit, repository_.get(), &base), 0);
   const git_oid tree_oid = *git_commit_tree_id(commit);
   git_commit_free(commit);
-  set_ref(std::string(detail::kChangePrefix) + "tree", tree_oid);
+  repo.apply_refs({{std::string(detail::kAliasPrefix) + detail::oid_string(base),
+                    tree_oid}}, {}, "non-commit alias target");
   EXPECT_NO_THROW(repo.descendants({}));
 
   detail::OperationState state = repo.state();
@@ -451,7 +431,7 @@ TEST_F(RepositoryTest, MigratesOperationsWithTooManyParents) {
   git_reflog_free(raw_reflog);
 }
 
-TEST_F(RepositoryTest, AssignsAStableIdWhenReadingAWorkspace) {
+TEST_F(RepositoryTest, RendersAWorkspaceWithItsCommitId) {
   set_ref(detail::kWorkspaceRef, ref("HEAD"));
   ASSERT_EQ(git_repository_set_head(repository_.get(),
                                     "refs/heads/does-not-exist"),
@@ -459,19 +439,7 @@ TEST_F(RepositoryTest, AssignsAStableIdWhenReadingAWorkspace) {
   const Result status = invoke({"status"});
   ASSERT_EQ(status.code, 0) << status.error;
   EXPECT_EQ(status.output.find("--------"), std::string::npos);
-  detail::Repository repo(path_);
-  EXPECT_TRUE(repo.change_id(ref(detail::kWorkspaceRef)).has_value());
   EXPECT_EQ(invoke({"workspace", "list"}).output.find("--------"),
-            std::string::npos);
-
-  std::set<std::string> ids;
-  for (const auto& [id, oid] : repo.changes()) {
-    (void)oid;
-    ids.insert(std::string(detail::kChangePrefix) + id);
-  }
-  repo.apply_refs({}, ids, "remove IDs for fallback rendering");
-  EXPECT_NE(invoke({"status"}).output.find("--------"), std::string::npos);
-  EXPECT_NE(invoke({"workspace", "list"}).output.find("--------"),
             std::string::npos);
   const Result log = invoke({"log"});
   EXPECT_EQ(log.code, 0) << log.error;

@@ -301,9 +301,24 @@ void fill_mutation_result(
       change.has_after = 1;
     }
     changes.push_back(change);
-    if (name.starts_with(gg::detail::kChangePrefix) &&
-        change.had_before && change.has_after) {
-      rewrites.push_back({change.before, change.after});
+    if (name.starts_with(gg::detail::kAliasPrefix) && change.has_after) {
+      git_oid rewritten = change.before;
+      if (!change.had_before) {
+        const std::string alias =
+            name.substr(gg::detail::kAliasPrefix.size());
+        gg::detail::check(
+            git_oid_fromstr(&rewritten, alias.c_str(),
+                            git_repository_oid_type(repository.raw())),
+            "parse mutation commit alias");
+      }
+      const bool duplicate = std::ranges::any_of(
+          rewrites, [&](const gg_rewrite& value) {
+            return git_oid_equal(&value.before, &rewritten) != 0 &&
+                   git_oid_equal(&value.after, &change.after) != 0;
+          });
+      if (!duplicate && git_oid_equal(&rewritten, &change.after) == 0) {
+        rewrites.push_back({rewritten, change.after});
+      }
     }
   }
 
@@ -569,22 +584,6 @@ int gg_repository_working_copy(git_oid* out, gg_repository* repository) {
   });
 }
 
-int gg_repository_change_id(char** out,
-                            gg_repository* repository,
-                            const git_oid* revision) {
-  return boundary([&] {
-    if (out == nullptr || repository == nullptr || revision == nullptr) {
-      throw gg::detail::UserError("change-ID arguments must not be null");
-    }
-    const auto value = repository->implementation.change_id(*revision);
-    if (!value.has_value()) {
-      throw gg::detail::UserError("change ID not found", GIT_ENOTFOUND);
-    }
-    *out = duplicate(*value);
-    return GIT_OK;
-  });
-}
-
 int gg_repository_references(gg_reference_array* out,
                              gg_repository* repository) {
   return boundary([&] {
@@ -790,8 +789,14 @@ int gg_repository_revisions(gg_revision_array* out,
         std::ranges::copy(parents, item.parents.ids);
         item.parents.count = parents.size();
       }
-      const auto id = repo.change_id(oid);
-      if (id.has_value()) item.change_id = duplicate(*id);
+      const auto aliases = repo.commit_aliases(oid);
+      if (!aliases.empty()) {
+        item.aliases.ids = static_cast<git_oid*>(
+            std::malloc(aliases.size() * sizeof(git_oid)));
+        if (item.aliases.ids == nullptr) throw std::bad_alloc();
+        std::ranges::copy(aliases, item.aliases.ids);
+        item.aliases.count = aliases.size();
+      }
       auto commit = repo.commit(oid);
       item.description = duplicate(git_commit_message(commit.get()) == nullptr
                                        ? ""
@@ -1070,7 +1075,6 @@ int gg_repository_metaedit(gg_mutation_result* out,
     command.message_provided = value.message_provided != 0;
     command.author_provided = value.author_provided != 0;
     command.author_timestamp_provided = value.author_timestamp_provided != 0;
-    command.update_change_id = value.update_change_id != 0;
     command.update_author = value.update_author != 0;
     command.update_author_timestamp = value.update_author_timestamp != 0;
     command.force_rewrite = value.force_rewrite != 0;
@@ -1528,7 +1532,7 @@ int gg_repository_complete_fetch(gg_mutation_result* out,
         (plan->refspec_count != 0 && plan->refspecs == nullptr)) {
       throw gg::detail::UserError("invalid fetch plan");
     }
-    std::map<std::string, git_oid> updates = repo.missing_change_ids();
+    std::map<std::string, git_oid> updates;
     std::set<std::string> deletes;
     for (size_t index = 0; index < plan->reference_deletes.count; ++index) {
       deletes.insert(plan->reference_deletes.strings[index]);
@@ -1822,7 +1826,7 @@ void gg_revision_array_dispose(gg_revision_array* array) {
   for (size_t index = 0; index < array->count; ++index) {
     gg_revision& item = array->items[index];
     gg_oid_array_dispose(&item.parents);
-    std::free(item.change_id);
+    gg_oid_array_dispose(&item.aliases);
     std::free(item.description);
     git_signature_free(item.author);
     git_signature_free(item.committer);

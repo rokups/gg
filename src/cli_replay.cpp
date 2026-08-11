@@ -106,9 +106,6 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("-r");
               result.push_back(revision);
             }
-            if (value.update_change_id) {
-              result.emplace_back("--update-change-id");
-            }
             if (value.message_provided) {
               result.emplace_back("--message");
               result.push_back(value.message);

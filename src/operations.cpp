@@ -102,6 +102,9 @@ OperationState parse_operation_state(std::string_view text,
           "parse operation reference");
     state.refs.emplace(name, target);
   }
+  std::erase_if(state.refs, [](const auto& item) {
+    return starts_with(item.first, kLegacyChangePrefix);
+  });
   return state;
 }
 
@@ -428,6 +431,10 @@ void Repository::record(std::map<std::string, git_oid> updates,
             const HeadState& head,
             std::string_view description,
             bool manage_workspaces) const {
+  for (const std::string& expired : expired_alias_refs()) {
+    updates.erase(expired);
+    deletes.insert(expired);
+  }
   if (!manage_workspaces) {
     const std::string current_workspace = workspace_ref_name();
     for (const auto& [name, target] : updates) {
@@ -455,6 +462,46 @@ void Repository::record(std::map<std::string, git_oid> updates,
   }
   for (const auto& [name, oid] : updates) {
     next.refs[name] = oid;
+  }
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo_.get()), "create commit identity walk");
+  RevwalkPtr walk(raw_walk);
+  const auto push_commit = [&](const git_oid& oid) {
+    git_object* raw_object = nullptr;
+    if (git_object_lookup(&raw_object, repo_.get(), &oid, GIT_OBJECT_ANY) < 0) {
+      git_error_clear();
+      return;
+    }
+    ObjectPtr object(raw_object);
+    git_object* raw_commit = nullptr;
+    if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
+      git_error_clear();
+      return;
+    }
+    ObjectPtr commit(raw_commit);
+    check(git_revwalk_push(walk.get(), git_object_id(commit.get())),
+          "walk commit identities");
+  };
+  for (const auto& [name, oid] : next.refs) {
+    (void)name;
+    push_commit(oid);
+  }
+  if (!next.head.symbolic) {
+    git_oid head{};
+    if (git_oid_fromstr(&head, next.head.value.c_str(),
+                        git_repository_oid_type(repo_.get())) == 0) {
+      push_commit(head);
+    } else {
+      git_error_clear();
+    }
+  }
+  git_oid identity{};
+  while (git_revwalk_next(&identity, walk.get()) == 0) {
+    const std::string name = std::string(kAliasPrefix) + oid_string(identity);
+    if (!next.refs.contains(name)) {
+      next.refs[name] = identity;
+      updates[name] = identity;
+    }
   }
   const git_oid operation_oid =
       create_operation(next, ensure_operation(), description);

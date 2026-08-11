@@ -265,7 +265,8 @@ void chmod_files(Repository& repo,
                                     : *workspace;
   finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                    "gg file chmod");
-  output << "Updated file modes in " << oid_string(rewritten, 8) << ".\n";
+  output << "Updated file modes in " << repo.short_commit_id(rewritten).value
+         << ".\n";
 }
 
 }  // namespace

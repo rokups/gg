@@ -569,9 +569,13 @@ void render_revision_header(Repository& repo,
   CommitPtr commit = repo.commit(revision);
   output << "Commit ID: "
          << styled(output, oid_string(revision), OutputStyle::commit_id) << '\n';
-  if (const auto id = repo.change_id(revision); id.has_value()) {
-    output << "Change ID: " << styled(output, *id, OutputStyle::change_id)
-           << '\n';
+  const std::vector<git_oid> aliases = repo.commit_aliases(revision);
+  if (!aliases.empty()) {
+    output << "Aliases:";
+    for (const git_oid& alias : aliases) {
+      output << ' ' << styled(output, oid_string(alias), OutputStyle::commit_id);
+    }
+    output << '\n';
   }
   const std::vector<std::string> bookmarks = repo.bookmarks(revision);
   if (!bookmarks.empty()) {

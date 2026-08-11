@@ -188,14 +188,13 @@ typedef struct gg_metaedit_options {
   int message_provided;
   int author_provided;
   int author_timestamp_provided;
-  int update_change_id;
   int update_author;
   int update_author_timestamp;
   int force_rewrite;
 } gg_metaedit_options;
 
 #define GG_METAEDIT_OPTIONS_INIT \
-  { GG_OPTIONS_VERSION, { NULL, 0 }, NULL, NULL, NULL, 0, 0, 0, 0, 0, 0, 0 }
+  { GG_OPTIONS_VERSION, { NULL, 0 }, NULL, NULL, NULL, 0, 0, 0, 0, 0, 0 }
 
 typedef struct gg_rebase_options {
   unsigned int version;
@@ -426,7 +425,7 @@ typedef struct gg_transport_plan {
 typedef struct gg_revision {
   git_oid oid;
   gg_oid_array parents;
-  char *change_id;
+  gg_oid_array aliases;
   char *description;
   git_signature *author;
   git_signature *committer;
@@ -568,9 +567,6 @@ GG_EXTERN int gg_repository_resolve_set(gg_oid_array *out,
                                         const char *revisions);
 GG_EXTERN int gg_repository_working_copy(git_oid *out,
                                          gg_repository *repository);
-GG_EXTERN int gg_repository_change_id(char **out,
-                                      gg_repository *repository,
-                                      const git_oid *revision);
 GG_EXTERN int gg_repository_references(gg_reference_array *out,
                                        gg_repository *repository);
 GG_EXTERN int gg_repository_named_refs(gg_named_ref_array *out,

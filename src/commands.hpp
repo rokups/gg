@@ -18,12 +18,6 @@ namespace gg::detail {
 enum class OutputColorMode { plain, ansi, debug };
 enum class OutputStyle {
   working_copy,
-  change_id,
-  change_id_prefix,
-  change_id_rest,
-  working_change_id,
-  working_change_id_prefix,
-  working_change_id_rest,
   commit_id,
   commit_id_prefix,
   commit_id_rest,
@@ -46,8 +40,6 @@ void set_output_color_mode(std::ostream&, OutputColorMode);
 OutputColorMode output_color_mode(std::ostream&);
 std::string styled(std::ostream&, std::string_view, OutputStyle);
 std::string_view graph_link_glyph_for_test(std::uint16_t, bool);
-std::string styled_short_change_id(Repository&, std::ostream&,
-                                   std::string_view, bool working = false);
 std::string styled_short_commit_id(Repository&, std::ostream&, const git_oid&,
                                    bool working = false);
 class GraphRenderer {

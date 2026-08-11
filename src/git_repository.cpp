@@ -251,7 +251,6 @@ std::map<std::string, git_oid> Repository::data_refs() const {
     if (starts_with(name, "refs/heads/") ||
         starts_with(name, "refs/tags/") ||
         starts_with(name, "refs/remotes/") ||
-        starts_with(name, "refs/gg/changes/") ||
         starts_with(name, kRemoteTagPrefix) ||
         starts_with(name, kBookmarkTrackingPrefix) ||
         starts_with(name, kTagTrackingPrefix) ||  // GG_COV_EXCL_BRANCH
@@ -259,8 +258,8 @@ std::map<std::string, git_oid> Repository::data_refs() const {
       refs.emplace(name, *git_reference_target(resolved.get()));
     }
   }
-  for (const auto& [id, oid] : read_change_map()) {
-    refs.insert_or_assign(std::string(kChangePrefix) + id, oid);
+  for (const auto& [alias, value] : read_alias_map()) {
+    refs.insert_or_assign(std::string(kAliasPrefix) + alias, value.target);
   }
   return refs;
 }
@@ -269,8 +268,7 @@ void Repository::enable_ref_cache() { ref_cache_enabled_ = true; }
 
 void Repository::invalidate_ref_cache() const {
   data_refs_cache_.reset();
-  changes_cache_.reset();
-  change_ids_by_oid_cache_.reset();
+  aliases_cache_.reset();
 }
 
 std::optional<std::string> Repository::workspace_ref() const {

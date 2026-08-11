@@ -65,7 +65,6 @@ struct MetaeditCommand {
   std::string message;
   std::string author;
   std::string author_timestamp;
-  bool update_change_id{false};
   bool update_author_timestamp{false};
   bool update_author{false};
   bool force_rewrite{false};

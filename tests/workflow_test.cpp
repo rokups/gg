@@ -123,13 +123,15 @@ TEST_F(RepositoryTest, InsertsNewChangesBeforeAndAfterRevisions) {
             2);
 }
 
-TEST_F(RepositoryTest, AssignsImportedIdsThroughAnInitialInsertion) {
+TEST_F(RepositoryTest, PreservesTheOriginalIdThroughAnInitialInsertion) {
+  const git_oid original_main = ref("refs/heads/main");
   const Result inserted =
       invoke({"new", "-m", "inserted", "--insert-before", "main"});
   ASSERT_EQ(inserted.code, 0) << inserted.error;
   detail::Repository repo(path_);
   const git_oid rewritten_main = ref("refs/heads/main");
-  EXPECT_TRUE(repo.change_id(rewritten_main).has_value());
+  const git_oid resolved = repo.resolve(detail::oid_string(original_main, 8));
+  EXPECT_NE(git_oid_equal(&resolved, &rewritten_main), 0);
 }
 
 TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
@@ -411,17 +413,13 @@ TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
       invoke({"--color", "always", "log", "-r", "@", "-n", "1"});
   EXPECT_NE(colored.output.find("\x1b[1;38;5;2m@\x1b[0m"),
             std::string::npos);
-  EXPECT_NE(colored.output.find("\x1b[1;38;5;13m"), std::string::npos);
+  EXPECT_NE(colored.output.find("\x1b[1;38;5;12m"), std::string::npos);
   EXPECT_EQ(invoke({"--color", "never", "log", "-n", "1"})
                 .output.find("\x1b["),
             std::string::npos);
   const Result debug =
       invoke({"--color", "debug", "log", "-r", "@", "-n", "1"});
   EXPECT_NE(debug.output.find("<<working_copy::@>>"), std::string::npos);
-  EXPECT_NE(debug.output.find("<<working_copy change_id shortest prefix::"),
-            std::string::npos);
-  EXPECT_NE(debug.output.find("<<working_copy change_id shortest rest::"),
-            std::string::npos);
   EXPECT_NE(debug.output.find("<<working_copy commit_id shortest prefix::"),
             std::string::npos);
   EXPECT_NE(debug.output.find("<<working_copy commit_id shortest rest::"),
@@ -460,16 +458,9 @@ TEST_F(RepositoryTest, HighlightsPrefixesWithinTheDisplayedLog) {
   ASSERT_EQ(detail::oid_string(second).front(), first_commit.front());
   set_ref("refs/heads/first", first);
   set_ref("refs/heads/second", second);
-  const std::string first_change = "zzzzzzzzl" + std::string(23, 'k');
-  const std::string second_change = "zzzzzzzzm" + std::string(23, 'k');
-  set_ref(std::string(detail::kChangePrefix) + first_change, first);
-  set_ref(std::string(detail::kChangePrefix) + second_change, second);
-
   const Result single = invoke(
       {"--color", "debug", "log", "-r", "first", "--no-graph"});
   ASSERT_EQ(single.code, 0) << single.error;
-  EXPECT_NE(single.output.find("<<change_id shortest prefix::z>>"),
-            std::string::npos);
   EXPECT_NE(single.output.find("<<commit_id shortest prefix::" +
                                first_commit.substr(0, 1) + ">>"),
             std::string::npos);
@@ -477,9 +468,6 @@ TEST_F(RepositoryTest, HighlightsPrefixesWithinTheDisplayedLog) {
   const Result both = invoke({"--color", "debug", "log", "-r",
                               "first | second", "--no-graph"});
   ASSERT_EQ(both.code, 0) << both.error;
-  EXPECT_NE(both.output.find(
-                "<<change_id shortest prefix::zzzzzzzzl>>"),
-            std::string::npos);
   std::size_t common = 0;
   const std::string second_commit = detail::oid_string(second);
   while (first_commit[common] == second_commit[common]) ++common;
@@ -547,7 +535,7 @@ TEST_F(RepositoryTest, EditsAndValidatesNavigationTargets) {
   EXPECT_EQ(invoke({"prev", "--edit", "99"}).code, 2);
 }
 
-TEST_F(RepositoryTest, NavigationAssignsChangeIdsToExternalCommits) {
+TEST_F(RepositoryTest, NavigationTracksExternalCommitsByObjectId) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
   const git_oid child = raw_commit("raw child", {workspace});
@@ -577,10 +565,9 @@ TEST_F(RepositoryTest, NavigationCreatesChangesUnlessEditIsRequested) {
   ASSERT_EQ(parents.size(), 1U);
   EXPECT_NE(git_oid_equal(&parents.front(), &child), 0);
 
-  const std::size_t ids_before_no_edit = repo.changes().size();
   ASSERT_EQ(invoke({"prev"}).code, 0);
   const git_oid no_edit = ref("refs/gg/workspaces/default");
-  EXPECT_EQ(repo.changes().size(), ids_before_no_edit + 1);
+  EXPECT_TRUE(repo.commit_aliases(no_edit).empty());
   const std::vector<git_oid> no_edit_parents = repo.parents(no_edit);
   ASSERT_EQ(no_edit_parents.size(), 1U);
   EXPECT_NE(git_oid_equal(&no_edit_parents.front(), &child), 0);
@@ -801,7 +788,7 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
   EXPECT_NE(colored.output.find("<<current_operation_id::"),
             std::string::npos);
   EXPECT_NE(colored.output.find("<<timestamp::"), std::string::npos);
-  EXPECT_NE(colored.output.find("<<change_id::○>>"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<commit_id::○>>"), std::string::npos);
   EXPECT_NE(colored.output.find("<<operation_id::"), std::string::npos);
 
   const Result diff = invoke({"operation", "log", "--op-diff", "--no-graph"});
@@ -1112,8 +1099,8 @@ TEST_F(RepositoryTest, ImportsExternalHeadChangesAndResolvesObjectIds) {
   ASSERT_EQ(imported.code, 0) << imported.error;
   EXPECT_NE(imported.output.find("Working copy (@)"), std::string::npos);
   detail::Repository repo(path_);
-  EXPECT_TRUE(repo.change_id(base).has_value());
-  EXPECT_TRUE(repo.change_id(external).has_value());
+  EXPECT_TRUE(repo.commit_aliases(base).empty());
+  EXPECT_TRUE(repo.commit_aliases(external).empty());
 
   const Result edit = invoke({"edit", std::string(git_oid_tostr_s(&base))});
   EXPECT_EQ(edit.code, 0) << edit.error;

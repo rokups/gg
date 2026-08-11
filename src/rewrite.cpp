@@ -375,6 +375,7 @@ RewritePlan Repository::descendants(
       plan.updates.emplace(name, replacement->second);
     }
   }
+  add_alias_updates(plan);
   return plan;
 }
 
@@ -437,6 +438,7 @@ RewritePlan Repository::move_files(const git_oid& source,
       plan.updates.emplace(name, replacement->second);
     }
   }
+  add_alias_updates(plan);
   return plan;
 }
 

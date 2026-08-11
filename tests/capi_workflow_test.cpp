@@ -6,6 +6,7 @@
 
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace gg::test {
@@ -71,7 +72,7 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   ASSERT_EQ(gg_repository_revisions(&revisions, repository, &revision_options),
             GIT_OK);
   ASSERT_EQ(revisions.count, 1U);
-  EXPECT_NE(revisions.items[0].change_id, nullptr);
+  EXPECT_EQ(revisions.items[0].aliases.count, 0U);
   EXPECT_STREQ(revisions.items[0].description, "base");
   EXPECT_STREQ(revisions.items[0].author->name, "GG Test");
   gg_revision_array_dispose(&revisions);
@@ -107,11 +108,6 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   EXPECT_TRUE(capabilities.can_undo);
   EXPECT_FALSE(capabilities.can_redo);
 
-  char* change_id = nullptr;
-  ASSERT_EQ(gg_repository_change_id(&change_id, repository, &working), GIT_OK);
-  EXPECT_EQ(std::strlen(change_id), 32U);
-  gg_string_dispose(change_id);
-
   gg_workspace_array workspaces{};
   ASSERT_EQ(gg_repository_workspaces(&workspaces, repository), GIT_OK);
   ASSERT_EQ(workspaces.count, 1U);
@@ -124,6 +120,16 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   ASSERT_EQ(gg_repository_snapshot_working_copy(&changed, repository, nullptr),
             GIT_OK);
   EXPECT_TRUE(changed);
+  revision_options.revisions = "@";
+  ASSERT_EQ(gg_repository_revisions(&revisions, repository, &revision_options),
+            GIT_OK);
+  ASSERT_EQ(revisions.count, 1U);
+  ASSERT_GT(revisions.items[0].aliases.count, 0U);
+  EXPECT_TRUE(std::any_of(
+      revisions.items[0].aliases.ids,
+      revisions.items[0].aliases.ids + revisions.items[0].aliases.count,
+      [&](const git_oid& alias) { return git_oid_equal(&alias, &working); }));
+  gg_revision_array_dispose(&revisions);
   ASSERT_EQ(gg_repository_status(&status, repository, &status_options), GIT_OK);
   ASSERT_TRUE(status.has_working_copy);
   ASSERT_EQ(status.entry_count, 1U);

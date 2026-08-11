@@ -46,8 +46,8 @@ void command_rebase(Repository& repo,
   } else {
     repo.record(std::move(plan.updates), {}, repo.head_state(), "gg rebase");
   }
-  output << "Rebased " << oid_string(old, 8) << " as "
-         << oid_string(rewritten, 8) << '\n';
+  output << "Rebased " << repo.short_commit_id(old).value << " as "
+         << repo.short_commit_id(rewritten).value << '\n';
 }
 
 void command_reorder(Repository& repo,
@@ -155,7 +155,7 @@ void command_reorder(Repository& repo,
   } else {
     repo.record(std::move(plan.updates), {}, repo.head_state(), "gg reorder");
   }
-  output << "Reordered " << oid_string(source, 8) << '\n';
+  output << "Reordered " << repo.short_commit_id(source).value << '\n';
 }
 
 void command_split(Repository& repo,
@@ -189,14 +189,13 @@ void command_split(Repository& repo,
   const git_oid selected = repo.rewrite_commit(old, old_parents, selected_tree,
                                                 selected_message);
   const git_oid remainder = repo.create_commit(old_tree, {selected}, "");
-  const std::string remainder_id = repo.new_change_id();
   RewritePlan plan = repo.descendants({{old, remainder}}, {old});
   for (const auto& [name, target] : repo.rewrite_refs()) {
-    if (target == old && starts_with(name, kChangePrefix)) {
+    if (target == old && starts_with(name, kAliasPrefix)) {
       plan.updates[name] = selected;
     }
   }
-  plan.updates[std::string(kChangePrefix) + remainder_id] = remainder;
+  plan.updates[std::string(kAliasPrefix) + oid_string(old)] = selected;
   const auto workspace = repo.workspace();
   const git_oid new_workspace = *workspace == old
                                     ? remainder
@@ -204,9 +203,9 @@ void command_split(Repository& repo,
                                            ? plan.commits.at(*workspace)
                                            : *workspace);
   finish_workspace(repo, new_workspace, std::move(plan.updates), {}, "gg split");
-  output << "Selected change: " << oid_string(selected, 8) << '\n'
-         << "Remaining change: " << repo.short_change_id(remainder_id) << ' '
-         << oid_string(remainder, 8) << '\n';
+  output << "Selected change: " << repo.short_commit_id(selected).value << '\n'
+         << "Remaining change: " << repo.short_commit_id(remainder).value
+         << '\n';
 }
 
 void command_squash(Repository& repo,
@@ -247,26 +246,18 @@ void command_squash(Repository& repo,
       {{destination_oid, rewritten_destination},
        {source_oid, rewritten_destination}},
       {source_oid});
-  std::set<std::string> deletes;
-  for (const auto& [name, target] : repo.rewrite_refs()) {
-    if (target == source_oid && starts_with(name, kChangePrefix)) {
-      plan.updates.erase(name);
-      deletes.insert(name);
-    }
-  }
   const auto workspace = repo.workspace();
   git_oid new_workspace = *workspace;
   if (*workspace == source_oid) {
     new_workspace = repo.create_commit(
         *git_commit_tree_id(source_commit.get()), {rewritten_destination}, "");
-    const std::string id = repo.new_change_id();
-    plan.updates[std::string(kChangePrefix) + id] = new_workspace;
   } else if (plan.commits.contains(*workspace)) {  // GG_COV_EXCL_BRANCH
     new_workspace = plan.commits.at(*workspace);
   }
-  finish_workspace(repo, new_workspace, std::move(plan.updates), std::move(deletes),
+  finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                    "gg squash");
-  output << "Squashed into " << oid_string(rewritten_destination, 8) << '\n';
+  output << "Squashed into " << repo.short_commit_id(rewritten_destination).value
+         << '\n';
 }
 
 void command_abandon(Repository& repo,
@@ -355,21 +346,20 @@ void command_abandon(Repository& repo,
     if (!selected.contains(target) || starts_with(name, kWorkspacePrefix)) {
       continue;
     }
-    if (starts_with(name, kChangePrefix) ||
+    if (starts_with(name, kAliasPrefix) ||
         (!options.retain_bookmarks && starts_with(name, "refs/heads/"))) {
       deletes.insert(name);
     } else {
       plan.updates[name] = replacements.at(target).front();
     }
   }
+  repo.add_alias_updates(plan);
   const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     git_oid new_workspace = *workspace;
     if (selected.contains(*workspace)) {
       const std::vector<git_oid>& parents = replacements.at(*workspace);
       new_workspace = repo.create_commit(combined_tree(repo, parents), parents, "");
-      plan.updates[std::string(kChangePrefix) + repo.new_change_id()] =
-          new_workspace;
     } else if (plan.commits.contains(*workspace)) {
       new_workspace = plan.commits.at(*workspace);
     }
@@ -447,7 +437,7 @@ void command_restore(Repository& repo,
                                     : *workspace;
   finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                    "gg restore");
-  output << "Restored into " << oid_string(rewritten, 8) << ".\n";
+  output << "Restored into " << repo.short_commit_id(rewritten).value << ".\n";
 }
 
 void command_move_files(Repository& repo,
@@ -488,7 +478,8 @@ void command_move_files(Repository& repo,
   finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                    "gg move files");
   output << "Moved " << paths.size() << " file" << (paths.size() == 1 ? "" : "s")
-         << " into " << oid_string(plan.commits.at(destination), 8) << ".\n";
+         << " into " << repo.short_commit_id(plan.commits.at(destination)).value
+         << ".\n";
 }
 
 void command_simplify_parents(Repository& repo,
@@ -622,6 +613,7 @@ void command_simplify_parents(Repository& repo,
       plan.updates.emplace(name, replacement->second);
     }
   }
+  repo.add_alias_updates(plan);
   const git_oid new_workspace = plan.commits.contains(*workspace)
                                     ? plan.commits.at(*workspace)
                                     : *workspace;

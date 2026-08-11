@@ -95,11 +95,13 @@ RefListItem ref_list_item(std::string name,
           conflict};
 }
 
-void render_ref_list_item(const RefListItem& item,
+void render_ref_list_item(Repository& repo,
+                          const RefListItem& item,
                           OutputStyle style,
                           std::ostream& output) {
   output << styled(output, item.display_name, style) << ": "
-         << styled(output, oid_string(item.oid, 8), OutputStyle::commit_id)
+         << styled(output, repo.short_commit_id(item.oid).value,
+                   OutputStyle::commit_id)
          << '\n';
 }
 
@@ -209,12 +211,13 @@ void render_operation_patches(
   std::set<std::string> changes;
   for (const auto& [name, oid] : before->refs) {
     (void)oid;
-    if (starts_with(name, kChangePrefix)) changes.insert(name);
+    if (starts_with(name, kAliasPrefix)) changes.insert(name);
   }
   for (const auto& [name, oid] : after.refs) {
     (void)oid;
-    if (starts_with(name, kChangePrefix)) changes.insert(name);
+    if (starts_with(name, kAliasPrefix)) changes.insert(name);
   }
+  std::set<std::string> rendered;
   for (const std::string& name : changes) {
     bool has_old = false;
     git_oid old_oid{};
@@ -226,9 +229,18 @@ void render_operation_patches(
     const auto current = after.refs.find(name);
     const bool has_new = current != after.refs.end();
     const git_oid new_oid = has_new ? current->second : git_oid{};
+    if (!has_old) {
+      const std::string alias = name.substr(kAliasPrefix.size());
+      check(git_oid_fromstr(&old_oid, alias.c_str(),
+                            git_repository_oid_type(repo.raw())),
+            "parse operation commit alias");
+      has_old = true;
+    }
     if (has_old && has_new && old_oid == new_oid) {
       continue;
     }
+    const std::string pair = oid_string(old_oid) + oid_string(new_oid);
+    if (!rendered.insert(pair).second) continue;
     if (selected.has_value()) {
       bool matches = false;
       if (has_new) matches = selected->contains(new_oid);
@@ -439,7 +451,7 @@ void command_bookmark(Repository& repo,
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      render_ref_list_item(item, OutputStyle::bookmark, output);
+      render_ref_list_item(repo, item, OutputStyle::bookmark, output);
     }
     return;
   }
@@ -590,7 +602,7 @@ void command_bookmark(Repository& repo,
     repo.record(std::move(updates), {}, repo.head_state(),
                 advancing ? "gg bookmark advance" : "gg bookmark move");
     output << (advancing ? "Advanced " : "Moved ") << matches.size()
-           << " bookmark(s) to " << oid_string(target, 8) << '\n';
+           << " bookmark(s) to " << repo.short_commit_id(target).value << '\n';
     return;
   }
   const git_oid target =
@@ -623,7 +635,7 @@ void command_bookmark(Repository& repo,
   repo.record(std::move(updates), {}, repo.head_state(), "gg bookmark");
   for (const std::string& name : options.names) {
     output << (options.action == BookmarkAction::create ? "Created " : "Moved ")
-           << name << " at " << oid_string(target, 8) << '\n';
+           << name << " at " << repo.short_commit_id(target).value << '\n';
   }
 }
 
@@ -708,7 +720,7 @@ void command_tag(Repository& repo,
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      render_ref_list_item(item, OutputStyle::tag, output);
+      render_ref_list_item(repo, item, OutputStyle::tag, output);
     }
     return;
   }
@@ -752,7 +764,8 @@ void command_tag(Repository& repo,
   }
   repo.record(std::move(updates), {}, repo.head_state(), "gg tag set");
   for (const std::string& name : options.names) {
-    output << "Set " << name << " at " << oid_string(target, 8) << '\n';
+    output << "Set " << name << " at " << repo.short_commit_id(target).value
+           << '\n';
   }
 }
 
@@ -995,7 +1008,7 @@ void command_fetch(Repository& repo,
     output << "Fetched " << name << '\n';
   }
   repo.apply_refs(tracking_updates, tracking_deletes, "track fetched refs");
-  repo.record(repo.missing_change_ids(), {}, repo.head_state(), "gg fetch");
+  repo.record({}, {}, repo.head_state(), "gg fetch");
 }
 
 void command_push(Repository& repo,
@@ -1061,7 +1074,7 @@ void command_push(Repository& repo,
     if (!named) {
       throw UserError(
           "push revision is not named by a local bookmark or tag: " +
-          oid_string(revision, 8));
+          repo.short_commit_id(revision).value);
     }
   }
   if (options.all) {
@@ -1305,7 +1318,7 @@ void command_operation_log(Repository& repo,
       const std::string marker =
           styled(output, entry.oid == newest ? "@" : "○",
                  entry.oid == newest ? OutputStyle::working_copy
-                                     : OutputStyle::change_id);
+                                     : OutputStyle::commit_id);
       graph.add(output, entry.oid, graph_edges[entry.oid], marker,
                 content.str());
     }

@@ -300,10 +300,7 @@ TEST_F(RepositoryTest, RegistersGitCreatedLinkedWorktreesOnFirstUse) {
   const git_oid workspace =
       ref(std::string(detail::kWorkspacePrefix) + name);
   detail::Repository repo(linked);
-  const auto id = repo.change_id(workspace);
-  ASSERT_TRUE(id.has_value());
-  EXPECT_EQ(id->size(), 32U);
-  EXPECT_NE(*id, git_oid_tostr_s(&workspace));
+  EXPECT_TRUE(repo.commit_aliases(workspace).empty());
   EXPECT_EQ(invoke_git_at(linked, {"status", "--porcelain=v2",
                                    "--untracked-files=all"})
                 .output,

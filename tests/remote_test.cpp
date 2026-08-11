@@ -465,7 +465,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
     const std::optional<git_oid> workspace =
         cloned_repo.ref_target(detail::kWorkspaceRef);
     ASSERT_TRUE(workspace.has_value());
-    EXPECT_TRUE(cloned_repo.change_id(*workspace).has_value());
+    EXPECT_TRUE(cloned_repo.commit_aliases(*workspace).empty());
     EXPECT_TRUE(cloned_repo.ref_target("refs/heads/topic").has_value());
     EXPECT_TRUE(cloned_repo.ref_target("refs/tags/release").has_value());
     EXPECT_TRUE(cloned_repo
@@ -486,18 +486,17 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
         cloned_repo.ref_target("refs/remotes/upstream/topic");
     std::size_t revisions = 0;
     while (cursor.has_value()) {
-      const std::optional<std::string> id = cloned_repo.change_id(*cursor);
-      ASSERT_TRUE(id.has_value());
-      EXPECT_EQ(id->size(), 32U);
-      EXPECT_EQ(id->find_first_not_of("zyxwvutsrqponmlk"), std::string::npos);
-      EXPECT_NE(*id, detail::oid_string(*cursor));
+      EXPECT_TRUE(cloned_repo.commit_aliases(*cursor).empty());
       const std::vector<git_oid> parents = cloned_repo.parents(*cursor);
       cursor = parents.empty() ? std::nullopt
                                : std::optional<git_oid>{parents.front()};
       ++revisions;
     }
     EXPECT_GE(revisions, 2U);
-    EXPECT_TRUE(cloned_repo.missing_change_ids().empty());
+    const auto aliases = cloned_repo.aliases();
+    EXPECT_TRUE(std::all_of(aliases.begin(), aliases.end(), [](const auto& alias) {
+      return alias.first == detail::oid_string(alias.second);
+    }));
   }
 
   const auto tag_clone_path = clone_path.string() + "-tag";

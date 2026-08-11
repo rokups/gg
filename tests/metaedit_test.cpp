@@ -6,6 +6,8 @@
 
 #include "repository.hpp"
 
+#include <algorithm>
+
 namespace gg::test {
 namespace {
 
@@ -19,15 +21,13 @@ TEST_F(RepositoryTest, EditsMetadataAndRestacksDescendants) {
   ASSERT_EQ(invoke({"new", "-m", "old", "main"}).code, 0);
   detail::Repository repo(path_);
   const git_oid old = repo.resolve("@");
-  const std::optional<std::string> old_id = repo.change_id(old);
-  ASSERT_TRUE(old_id.has_value());
   ASSERT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
   ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
 
   const Result edited =
       invoke({"metaedit", "@-", "-m", "changed", "--author",
               "Alice Example <alice@example.test>", "--author-timestamp",
-              "2000-01-23T01:23:45-08:00", "--update-change-id"});
+              "2000-01-23T01:23:45-08:00"});
   ASSERT_EQ(edited.code, 0) << edited.error;
   EXPECT_NE(edited.output.find("Modified 1 revision(s)."), std::string::npos);
   EXPECT_NE(edited.output.find("Rebased 1 descendant revision(s)."),
@@ -43,10 +43,12 @@ TEST_F(RepositoryTest, EditsMetadataAndRestacksDescendants) {
   EXPECT_EQ(std::string(author->name), "Alice Example");
   EXPECT_EQ(std::string(author->email), "alice@example.test");
   EXPECT_EQ(author->when.offset, -8 * 60);
-  const std::optional<std::string> new_id = repo.change_id(topic);
-  ASSERT_TRUE(new_id.has_value());
-  EXPECT_NE(*new_id, *old_id);
-  EXPECT_FALSE(has_ref(std::string(detail::kChangePrefix) + *old_id));
+  const std::vector<git_oid> aliases = repo.commit_aliases(topic);
+  EXPECT_TRUE(std::any_of(aliases.begin(), aliases.end(), [&](const git_oid& alias) {
+    return git_oid_equal(&alias, &old) != 0;
+  }));
+  const git_oid resolved_old = repo.resolve(detail::oid_string(old, 8));
+  EXPECT_NE(git_oid_equal(&resolved_old, &topic), 0);
 
   ASSERT_EQ(invoke({"metaedit", "topic", "--update-author",
                     "--update-author-timestamp"})
@@ -86,13 +88,15 @@ TEST_F(RepositoryTest, EditsMetadataAndRestacksDescendants) {
 }
 
 TEST_F(RepositoryTest, EditsExternalCommitMetadataWithoutAWorkspace) {
-  const Result edited = invoke({"metaedit", "main", "-m", "updated",
-                                "--update-change-id"});
+  const git_oid old = ref("refs/heads/main");
+  const Result edited = invoke({"metaedit", "main", "-m", "updated"});
   ASSERT_EQ(edited.code, 0) << edited.error;
   detail::Repository repo(path_);
   EXPECT_EQ(std::string(git_commit_message(lookup(repo, "main").get())),
             "updated");
-  EXPECT_TRUE(repo.change_id(repo.resolve("main")).has_value());
+  const git_oid resolved_old = repo.resolve(detail::oid_string(old, 8));
+  const git_oid current = repo.resolve("main");
+  EXPECT_NE(git_oid_equal(&resolved_old, &current), 0);
   EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
 }
 

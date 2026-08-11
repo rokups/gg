@@ -6,6 +6,7 @@
 
 #include <git2.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -20,8 +21,10 @@
 
 namespace gg::detail {
 
-inline constexpr std::string_view kChangePrefix = "refs/gg/changes/";
-inline constexpr std::string_view kChangeMapRef = "refs/gg/change-map";
+inline constexpr std::string_view kAliasPrefix = "refs/gg/aliases/";
+inline constexpr std::string_view kAliasMapRef = "refs/gg/commit-aliases";
+inline constexpr std::string_view kLegacyChangePrefix = "refs/gg/changes/";
+inline constexpr std::string_view kLegacyChangeMapRef = "refs/gg/change-map";
 inline constexpr std::string_view kWorkspacePrefix = "refs/gg/workspaces/";
 inline constexpr std::string_view kWorkspaceRef = "refs/gg/workspaces/default";
 inline constexpr std::string_view kOperationRef = "refs/gg/operations/current";
@@ -124,6 +127,7 @@ std::string oid_string(const git_oid& oid,
                        std::size_t length = GIT_OID_MAX_HEXSIZE);
 std::string first_line(const char* message);
 bool starts_with(std::string_view value, std::string_view prefix);
+std::int64_t commit_alias_time();
 
 struct HeadState { bool symbolic = true; std::string value; };
 struct ShortId { std::string value; std::size_t prefix_length; };
@@ -136,6 +140,10 @@ struct RewritePlan {
   std::map<git_oid, git_oid, OidLess> commits;
   std::map<std::string, git_oid> updates;
   std::set<std::string> deletes;
+};
+struct CommitAlias {
+  git_oid target{};
+  std::int64_t last_used{};
 };
 
 class Repository {
@@ -300,25 +308,19 @@ class Repository {
                          bool restore_repository = true,
                          bool restore_remote_tracking = true) const;
 
-  const std::map<std::string, git_oid>& changes() const;
-
-  std::map<std::string, git_oid> missing_change_ids() const;
-
-  std::set<std::string> invalid_change_id_refs() const;
-
   void import_git_history(std::ostream* progress = nullptr) const;
 
-  std::string new_change_id() const;
-
-  std::string short_change_id(std::string_view id) const;
-
-  ShortId short_change_id_parts(std::string_view id) const;
+  const std::map<std::string, git_oid>& aliases() const;
 
   ShortId short_commit_id(const git_oid& oid) const;
 
   void set_short_id_scope(std::span<const git_oid> revisions);
 
-  std::optional<std::string> change_id(const git_oid& oid) const;
+  std::vector<git_oid> commit_aliases(const git_oid& oid) const;
+
+  void add_alias_updates(RewritePlan& plan) const;
+
+  bool collect_expired_aliases(std::string_view description) const;
 
   git_oid resolve(std::string_view revision) const;
 
@@ -342,12 +344,16 @@ class Repository {
 
   void migrate_operation_history() const;
 
-  std::map<std::string, git_oid> read_change_map() const;
+  std::map<std::string, CommitAlias> read_alias_map() const;
 
-  git_oid write_change_map(
-      const std::map<std::string, git_oid>& changes) const;
+  git_oid write_alias_map(
+      const std::map<std::string, CommitAlias>& aliases) const;
 
   std::set<std::string> legacy_change_refs() const;
+
+  std::set<std::string> expired_alias_refs() const;
+
+  void touch_aliases(const std::vector<std::string>& aliases) const;
 
   RepositoryPtr repo_;
   bool ignore_working_copy_{false};
@@ -355,12 +361,9 @@ class Repository {
   std::optional<OperationState> operation_view_;
   std::optional<git_oid> viewed_operation_;
   mutable std::optional<std::map<std::string, git_oid>> data_refs_cache_;
-  mutable std::optional<std::map<std::string, git_oid>> changes_cache_;
-  mutable std::optional<std::map<git_oid, std::string, OidLess>>
-      change_ids_by_oid_cache_;
+  mutable std::optional<std::map<std::string, git_oid>> aliases_cache_;
   mutable std::map<git_oid, TreeConflicts, OidLess> conflict_cache_;
   mutable std::map<std::string, git_oid> pending_conflict_refs_;
-  std::optional<std::vector<std::string>> scoped_change_ids_;
   std::optional<std::vector<std::string>> scoped_commit_ids_;
   bool ref_cache_enabled_{false};
   bool linked_worktree_{false};

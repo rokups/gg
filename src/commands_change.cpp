@@ -288,17 +288,9 @@ void command_new(Repository& repo,
         plan.updates[name] = replacement->second;
       }
     }
+    repo.add_alias_updates(plan);
   }
-  auto missing_ids = repo.missing_change_ids();
-  std::string id;
-  do {
-    id = repo.new_change_id();
-  } while (missing_ids.contains(std::string(kChangePrefix) + id));  // GG_COV_EXCL_BRANCH
-  for (auto& [reference, oid] : missing_ids) {
-    if (plan.commits.contains(oid)) oid = plan.commits.at(oid);
-    plan.updates.emplace(reference, oid);
-  }
-  plan.updates[std::string(kChangePrefix) + id] = change;
+  plan.updates[std::string(kAliasPrefix) + oid_string(change)] = change;
   if (!options.no_edit) {
     finish_workspace(repo, change, std::move(plan.updates), {}, "gg new");
   } else if (old_workspace.has_value()) {
@@ -310,8 +302,7 @@ void command_new(Repository& repo,
     repo.record(std::move(plan.updates), {}, repo.head_state(), "gg new");
   }
   output << (options.no_edit ? "Created change: " : "Working copy now at: ")
-         << repo.short_change_id(id) << ' '
-         << oid_string(change, 8) << ' '
+         << repo.short_commit_id(change).value << ' '
          << (options.message.empty() ? "(no description set)" : options.message)
          << '\n';
 }
@@ -367,14 +358,12 @@ void command_commit(Repository& repo,
   const git_oid committed =
       repo.rewrite_commit(*workspace, parents, selected_tree, message);
   const git_oid new_workspace = repo.create_commit(full_tree, {committed}, "");
-  const std::string id = repo.new_change_id();
   RewritePlan plan = repo.descendants({{*workspace, committed}});
-  plan.updates[std::string(kChangePrefix) + id] = new_workspace;
   finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                    "gg commit");
-  output << "Committed as " << oid_string(committed, 8) << '\n'
-         << "Working copy now at: " << repo.short_change_id(id) << ' '
-         << oid_string(new_workspace, 8) << '\n';
+  output << "Committed as " << repo.short_commit_id(committed).value << '\n'
+         << "Working copy now at: " << repo.short_commit_id(new_workspace).value
+         << '\n';
 }
 
 void command_status(Repository& repo,
@@ -392,12 +381,7 @@ void command_status(Repository& repo,
     return;
   }
   CommitPtr change = repo.commit(*workspace);
-  const auto id = repo.change_id(*workspace);
   output << "Working copy (@): "
-         << (id.has_value()
-                 ? styled_short_change_id(repo, output, *id, true)
-                 : styled(output, "--------", OutputStyle::working_change_id))
-         << ' '
          << styled_short_commit_id(repo, output, *workspace, true)
          << ' ';
   const std::string description = first_line(git_commit_message(change.get()));
@@ -575,33 +559,27 @@ void command_log(Repository& repo,
   for (const git_oid& revision : revisions) {
     const git_oid oid = revision;
     CommitPtr value = repo.commit(oid);
-    const auto id = repo.change_id(oid);
     const auto bookmarks = repo.bookmarks(oid);
     std::ostringstream content;
     set_output_color_mode(content, output_color_mode(output));
     const bool working = workspace.has_value() && *workspace == oid;
     const std::string marker =
         styled(output, working ? "@" : "○",
-               working ? OutputStyle::working_copy : OutputStyle::change_id);
-    content << (id.has_value()
-                      ? styled_short_change_id(repo, content, *id, working)
-                      : styled_short_commit_id(repo, content, oid, working))
-              << ' '
-              << styled_short_commit_id(repo, content, oid, working);
-      for (const std::string& bookmark : bookmarks) {
-        content << " " << styled(content, bookmark, OutputStyle::bookmark);
+               working ? OutputStyle::working_copy : OutputStyle::commit_id);
+    content << styled_short_commit_id(repo, content, oid, working);
+    for (const std::string& bookmark : bookmarks) {
+      content << " " << styled(content, bookmark, OutputStyle::bookmark);
+    }
+    if (const auto tagged = tags.find(oid); tagged != tags.end()) {
+      for (const std::string& tag : tagged->second) {
+        content << " " << styled(content, tag, OutputStyle::tag);
       }
-      if (const auto tagged = tags.find(oid); tagged != tags.end()) {
-        for (const std::string& tag : tagged->second) {
-          content << " " << styled(content, tag, OutputStyle::tag);
-        }
-      }
-      const std::string description =
-          first_line(git_commit_message(value.get()));
+    }
+    const std::string description = first_line(git_commit_message(value.get()));
     if (repo.commit_has_conflicts(oid)) content << " conflict";
-      content << (options.no_graph ? " " : "\n")
-              << (description.empty() ? "(no description set)" : description)
-              << '\n';
+    content << (options.no_graph ? " " : "\n")
+            << (description.empty() ? "(no description set)" : description)
+            << '\n';
     if (show_diff) {
       render_revision_diff(repo, oid, options.paths, options.format, content);
     }
@@ -671,7 +649,7 @@ void command_metaedit(Repository& repo,
 
     CommitPtr old = repo.commit(oid);
     std::optional<std::string_view> message;
-    bool metadata_changed = options.update_change_id;
+    bool metadata_changed = false;
     if (is_selected && options.message_provided) {
       const char* old_message = git_commit_message(old.get());
       const std::string_view original =
@@ -748,28 +726,16 @@ void command_metaedit(Repository& repo,
       plan.updates.emplace(name, replacement->second);
     }
   }
-  std::set<std::string> deletes;
-  if (options.update_change_id) {
-    for (const git_oid& old : selected) {
-      for (const auto& [name, target] : refs) {
-        if (target == old && starts_with(name, kChangePrefix)) {
-          plan.updates.erase(name);
-          deletes.insert(name);
-        }
-      }
-      const git_oid target = plan.commits.at(old);
-      plan.updates[std::string(kChangePrefix) + repo.new_change_id()] = target;
-    }
-  }
+  repo.add_alias_updates(plan);
   const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     const git_oid next = plan.commits.contains(*workspace)
                              ? plan.commits.at(*workspace)
                              : *workspace;
-    finish_workspace(repo, next, std::move(plan.updates), std::move(deletes),
+    finish_workspace(repo, next, std::move(plan.updates), {},
                      "gg metaedit");
   } else {
-    repo.record(std::move(plan.updates), std::move(deletes), repo.head_state(),
+    repo.record(std::move(plan.updates), {}, repo.head_state(),
                 "gg metaedit");
   }
   output << "Modified " << modified << " revision(s).\n";
@@ -783,15 +749,9 @@ void command_edit(Repository& repo,
                   std::ostream& output) {
   repo.sync_for_command();
   const git_oid target = repo.resolve(options.revision);
-  std::map<std::string, git_oid> updates;
-  auto id = repo.change_id(target);
-  if (!id.has_value()) {
-    id = repo.new_change_id();
-    updates[std::string(kChangePrefix) + *id] = target;
-  }
-  finish_workspace(repo, target, std::move(updates), {}, "gg edit");
-  output << "Working copy now at: " << repo.short_change_id(*id) << ' '
-         << oid_string(target, 8) << '\n';
+  finish_workspace(repo, target, {}, {}, "gg edit");
+  output << "Working copy now at: " << repo.short_commit_id(target).value
+         << '\n';
 }
 
 void command_describe(Repository& repo,
@@ -886,6 +846,7 @@ void command_describe(Repository& repo,
       plan.updates.emplace(name, replacement->second);
     }
   }
+  repo.add_alias_updates(plan);
   const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     const git_oid next = plan.commits.contains(*workspace)
@@ -948,27 +909,17 @@ void command_move(Repository& repo,
   }
   const git_oid target = *frontier.begin();
 
-  std::map<std::string, git_oid> updates;
   git_oid destination = target;
-  std::string id;
-  if (edit) {
-    const auto existing = repo.change_id(target);
-    id = existing.value_or(repo.new_change_id());
-    if (!existing.has_value()) {
-      updates[std::string(kChangePrefix) + id] = target;
-    }
-  } else {
-    id = repo.new_change_id();
+  if (!edit) {
     CommitPtr target_commit = repo.commit(target);
     destination = repo.create_commit(*git_commit_tree_id(target_commit.get()),
                                      {target}, "");
-    updates[std::string(kChangePrefix) + id] = destination;
   }
-  finish_workspace(repo, destination, std::move(updates), {},
+  finish_workspace(repo, destination, {}, {},
                    options.direction == MovementDirection::next ? "gg next"
                                                                 : "gg prev");
-  output << "Working copy now at: " << repo.short_change_id(id) << ' '
-         << oid_string(destination, 8) << '\n';
+  output << "Working copy now at: " << repo.short_commit_id(destination).value
+         << '\n';
 }
 
 }  // namespace gg::detail

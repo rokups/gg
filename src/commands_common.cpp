@@ -208,14 +208,8 @@ struct StyleSpec {
   std::string_view label;
 };
 
-constexpr std::array<StyleSpec, 23> kStyles{{
+constexpr std::array<StyleSpec, 17> kStyles{{
     {"\x1b[1;38;5;2m", "working_copy"},
-    {"\x1b[38;5;5m", "change_id"},
-    {"\x1b[1;38;5;5m", "change_id shortest prefix"},
-    {"\x1b[38;5;8m", "change_id shortest rest"},
-    {"\x1b[1;38;5;13m", "working_copy change_id"},
-    {"\x1b[1;38;5;13m", "working_copy change_id shortest prefix"},
-    {"\x1b[38;5;8m", "working_copy change_id shortest rest"},
     {"\x1b[38;5;4m", "commit_id"},
     {"\x1b[1;38;5;4m", "commit_id shortest prefix"},
     {"\x1b[38;5;8m", "commit_id shortest rest"},
@@ -563,18 +557,6 @@ std::string styled_short_id(std::ostream& output,
          styled(output, id.value.substr(id.prefix_length), rest_style);
 }
 
-std::string styled_short_change_id(Repository& repo,
-                                   std::ostream& output,
-                                   std::string_view id,
-                                   bool working) {
-  return styled_short_id(
-      output, repo.short_change_id_parts(id),
-      working ? OutputStyle::working_change_id_prefix
-              : OutputStyle::change_id_prefix,
-      working ? OutputStyle::working_change_id_rest
-              : OutputStyle::change_id_rest);
-}
-
 std::string styled_short_commit_id(Repository& repo,
                                    std::ostream& output,
                                    const git_oid& oid,
@@ -776,6 +758,7 @@ void command_util_gc(Repository& repo,
                      const UtilGcCommand& options,
                      std::ostream& output) {
   repo.sync_for_command();
+  (void)repo.collect_expired_aliases("gg util gc");
   UtilExecCommand command{
       "git",
       {"--git-dir=" + std::string(git_repository_path(repo.raw())), "gc"}};
@@ -1025,9 +1008,7 @@ void command_workspace(Repository& repo,
       }
     }
     const std::string name = linked.workspace_name();
-    const std::string id = repo.new_change_id();
-    repo.record({{std::string(kWorkspacePrefix) + name, working},
-                 {std::string(kChangePrefix) + id, working}},
+    repo.record({{std::string(kWorkspacePrefix) + name, working}},
                 {}, repo.head_state(), "gg workspace add " + name, true);
     output << "Created workspace " << name << " at " << destination.string()
            << ".\n";
@@ -1103,10 +1084,8 @@ void command_workspace(Repository& repo,
         found == roots.end()
             ? "(stale)"
             : std::filesystem::weakly_canonical(found->second).string();
-    const auto id = repo.change_id(oid);
     output << name << ": "
-           << (id.has_value() ? repo.short_change_id(*id) : "--------") << ' '
-           << oid_string(oid, 8) << ' ' << workspace_root << '\n';
+           << repo.short_commit_id(oid).value << ' ' << workspace_root << '\n';
   }
 }
 

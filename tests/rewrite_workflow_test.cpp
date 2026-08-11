@@ -60,7 +60,10 @@ TEST_F(RepositoryTest, SquashesAnAncestorOfTheWorkingCopy) {
   ASSERT_EQ(child.code, 0) << child.error;
   const std::string child_id = token_after(child.output, "Working copy now at: ");
   ASSERT_EQ(invoke({"squash", "-r", source_id}).code, 0);
-  EXPECT_EQ(current_id(), child_id.substr(0, 8));
+  detail::Repository repo(path_);
+  const git_oid resolved_child = repo.resolve(child_id);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&resolved_child, &workspace), 0);
 }
 
 TEST_F(RepositoryTest, RebasesWithoutConflicts) {
@@ -106,7 +109,10 @@ TEST_F(RepositoryTest, RebasesAnAncestorOfTheWorkingCopy) {
   const Result rebased =
       invoke({"rebase", "-s", source_id, "-d", destination_id});
   ASSERT_EQ(rebased.code, 0) << rebased.error;
-  EXPECT_EQ(current_id(), child_id.substr(0, 8));
+  detail::Repository repo(path_);
+  const git_oid resolved_child = repo.resolve(child_id);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&resolved_child, &workspace), 0);
 }
 
 TEST_F(RepositoryTest, RejectsSplittingAllChanges) {

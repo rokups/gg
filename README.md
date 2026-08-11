@@ -19,8 +19,8 @@ history-editing workflow when an earlier commit needs to change. With `gg`:
 
 - The working copy is a mutable change that `gg` snapshots automatically. A
   separate staging step is optional.
-- Each change has a stable change ID, even when editing it produces a new Git
-  commit ID.
+- Each change is identified by its current Git commit ID. When a rewrite
+  changes that ID, its previous commit IDs remain usable as aliases.
 - `gg edit` can make any change the working copy. Further edits rewrite that
   change and automatically restack its descendants.
 - `gg new`, `gg split`, `gg squash`, `gg rebase`, and `gg abandon` operate on
@@ -29,7 +29,8 @@ history-editing workflow when an earlier commit needs to change. With `gg`:
   operations.
 
 Revisions use `@` for the working-copy change and `@-` for its parent. Commands
-also accept stable change-ID prefixes, bookmarks, and Git object IDs.
+also accept current or retained historical commit-ID prefixes, bookmarks, and
+Git object IDs.
 
 ## Workflows
 
@@ -55,14 +56,15 @@ git push -u origin topic
 
 Descriptions are editable metadata rather than a finalization boundary. Use
 `gg describe -m "New description"` at any time. To revise an earlier change,
-copy its stable ID from `gg log`, run `gg edit CHANGE_ID`, edit the files, and
+copy its commit ID from `gg log`, run `gg edit COMMIT_ID`, edit the files, and
 run another `gg` command to snapshot the result. Descendant changes and affected
-local refs are updated together.
+local refs are updated together; the copied ID remains an alias for the
+rewritten commit.
 
 ### Commit-oriented changes
 
 `gg commit` provides a more familiar boundary while retaining automatic
-snapshotting, stable change IDs, restacking, and undo:
+snapshotting, historical commit-ID aliases, restacking, and undo:
 
 ```sh
 gg new
@@ -111,9 +113,9 @@ command schema.
 Each working copy is represented by a commit under
 `refs/gg/workspaces/<name>`. The primary checkout starts as `default`; linked
 Git worktrees have their own names, working changes, and operation histories
-while sharing commits, change IDs, bookmarks, and tags. Stable change
-IDs are stored together under `refs/gg/change-map` so repositories do not
-expose one Git reference for every commit. Git `HEAD` stays at the working
+while sharing commits, commit aliases, bookmarks, and tags. Historical commit
+IDs are stored together under `refs/gg/commit-aliases` so repositories do not
+expose one Git reference for every alias. Git `HEAD` stays at the working
 change's parent so existing tooling continues to see normal working-tree
 changes.
 
@@ -128,10 +130,9 @@ gg workspace list
 
 `gg workspace` is needed in addition to `git worktree` because Git only tracks
 the checkout, `HEAD`, and index. gg must also assign a working-change ref and
-stable ID, isolate undo and conflict-recovery state, and prevent a rewrite in
-one checkout from silently moving another. A worktree created directly with
-`git worktree add` is adopted automatically on its first revision-facing gg
-command.
+isolate undo and conflict-recovery state, and prevent a rewrite in one checkout
+from silently moving another. A worktree created directly with `git worktree
+add` is adopted automatically on its first revision-facing gg command.
 
 Removing a checkout remains a Git operation: run `git worktree remove PATH`,
 then `gg workspace forget NAME` if its gg workspace ref is still listed.
@@ -232,8 +233,11 @@ refuses any selection whose reachable history contains a conflict. Run
 `gg util install-git-hooks` to install a managed `pre-push` hook that applies
 the same check to native `git push`; an existing hook is preserved and chained.
 
-Change IDs use Jujutsu's 32-character reverse-hex format (`z` through `k`).
-Commands show the shortest unique prefix with a minimum length of eight.
+Commit IDs and all retained aliases share one prefix namespace. Commands show
+the shortest unique prefix with a minimum length of eight. Explicitly resolving
+an alias refreshes its last-used time; unused aliases are collected after one
+week by repository mutations and `gg util gc`. Alias collection is recorded in
+the operation log, so it can be undone.
 
 `gg undo` and `gg redo` behave like editor history: each restoration is itself
 recorded, repeated commands move backward or forward, and a new operation after
