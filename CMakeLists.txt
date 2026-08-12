@@ -128,7 +128,7 @@ target_include_directories(gg_cli_lib PUBLIC src)
 target_link_libraries(gg_cli_lib PUBLIC gg_lib PRIVATE CLI11::CLI11)
 target_compile_options(gg_cli_lib PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-add_executable(gg_cli src/main.cpp)
+add_executable(gg_cli src/main.cpp $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/icon.rc>)
 set_target_properties(gg_cli PROPERTIES OUTPUT_NAME gg)
 target_link_libraries(gg_cli PRIVATE gg_cli_lib)
 target_compile_options(gg_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
