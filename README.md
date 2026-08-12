@@ -238,9 +238,10 @@ the next `gg` command after a native Git fetch or pull, fetched tracked
 bookmarks fast-forward local bookmarks that are their ancestors. Diverged local
 bookmarks are left untouched.
 
-Push only sends existing bookmarks and tags, in one atomic `git push`. A
-revision selector must resolve to an existing local ref; an unbookmarked change
-is rejected instead of receiving a generated remote name.
+With no selectors, `gg push` advances the closest bookmark to a non-empty,
+described `@` (or `@-` when `@` is not publishable) and sends it in one atomic
+`git push`. Explicit selection modes retain their selected-ref behavior; a
+revision selector must resolve to an existing local bookmark or tag.
 
 Rewrites restack descendants and move affected local refs together. Conflicts
 are recorded as local logical merge terms, so operations still succeed and

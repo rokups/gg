@@ -1149,9 +1149,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "  imports history and fast-forwards eligible tracked local bookmarks on success.");
   push->footer(
       "DEFAULTS:\n"
-      "  Atomically pushes changed tracked refs to origin. Explicit revisions must already\n"
+      "  Advances the closest bookmark to non-empty, described @ (or @- when @ is not\n"
+      "  publishable) and atomically pushes it to origin. Explicit revisions must already\n"
       "  have a local bookmark or tag; empty descriptions and conflicted history are refused.\n"
-      "EXAMPLES: gg push --bookmark topic --dry-run");
+      "EXAMPLES: gg push --dry-run; gg push --bookmark topic --dry-run");
 
   undo->footer(
       "DETAILS:\n"

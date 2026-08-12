@@ -108,7 +108,7 @@ TEST(AppTest, DocumentsDefaultsAndSideEffectsAcrossCommandFamilies) {
       {{"diff", "--doc"}, "Compares @ with its parent"},
       {{"bookmark", "set", "--doc"}, "move forward only"},
       {{"fetch", "--doc"}, "Fetches and prunes origin"},
-      {{"push", "--doc"}, "empty descriptions"},
+      {{"push", "--doc"}, "Advances the closest bookmark"},
       {{"operation", "restore", "--doc"},
        "Restores repository and remote-tracking state"},
       {{"workspace", "add", "--doc"}, "copying current sparse patterns"},
@@ -205,7 +205,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"fetch", "--branch", "bad name"}).code, 1);
   EXPECT_EQ(invoke({"fetch", "--tag", "bad name"}).code, 1);
   EXPECT_EQ(invoke({"fetch", "--remote", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"push"}).code, 0);
+  EXPECT_EQ(invoke({"push", "--dry-run"}).code, 0);
   EXPECT_EQ(invoke({"push", "-b", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-t", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-r", "missing"}).code, 2);

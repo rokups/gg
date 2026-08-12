@@ -381,6 +381,24 @@ void command_tracking(Repository& repo,
               track ? "gg track remote ref" : "gg untrack remote ref");
 }
 
+std::vector<std::pair<std::string, git_oid>> closest_bookmarks(
+    Repository& repo,
+    const std::vector<std::pair<std::string, git_oid>>& candidates) {
+  std::vector<std::pair<std::string, git_oid>> closest;
+  for (const auto& candidate : candidates) {
+    const bool shadowed =
+        std::ranges::any_of(candidates, [&](const auto& other) {
+          if (candidate.second == other.second) return false;
+          const int closer = git_graph_descendant_of(
+              repo.raw(), &other.second, &candidate.second);
+          check(closer, "select closest bookmarks");
+          return closer != 0;
+        });
+    if (!shadowed) closest.push_back(candidate);
+  }
+  return closest;
+}
+
 }  // namespace
 
 void command_bookmark(Repository& repo,
@@ -564,19 +582,7 @@ void command_bookmark(Repository& repo,
       matches.emplace_back(name, oid);
     }
     if (options.action == BookmarkAction::advance && options.names.empty()) {
-      std::vector<std::pair<std::string, git_oid>> closest;
-      for (const auto& candidate : matches) {
-        const bool shadowed =
-            std::ranges::any_of(matches, [&](const auto& other) {
-              if (candidate.second == other.second) return false;
-              const int closer = git_graph_descendant_of(
-                  repo.raw(), &other.second, &candidate.second);
-              check(closer, "select closest bookmarks");
-              return closer != 0;
-            });
-        if (!shadowed) closest.push_back(candidate);
-      }
-      matches = std::move(closest);
+      matches = closest_bookmarks(repo, matches);
     }
     if (matches.empty()) {
       output << "No bookmarks to update.\n";
@@ -1094,7 +1100,45 @@ void command_push(Repository& repo,
       std::string(kBookmarkTrackingPrefix) + name + "/";
   const std::string tag_tracking_prefix =
       std::string(kTagTrackingPrefix) + name + "/";
-  if (options.tracked || options.deleted || default_selection) {
+  if (default_selection) {
+    git_oid target = repo.resolve("@");
+    const auto publishable = [&](const git_oid& oid) {
+      CommitPtr commit = repo.commit(oid);
+      return !first_line(git_commit_message(commit.get())).empty() &&
+             !(*git_commit_tree_id(commit.get()) ==
+               combined_tree(repo, repo.parents(oid)));
+    };
+    if (!publishable(target)) {
+      const std::vector<git_oid> parents = repo.parents(target);
+      if (parents.empty() || !publishable(parents.front())) {
+        throw UserError("no non-empty described change at @ or @-");
+      }
+      target = parents.front();
+    }
+
+    std::vector<std::pair<std::string, git_oid>> bookmarks;
+    for (const auto& [reference, oid] : refs) {
+      constexpr std::string_view prefix = "refs/heads/";
+      if (!starts_with(reference, prefix)) continue;
+      if (!(oid == target)) {
+        const int ancestor =
+            git_graph_descendant_of(repo.raw(), &target, &oid);
+        check(ancestor, "select bookmark to push");
+        if (ancestor == 0) continue;
+      }
+      bookmarks.emplace_back(reference.substr(prefix.size()), oid);
+    }
+    bookmarks = closest_bookmarks(repo, bookmarks);
+    if (bookmarks.empty()) {
+      throw UserError("no bookmark found at or before the change to push");
+    }
+    for (const auto& [bookmark, oid] : bookmarks) {
+      const std::string reference = "refs/heads/" + bookmark;
+      updates.emplace(reference, oid_string(target));
+      if (!(oid == target)) local_updates.emplace(reference, target);
+    }
+  }
+  if (options.tracked || options.deleted) {
     for (const auto& [reference, oid] : refs) {
       (void)oid;
       std::string local;
@@ -1111,8 +1155,7 @@ void command_push(Repository& repo,
       } else {
         continue;
       }
-      if ((options.tracked || default_selection) &&  // GG_COV_EXCL_BRANCH
-          repo.ref_target(local).has_value()) {
+      if (options.tracked && repo.ref_target(local).has_value()) {
         updates.emplace(local, local);
       }
       if (options.deleted && !repo.ref_target(local).has_value()) {
@@ -1152,6 +1195,13 @@ void command_push(Repository& repo,
     storage.push_back(source + ":" + destination);
     output << (options.dry_run ? "Would push " : "Pushing ") << destination
            << " to " << name << '\n';
+  }
+  for (const auto& [reference, target] : local_updates) {
+    constexpr std::string_view prefix = "refs/heads/";
+    if (!starts_with(reference, prefix)) continue;
+    output << (options.dry_run ? "Would advance " : "Advancing ")
+           << reference.substr(prefix.size()) << " to "
+           << repo.short_commit_id(target).value << '\n';
   }
   if (options.dry_run) return;
   UtilExecCommand push_command{

@@ -309,6 +309,64 @@ TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
             2);
 }
 
+TEST_F(RepositoryTest, DefaultPushAdvancesTheClosestBookmark) {
+  const auto points_to = [&](std::string_view reference,
+                             const git_oid& target) {
+    const git_oid actual = ref(reference);
+    return git_oid_equal(&actual, &target) != 0;
+  };
+  const auto remote_path =
+      path_.parent_path() / (path_.filename().string() + "-default-push");
+  std::filesystem::remove_all(remote_path);
+  git_repository* bare = nullptr;
+  ASSERT_EQ(git_repository_init(&bare, remote_path.string().c_str(), 1), 0);
+  git_repository_free(bare);
+  git_remote* remote = nullptr;
+  ASSERT_EQ(git_remote_create(&remote, repository_.get(), "origin",
+                              remote_path.string().c_str()),
+            0);
+  git_remote_free(remote);
+
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  write("first.txt", "first\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"bookmark", "create", "near"}).code, 0);
+  const git_oid near = ref("refs/heads/near");
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  write("second.txt", "second\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid second = ref("refs/gg/workspaces/default");
+
+  const Result dry_run = invoke({"push", "--dry-run"});
+  ASSERT_EQ(dry_run.code, 0) << dry_run.error;
+  EXPECT_NE(dry_run.output.find("Would push refs/heads/near"),
+            std::string::npos);
+  EXPECT_NE(dry_run.output.find("Would advance near"), std::string::npos);
+  EXPECT_TRUE(points_to("refs/heads/near", near));
+  EXPECT_FALSE(has_ref("refs/remotes/origin/near"));
+
+  const Result pushed = invoke({"push"});
+  ASSERT_EQ(pushed.code, 0) << pushed.error;
+  EXPECT_TRUE(points_to("refs/heads/near", second));
+  EXPECT_TRUE(points_to("refs/remotes/origin/near", second));
+  EXPECT_FALSE(has_ref("refs/remotes/origin/main"));
+
+  ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
+  write("third.txt", "third\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid third = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"new"}).code, 0);
+  const git_oid empty = ref("refs/gg/workspaces/default");
+
+  const Result parent_push = invoke({"push"});
+  ASSERT_EQ(parent_push.code, 0) << parent_push.error;
+  EXPECT_TRUE(points_to("refs/heads/near", third));
+  EXPECT_TRUE(points_to("refs/remotes/origin/near", third));
+  EXPECT_TRUE(points_to("refs/gg/workspaces/default", empty));
+
+  std::filesystem::remove_all(remote_path);
+}
+
 TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   const auto remote_path = path_.parent_path() / (path_.filename().string() + "-bare");
   const auto clone_path = path_.parent_path() / (path_.filename().string() + "-clone");
