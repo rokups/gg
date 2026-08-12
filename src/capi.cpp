@@ -516,8 +516,10 @@ int gg_repository_adopt_git_history(gg_repository* repository,
       throw gg::detail::UserError("repository must not be null");
     }
     begin_operation(options, "adopt_git_history");
-    repository->implementation.invalidate_ref_cache();
-    repository->implementation.import_git_history();
+    Repository& implementation = repository->implementation;
+    implementation.invalidate_ref_cache();
+    implementation.import_git_history();
+    implementation.sync_remote_bookmarks();
     finish_operation(options, "adopt_git_history");
     return GIT_OK;
   });
@@ -1569,6 +1571,7 @@ int gg_repository_complete_fetch(gg_mutation_result* out,
         throw gg::detail::UserError("invalid fetch destination");
       }
     }
+    repo.add_remote_bookmark_updates(updates);
     repo.record(std::move(updates), std::move(deletes), repo.head_state(),
                 "gg fetch");
   });

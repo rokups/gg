@@ -112,6 +112,51 @@ TEST_F(RepositoryTest, ImportsNativeGitCommitsIntoACoherentWorkingChange) {
             "");
 }
 
+TEST_F(RepositoryTest, ReconcilesGitPulledRemoteBookmarks) {
+  const git_oid base = ref("refs/heads/main");
+  set_ref("refs/remotes/origin/main", base);
+  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  const git_oid imported_tracking =
+      ref("refs/gg/tracking/bookmarks/origin/main");
+  EXPECT_NE(git_oid_equal(&imported_tracking, &base), 0);
+
+  const git_oid pulled = raw_commit("pulled", {base});
+  ASSERT_EQ(invoke_git({"update-ref", "refs/remotes/origin/main",
+                        git_oid_tostr_s(&pulled)})
+                .code,
+            0);
+  ASSERT_EQ(invoke_git({"reset", "--hard", git_oid_tostr_s(&pulled)}).code,
+            0);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid pulled_local = ref("refs/heads/main");
+  const git_oid pulled_tracking =
+      ref("refs/gg/tracking/bookmarks/origin/main");
+  const git_oid pulled_parent =
+      commit_parent(ref("refs/gg/workspaces/default"));
+  EXPECT_NE(git_oid_equal(&pulled_local, &pulled), 0);
+  EXPECT_NE(git_oid_equal(&pulled_tracking, &pulled), 0);
+  EXPECT_NE(git_oid_equal(&pulled_parent, &pulled), 0);
+
+  const git_oid local = raw_commit("local", {pulled});
+  const git_oid remote = raw_commit("remote", {local});
+  set_ref("refs/heads/main", local);
+  set_ref("refs/remotes/origin/main", remote);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid advanced_local = ref("refs/heads/main");
+  const git_oid updated_tracking =
+      ref("refs/gg/tracking/bookmarks/origin/main");
+  EXPECT_NE(git_oid_equal(&advanced_local, &remote), 0);
+  EXPECT_NE(git_oid_equal(&updated_tracking, &remote), 0);
+
+  const git_oid local_side = raw_commit("local side", {remote});
+  const git_oid remote_side = raw_commit("remote side", {remote});
+  set_ref("refs/heads/main", local_side);
+  set_ref("refs/remotes/origin/main", remote_side);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid preserved_local = ref("refs/heads/main");
+  EXPECT_NE(git_oid_equal(&preserved_local, &local_side), 0);
+}
+
 TEST_F(RepositoryTest, FailedCommandsLeaveGitProjectionUnchanged) {
   ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
   write("tracked.txt", "changed\n");

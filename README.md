@@ -218,7 +218,10 @@ uses standard keys such as `core.editor`, `difftool.<name>.*`, and
 `mergetool.<name>.*`; gg creates no TOML configuration or private defaults.
 
 `gg pull` is a direct wrapper over `git pull`; every trailing argument is
-forwarded unchanged and Git's exit status is returned.
+forwarded unchanged and Git's exit status is returned. After `gg pull`, or on
+the next `gg` command after a native Git fetch or pull, fetched tracked
+bookmarks fast-forward local bookmarks that are their ancestors. Diverged local
+bookmarks are left untouched.
 
 Push only sends existing bookmarks and tags, in one atomic `git push`. A
 revision selector must resolve to an existing local ref; an unbookmarked change

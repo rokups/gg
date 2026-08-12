@@ -328,6 +328,11 @@ class Repository {
 
   bool sync_workspace() const;
 
+  void add_remote_bookmark_updates(
+      std::map<std::string, git_oid>& updates) const;
+
+  bool sync_remote_bookmarks() const;
+
   bool sync_for_command() const;
 
   void track_paths(const std::vector<std::string>& paths,

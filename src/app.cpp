@@ -272,7 +272,13 @@ int dispatch(std::span<const std::string_view> arguments,
                              {"-C", invocation.repository.string(), "pull"}};
     git_pull.arguments.insert(git_pull.arguments.end(),
                               pull->arguments.begin(), pull->arguments.end());
-    return command_util_exec(git_pull, invocation.repository);
+    const int result = command_util_exec(git_pull, invocation.repository);
+    if (result != 0) return result;
+    Repository repository(invocation.repository,
+                          invocation.ignore_working_copy);
+    repository.enable_ref_cache();
+    repository.sync_for_command();
+    return 0;
   }
   if (const auto* util_exec =
           std::get_if<UtilExecCommand>(&invocation.command)) {

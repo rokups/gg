@@ -1007,8 +1007,9 @@ void command_fetch(Repository& repo,
     }
     output << "Fetched " << name << '\n';
   }
-  repo.apply_refs(tracking_updates, tracking_deletes, "track fetched refs");
-  repo.record({}, {}, repo.head_state(), "gg fetch");
+  repo.add_remote_bookmark_updates(tracking_updates);
+  repo.record(std::move(tracking_updates), std::move(tracking_deletes),
+              repo.head_state(), "gg fetch");
 }
 
 void command_push(Repository& repo,

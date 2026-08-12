@@ -407,8 +407,76 @@ bool Repository::sync_workspace() const {
   return true;
 }
 
+void Repository::add_remote_bookmark_updates(
+    std::map<std::string, git_oid>& updates) const {
+  constexpr std::string_view remote_prefix = "refs/remotes/";
+  std::set<std::string> tracking_refs;
+  for (const auto& [reference, oid] : data_refs()) {
+    (void)oid;
+    if (starts_with(reference, kBookmarkTrackingPrefix)) {
+      tracking_refs.insert(reference);
+    }
+  }
+  for (const auto& [reference, oid] : updates) {
+    (void)oid;
+    if (starts_with(reference, kBookmarkTrackingPrefix)) {
+      tracking_refs.insert(reference);
+    }
+  }
+
+  std::map<std::string, std::set<git_oid, OidLess>> proposals;
+  for (const std::string& tracking : tracking_refs) {
+    const std::string suffix =
+        tracking.substr(kBookmarkTrackingPrefix.size());
+    const std::string remote_ref = std::string(remote_prefix) + suffix;
+    const auto remote = ref_target(remote_ref);
+    if (!remote.has_value()) continue;
+
+    const auto previous_remote = ref_target(tracking);
+    if (previous_remote.has_value() && !(*previous_remote == *remote)) {
+      updates[tracking] = *remote;
+    }
+
+    const std::size_t slash = suffix.find('/');
+    if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
+    const std::string local_ref = "refs/heads/" + suffix.substr(slash + 1);
+    const auto local = ref_target(local_ref);
+    if (!local.has_value() || *local == *remote) continue;
+    const int forward = git_graph_descendant_of(raw(), &*remote, &*local);
+    check(forward, "reconcile remote bookmark");
+    if (forward != 0) proposals[local_ref].insert(*remote);
+  }
+  for (const auto& [local, targets] : proposals) {
+    if (targets.size() == 1) updates[local] = *targets.begin();
+  }
+}
+
+bool Repository::sync_remote_bookmarks() const {
+  if (operation_view_.has_value()) return false;
+  std::map<std::string, git_oid> updates;
+  const auto current_operation = operation();
+  if (!current_operation.has_value() ||
+      operation_description(*current_operation) == "gg import history") {
+    constexpr std::string_view remote_prefix = "refs/remotes/";
+    for (const auto& [reference, oid] : data_refs()) {
+      if (starts_with(reference, remote_prefix) &&
+          !reference.ends_with("/HEAD")) {
+        updates.emplace(std::string(kBookmarkTrackingPrefix) +
+                            reference.substr(remote_prefix.size()),
+                        oid);
+      }
+    }
+  }
+  add_remote_bookmark_updates(updates);
+  if (updates.empty()) return false;
+  record(std::move(updates), {}, head_state(), "gg import remote bookmarks");
+  return true;
+}
+
 bool Repository::sync_for_command() const {
-  return synchronize_commands_ && sync_workspace();
+  if (!synchronize_commands_) return false;
+  const bool bookmarks_changed = sync_remote_bookmarks();
+  return sync_workspace() || bookmarks_changed;
 }
 
 void Repository::track_paths(const std::vector<std::string>& paths,

@@ -242,6 +242,8 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
 }
 
 TEST_F(RepositoryTest, RefreshesCachedReferencesAfterAdoptingGitChanges) {
+  const git_oid base = ref("refs/heads/main");
+  set_ref("refs/remotes/origin/main", base);
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
   ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
@@ -268,6 +270,14 @@ TEST_F(RepositoryTest, RefreshesCachedReferencesAfterAdoptingGitChanges) {
   }
   EXPECT_TRUE(found_external);
   gg_named_ref_array_dispose(&refs);
+
+  const git_oid local = raw_commit("local", {base});
+  const git_oid remote = raw_commit("remote", {local});
+  set_ref("refs/heads/main", local);
+  set_ref("refs/remotes/origin/main", remote);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+  const git_oid advanced = ref("refs/heads/main");
+  EXPECT_NE(git_oid_equal(&advanced, &remote), 0);
   gg_repository_free(repository);
 }
 
