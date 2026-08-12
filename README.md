@@ -108,6 +108,21 @@ Every command and command group prints its complete help with `--doc`, without
 requiring a repository. Generated manuals and shell completions use the same
 command schema.
 
+## Agent use
+
+The portable [`gg` skill](.agents/skills/gg/SKILL.md) teaches coding agents the
+task-per-change workflow and its safety boundaries. To install it, copy the
+`.agents/skills/gg` directory into the skill directory used by your agent; for
+example, when that location is exposed as `AGENT_SKILLS_DIR`:
+
+```sh
+cp -R .agents/skills/gg "$AGENT_SKILLS_DIR/"
+```
+
+Help is layered to keep agent context small: use `gg --doc` for the working
+model, `gg COMMAND --doc` (or `gg --doc COMMAND`) for one command, and `gg util
+markdown-help` for the complete schema-derived reference.
+
 ## Storage model
 
 Each working copy is represented by a commit under

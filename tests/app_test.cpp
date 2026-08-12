@@ -9,6 +9,19 @@
 #include <optional>
 
 namespace gg::test {
+namespace {
+
+std::size_t occurrences(std::string_view text, std::string_view needle) {
+  std::size_t count = 0;
+  for (std::size_t position = 0;
+       (position = text.find(needle, position)) != std::string_view::npos;
+       position += needle.size()) {
+    ++count;
+  }
+  return count;
+}
+
+}  // namespace
 
 TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_EQ(run({}).code, 0);
@@ -22,6 +35,9 @@ TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_EQ(run({"status", "--help"}).code, 0);
   EXPECT_NE(run({"status", "--help"}).output.find("gg status [OPTIONS]"),
             std::string::npos);
+  EXPECT_EQ(run({"status", "--help"}).output.find("DETAILS:"),
+            std::string::npos);
+  EXPECT_EQ(run({}).output.find("WORKING MODEL:"), std::string::npos);
   EXPECT_EQ(run({"help"}).code, 2);
   EXPECT_EQ(run({"version"}).code, 2);
   EXPECT_EQ(run({"--ignore-immutable", "status"}).code, 2);
@@ -45,6 +61,64 @@ TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_NE(rooted_doc.output.find("gg config set —"), std::string::npos);
   EXPECT_NE(run({"op", "--doc"}).output.find("gg operation —"),
             std::string::npos);
+}
+
+TEST(AppTest, ResolvesFullDocumentationInEitherArgumentOrder) {
+  const Result nested = run({"config", "set", "--doc"});
+  const Result prefixed = run({"--doc", "config", "set"});
+  ASSERT_EQ(nested.code, 0);
+  EXPECT_EQ(prefixed.code, 0);
+  EXPECT_EQ(prefixed.output, nested.output);
+
+  const Result alias = run({"op", "restore", "--doc"});
+  const Result prefixed_alias = run({"--doc", "op", "restore"});
+  ASSERT_EQ(alias.code, 0);
+  EXPECT_EQ(prefixed_alias.output, alias.output);
+  EXPECT_NE(alias.output.find("gg operation restore —"), std::string::npos);
+
+  EXPECT_EQ(run({"--doc", "ci"}).output, run({"commit", "--doc"}).output);
+}
+
+TEST(AppTest, RootDocumentationExplainsTheAgentWorkingModel) {
+  const Result doc = run({"--doc"});
+  ASSERT_EQ(doc.code, 0);
+  for (std::string_view section :
+       {"WORKING MODEL:", "WORKFLOW:", "SELECTORS:", "SAFETY:",
+        "EXIT STATUS:", "gg status", "gg new -m", "@-", "gg COMMAND --doc",
+        "gg --doc COMMAND", "gg util markdown-help"}) {
+    EXPECT_NE(doc.output.find(section), std::string::npos) << section;
+  }
+  EXPECT_EQ(occurrences(doc.output, "A JJ-shaped Git interface"), 1u);
+}
+
+TEST(AppTest, FullDocumentationBypassesRepositoriesAndRequiredArguments) {
+  const Result outside = run({"-R", "/", "--doc", "config", "set"});
+  EXPECT_EQ(outside.code, 0);
+  EXPECT_NE(outside.output.find("gg config set —"), std::string::npos);
+  EXPECT_EQ(run({"--doc", "split"}).code, 0);
+  EXPECT_EQ(run({"clone", "--doc"}).code, 0);
+}
+
+TEST(AppTest, DocumentsDefaultsAndSideEffectsAcrossCommandFamilies) {
+  const std::vector<std::pair<std::vector<std::string>, std::string_view>> cases{
+      {{"status", "--doc"}, "Snapshots tracked working-copy files"},
+      {{"new", "--doc"}, "Uses @ as the parent"},
+      {{"split", "--doc"}, "Both halves must be non-empty"},
+      {{"file", "list", "--doc"}, "Lists all files in @"},
+      {{"diff", "--doc"}, "Compares @ with its parent"},
+      {{"bookmark", "set", "--doc"}, "move forward only"},
+      {{"fetch", "--doc"}, "Fetches and prunes origin"},
+      {{"push", "--doc"}, "empty descriptions"},
+      {{"operation", "restore", "--doc"},
+       "Restores repository and remote-tracking state"},
+      {{"workspace", "add", "--doc"}, "copying current sparse patterns"},
+      {{"config", "--doc"}, "--workspace is per-worktree config"},
+      {{"util", "gc", "--doc"}, "runs native `git gc`"}};
+  for (const auto& [arguments, expected] : cases) {
+    const Result doc = run(arguments);
+    ASSERT_EQ(doc.code, 0) << expected;
+    EXPECT_NE(doc.output.find(expected), std::string::npos) << expected;
+  }
 }
 
 TEST(AppTest, ReportsUserAndGitErrors) {
@@ -301,7 +375,40 @@ TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
   EXPECT_NE(markdown.output.find("# gg command reference"), std::string::npos);
   EXPECT_NE(markdown.output.find("## `gg bookmark move`"), std::string::npos);
   EXPECT_NE(markdown.output.find("```text\n"), std::string::npos);
+  EXPECT_NE(markdown.output.find("Backwards or sideways movement requires"),
+            std::string::npos);
+  EXPECT_EQ(markdown.output.find("TOML"), std::string::npos);
   EXPECT_EQ(run({"util", "markdown-help"}).output, markdown.output);
+
+  std::size_t documented = 0;
+  for (std::size_t heading = markdown.output.find("## `gg");
+       heading != std::string::npos;) {
+    const std::size_t next = markdown.output.find("\n## `gg", heading + 1);
+    const std::string_view section(markdown.output.data() + heading,
+                                   (next == std::string::npos
+                                        ? markdown.output.size()
+                                        : next) -
+                                       heading);
+    const bool semantic =
+        section.find("DETAILS:") != std::string_view::npos ||
+        section.find("DEFAULTS:") != std::string_view::npos ||
+        section.find("WORKING MODEL:") != std::string_view::npos;
+    EXPECT_TRUE(semantic) << section.substr(0, section.find('\n'));
+    ++documented;
+    heading = next == std::string::npos ? next : next + 1;
+  }
+  EXPECT_GT(documented, 60u);
+
+  const std::size_t move_start = markdown.output.find("## `gg bookmark move`");
+  const std::size_t move_end = markdown.output.find("\n## `gg", move_start + 1);
+  ASSERT_NE(move_start, std::string::npos);
+  EXPECT_EQ(occurrences(
+                std::string_view(markdown.output).substr(
+                    move_start, move_end == std::string::npos
+                                    ? move_end
+                                    : move_end - move_start),
+                "Move existing bookmarks"),
+            1u);
 
   const std::filesystem::path destination = path_ / "manual";
   const Result installed =
@@ -317,7 +424,20 @@ TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
   EXPECT_NE(content.str().find(".TH \"GG-BOOKMARK-MOVE\" \"1\""),
             std::string::npos);
   EXPECT_NE(content.str().find(".SH SYNOPSIS"), std::string::npos);
+  EXPECT_NE(content.str().find("Backwards or sideways movement requires"),
+            std::string::npos);
+  EXPECT_EQ(occurrences(content.str(), "Move existing bookmarks"), 1u);
   EXPECT_EQ(run({"util", "install-man-pages"}).code, 2);
+}
+
+TEST(AppTest, ConfigDocumentationUsesNativeGitValues) {
+  const Result doc = run({"config", "set", "--doc"});
+  ASSERT_EQ(doc.code, 0);
+  EXPECT_NE(doc.output.find("Native Git configuration value"),
+            std::string::npos);
+  EXPECT_NE(doc.output.find("verbatim as a native Git configuration string"),
+            std::string::npos);
+  EXPECT_EQ(doc.output.find("TOML"), std::string::npos);
 }
 
 TEST(AppTest, GeneratesShellCompletionsFromTheCommandSchema) {

@@ -29,7 +29,14 @@ std::string stable_help(const CLI::App& command, std::string_view path) {
   const std::string parent = separator == std::string_view::npos
                                  ? ""
                                  : std::string(path.substr(0, separator));
-  std::istringstream raw(command.help(parent));
+  std::string help = command.help(parent);
+  const std::string& description = command.get_description();
+  if (help.starts_with(description)) {
+    const std::size_t content =
+        help.find_first_not_of("\r\n", description.size());
+    help.erase(0, content == std::string::npos ? help.size() : content);
+  }
+  std::istringstream raw(help);
   std::ostringstream stable;
   std::string line;
   while (std::getline(raw, line)) {
@@ -92,7 +99,18 @@ void install_man_pages(const CLI::App& app,
 
 void add_doc_options(CLI::App& command) {
   command.add_flag("--doc", "Show full command documentation");
-  for (CLI::App* child : command.get_subcommands()) add_doc_options(*child);  // GG_COV_EXCL_BRANCH
+  for (CLI::App* child : command.get_subcommands(
+           [](CLI::App* child) { return !child->get_disabled(); })) {
+    add_doc_options(*child);  // GG_COV_EXCL_BRANCH
+  }
+}
+
+void clear_doc_footers(CLI::App& command) {
+  command.footer("");
+  for (CLI::App* child : command.get_subcommands(
+           [](CLI::App* child) { return !child->get_disabled(); })) {
+    clear_doc_footers(*child);  // GG_COV_EXCL_BRANCH
+  }
 }
 
 std::pair<const CLI::App*, std::string> doc_command(
@@ -101,7 +119,7 @@ std::pair<const CLI::App*, std::string> doc_command(
   std::string path = "gg";
   bool skip_root_value = false;
   for (std::string_view argument : arguments) {  // GG_COV_EXCL_BRANCH
-    if (argument == "--doc") break;
+    if (argument == "--doc") continue;
     if (skip_root_value) {
       skip_root_value = false;
       continue;
@@ -703,7 +721,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* pull = app.add_subcommand("pull", "Run git pull");
   pull->set_help_flag();
   pull->prefix_command();
-  pull->footer("Arguments after 'pull' are passed unchanged to git pull.");
   GitPushCommand push_value;
   auto* push = app.add_subcommand("push", "Push bookmarks and tags");
   CLI::Option* push_bookmarks =
@@ -909,7 +926,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* config_set = config->add_subcommand("set", "Set a configuration value");
   config_set->add_option("name", config_set_value.name, "Configuration key")
       ->required();
-  config_set->add_option("value", config_set_value.value, "TOML value")
+  config_set->add_option("value", config_set_value.value,
+                         "Native Git configuration value")
       ->required();
   add_config_scopes(config_set, config_set_value);
   ConfigCommand config_unset_value;
@@ -924,10 +942,347 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     output << app.help();
     return {0, std::monostate{}};
   }
+
+  app.footer(
+      "WORKING MODEL:\n"
+      "  The working copy is mutable change @; @- is its parent. Revision-facing\n"
+      "  commands snapshot tracked files automatically. Rewrites retain old commit\n"
+      "  IDs as aliases, restack descendants, and move affected local refs.\n\n"
+      "WORKFLOW:\n"
+      "  Inspect with `gg status`; start with `gg new -m \"task\"`; edit and test;\n"
+      "  verify with `gg diff` and `gg status`; leave the named change at @.\n\n"
+      "SELECTORS:\n"
+      "  Revisions accept @, @-, commit IDs and aliases, bookmarks, Git object IDs,\n"
+      "  and set expressions. Filesets accept paths plus file:, root:, cwd:, glob:,\n"
+      "  union (|), intersection (&), and difference (~).\n\n"
+      "SAFETY:\n"
+      "  Inspect before rewriting, moving refs, committing, or contacting remotes.\n"
+      "  Local history mutations are operation-logged for `gg undo`; push rejects conflicts.\n\n"
+      "EXIT STATUS:\n"
+      "  0 success; 1 internal, Git, or transport failure; 2 invalid input or a\n"
+      "  rejected user operation. `pull` and `util exec` propagate child status.\n\n"
+      "SEE ALSO:\n"
+      "  `gg --help`, `gg --doc`, `gg COMMAND --doc`, `gg --doc COMMAND`, and\n"
+      "  `gg util markdown-help`.");
+  status->footer(
+      "DETAILS:\n"
+      "  Snapshots tracked working-copy files, then compares @ with its first parent.\n"
+      "  Filesets filter both changed paths and unresolved-conflict paths.\n"
+      "SEE ALSO: `gg diff`, `gg log`.");
+  log->footer(
+      "DEFAULTS:\n"
+      "  Shows reachable history from @ and local bookmarks, newest first, with a graph.\n"
+      "  -r accepts a revision-set expression; filesets keep revisions touching a match.\n"
+      "SEE ALSO: `gg show`, `gg operation log`.");
+  make_new->footer(
+      "DEFAULTS:\n"
+      "  Uses @ as the parent and makes the empty new change the working copy.\n"
+      "  --insert-after/--insert-before insert into the graph and restack descendants.\n"
+      "EXAMPLES:\n"
+      "  gg new -m \"Add parser\"\n"
+      "  gg new -B main -m \"Insert before main\"");
+  describe->footer(
+      "DEFAULTS:\n"
+      "  Describes @ and opens an editor when no message or stdin is supplied.\n"
+      "  Rewriting a description restacks descendants and moves affected local refs.\n"
+      "SEE ALSO: `gg metaedit`.");
+  edit->footer(
+      "DETAILS:\n"
+      "  Makes exactly one revision @ and updates the working tree; conflicted revisions\n"
+      "  materialize their sides for normal file-based resolution.\n"
+      "EXAMPLES: gg edit <commit-id>");
+  metaedit->footer(
+      "DEFAULTS:\n"
+      "  Selects @. Metadata changes rewrite selected revisions, restack descendants,\n"
+      "  and move affected local refs; unchanged metadata is skipped unless forced.");
+  rebase->footer(
+      "DETAILS:\n"
+      "  Replays a single-parent source onto the destination, then restacks descendants\n"
+      "  and moves affected local refs. The destination cannot be below the source.");
+  split->footer(
+      "DEFAULTS:\n"
+      "  Splits @. Selected filesets become the first change; the remainder becomes its\n"
+      "  child and descendants are restacked. Both halves must be non-empty.\n"
+      "EXAMPLES: gg split -m \"Parser core\" 'glob(src/parser*)'");
+  squash->footer(
+      "DEFAULTS:\n"
+      "  Squashes @ into its parent, removes the source, and restacks descendants.\n"
+      "  The explicit --into destination must be the source parent.\n"
+      "EXAMPLES: gg squash -r @-");
+  abandon->footer(
+      "DEFAULTS:\n"
+      "  Abandons @, deletes bookmarks on it, and rebases descendants onto its parents.\n"
+      "  --retain-bookmarks moves those bookmarks to the abandoned change's parent.");
+  commit->footer(
+      "DETAILS:\n"
+      "  Rewrites @ with the selected filesets and description, then creates a new empty\n"
+      "  working change containing any unselected edits. No staging step is required.\n"
+      "SEE ALSO: `gg new`, `gg describe`.");
+  restore->footer(
+      "DEFAULTS:\n"
+      "  With no source options, undoes all changes in @ into @. --from/--into copy tree\n"
+      "  content; the destination rewrite restacks descendants.\n"
+      "EXAMPLES:\n"
+      "  gg restore path/to/file\n"
+      "  gg restore --from main --into @ 'glob(src/**)'");
+  simplify->footer(
+      "DEFAULTS:\n"
+      "  Without selectors, examines @ and its ancestors. Removing redundant parent\n"
+      "  edges rewrites affected revisions and restacks descendants.");
+
+  file->footer(
+      "DETAILS:\n"
+      "  Read commands interpret filesets in a revision tree; mutation commands update\n"
+      "  tracking state or rewrite file modes. Use a subcommand for complete semantics.");
+  file_list->footer(
+      "DEFAULTS:\n"
+      "  Lists all files in @. Filesets filter the revision tree; -r selects another revision.");
+  file_show->footer(
+      "DEFAULTS:\n"
+      "  Reads matching regular-file contents from @ without changing the working tree.");
+  file_search->footer(
+      "DEFAULTS:\n"
+      "  Searches regular files in @. Patterns are regex by default; exact:, substring:,\n"
+      "  and glob: prefixes select other matching modes.");
+  file_chmod->footer(
+      "DETAILS:\n"
+      "  Rewrites the selected revision (default @), preserves logical conflicts, and\n"
+      "  restacks descendants after changing executable bits.");
+  file_track->footer(
+      "DETAILS:\n"
+      "  Adds repository-relative paths to working-copy snapshots and snapshots them now.\n"
+      "  Ignored files require --include-ignored.");
+  file_untrack->footer(
+      "DETAILS:\n"
+      "  Removes repository-relative paths from future snapshots and snapshots @ now;\n"
+      "  files remain in the filesystem.");
+
+  diff->footer(
+      "DEFAULTS:\n"
+      "  Compares @ with its parent. -r compares the roots and heads of a contiguous\n"
+      "  revision set; --from/--to default their omitted side to @. Output is a patch.");
+  show->footer(
+      "DEFAULTS:\n"
+      "  Shows @ with metadata and its patch. Revision arguments are selectors and may\n"
+      "  expand to multiple revisions; --no-patch prints metadata only.");
+
+  bookmark->footer(
+      "DETAILS:\n"
+      "  Bookmarks are local Git branches. With no subcommand this lists local bookmarks;\n"
+      "  movements are operation-logged and reject backwards moves unless allowed.");
+  advance->footer(
+      "DEFAULTS:\n"
+      "  Advances the named bookmarks to @; with no names, advances the closest ancestor\n"
+      "  bookmarks. Backwards or sideways movement is rejected.");
+  create->footer(
+      "DEFAULTS:\n"
+      "  Creates local Git branches at @. Existing names are rejected.");
+  set->footer(
+      "DEFAULTS:\n"
+      "  Creates or moves local Git branches to @; existing bookmarks move forward only\n"
+      "  unless --allow-backwards is supplied.");
+  move->footer(
+      "DETAILS:\n"
+      "  Select bookmarks by name and/or --from revision, then move them to @ by default.\n"
+      "  Backwards or sideways movement requires --allow-backwards.\n"
+      "EXAMPLES: gg bookmark move topic --from @- --to @");
+  erase->footer(
+      "DETAILS:\n"
+      "  Deletes matching local Git branches but leaves remote and tracking refs intact.\n"
+      "SEE ALSO: `gg bookmark forget`.");
+  forget->footer(
+      "DETAILS:\n"
+      "  Deletes matching local bookmarks and their gg tracking state; --include-remotes\n"
+      "  also removes matching remote-tracking bookmarks locally.");
+  rename->footer(
+      "DETAILS:\n"
+      "  Renames a local Git branch. The destination must not exist unless\n"
+      "  --overwrite-existing is supplied.");
+  track->footer(
+      "DETAILS:\n"
+      "  Tracks fetched remote bookmarks selected by patterns or name@remote symbols and\n"
+      "  creates a missing same-named local bookmark at the fetched target.");
+  untrack->footer(
+      "DETAILS:\n"
+      "  Removes gg tracking state for matching remote bookmarks; local and fetched refs remain.");
+  list->footer(
+      "DEFAULTS:\n"
+      "  Lists local bookmarks sorted by name. Remote bookmarks appear only when selected\n"
+      "  with --all-remotes, --remote, or --tracked.");
+
+  tag->footer(
+      "DETAILS:\n"
+      "  Tags are native Git tags. Mutations and remote-tracking changes are operation-logged.");
+  tag_set->footer(
+      "DEFAULTS:\n"
+      "  Creates tags at @. Moving an existing tag requires --allow-move.");
+  tag_delete->footer(
+      "DETAILS:\n"
+      "  Deletes matching local Git tags; fetched and tracking refs are not removed.");
+  tag_track->footer(
+      "DETAILS:\n"
+      "  Tracks fetched remote tags selected by patterns or name@remote symbols and\n"
+      "  creates a missing same-named local tag at the fetched target.");
+  tag_untrack->footer(
+      "DETAILS:\n"
+      "  Removes gg tracking state for matching remote tags; local and fetched refs remain.");
+  tag_list->footer(
+      "DEFAULTS:\n"
+      "  Lists local tags sorted by name. Remote tags appear only when selected with\n"
+      "  --all-remotes, --remote, or --tracked.");
+
+  clone->footer(
+      "DEFAULTS:\n"
+      "  Uses remote origin, SHA-1, and a destination derived from the URL; initializes gg\n"
+      "  and creates an empty working change after cloning.");
+  init->footer(
+      "DEFAULTS:\n"
+      "  Initializes the current directory as a SHA-1 Git repository and creates an empty\n"
+      "  gg working change when one does not exist.");
+  fetch->footer(
+      "DEFAULTS:\n"
+      "  Fetches and prunes origin. With no ref filters, fetches all advertised branches\n"
+      "  and tags, records tracking state, and fast-forwards eligible local bookmarks.");
+  pull->footer(
+      "DETAILS:\n"
+      "  Passes all trailing arguments unchanged to `git pull`, returns Git's status, then\n"
+      "  imports history and fast-forwards eligible tracked local bookmarks on success.");
+  push->footer(
+      "DEFAULTS:\n"
+      "  Atomically pushes changed tracked refs to origin. Explicit revisions must already\n"
+      "  have a local bookmark or tag; empty descriptions and conflicted history are refused.\n"
+      "EXAMPLES: gg push --bookmark topic --dry-run");
+
+  undo->footer(
+      "DETAILS:\n"
+      "  Restores repository, remote-tracking, workspace, and working-tree state from the\n"
+      "  previous operation. The restoration is itself recorded and can be redone.");
+  redo->footer(
+      "DETAILS:\n"
+      "  Reapplies the most recently undone operation. A new mutation after undo clears\n"
+      "  the redo path.");
+  operation->footer(
+      "DETAILS:\n"
+      "  Operation history records repository and workspace mutations independently for\n"
+      "  each workspace while shared refs remain coordinated.");
+  operation_log->footer(
+      "DEFAULTS:\n"
+      "  Shows all operations newest first with an operation graph. --op-diff shows ref\n"
+      "  and workspace-state changes; patch options show changed revision contents.");
+  operation_restore->footer(
+      "DEFAULTS:\n"
+      "  Restores repository and remote-tracking state from the operation and records the\n"
+      "  restoration. Repeat --what to restore selected state classes only.\n"
+      "EXAMPLES: gg operation restore --what repo <operation-id>");
+
+  util->footer(
+      "DETAILS:\n"
+      "  Utilities expose schema-derived docs/completions and explicit maintenance, hook,\n"
+      "  snapshot, subprocess, and safety operations.");
+  util_exec->footer(
+      "DETAILS:\n"
+      "  Executes the command without a shell, returns its exit status, and sets\n"
+      "  GG_WORKSPACE_ROOT when -R resolves to a non-bare repository.");
+  util_gc->footer(
+      "DETAILS:\n"
+      "  Snapshots @, collects expired commit aliases, then runs native `git gc`.\n"
+      "  --expire now passes --prune=now and may immediately remove unreachable objects.");
+  util_completion->footer(
+      "DETAILS:\n"
+      "  Prints a completion script generated from all command, alias, and option names.");
+  util_install_man->footer(
+      "DETAILS:\n"
+      "  Creates PATH/man1 and writes one schema-derived manual page per public command/group.");
+  util_markdown->footer(
+      "DETAILS:\n"
+      "  Prints the complete schema-derived command reference as Markdown; no files are written.");
+  util_snapshot->footer(
+      "DETAILS:\n"
+      "  Explicitly snapshots tracked filesystem and index changes into @ and reports whether it changed.");
+  util_install_git_hooks->footer(
+      "DETAILS:\n"
+      "  Installs a managed pre-push conflict check at core.hooksPath (or .git/hooks).\n"
+      "  An existing hook is preserved as pre-push.gg-user and run first.");
+  util_check_push_conflicts->footer(
+      "DETAILS:\n"
+      "  Reads native Git pre-push lines from stdin and rejects updates whose reachable\n"
+      "  history contains gg conflicts. Intended for the managed hook.");
+
+  workspace->footer(
+      "DETAILS:\n"
+      "  Each Git worktree has an isolated gg working change, operation history, and\n"
+      "  conflict-recovery state while commits, aliases, bookmarks, and tags are shared.");
+  workspace_list->footer(
+      "DETAILS:\n"
+      "  Lists gg workspace names, working-change IDs, and roots; missing worktrees are marked stale.");
+  workspace_root->footer(
+      "DEFAULTS:\n"
+      "  Prints the current workspace root; --name resolves another registered workspace.");
+  workspace_add->footer(
+      "DEFAULTS:\n"
+      "  Creates a linked Git worktree plus an isolated empty change based on @ (or HEAD),\n"
+      "  copying current sparse patterns.\n"
+      "EXAMPLES: gg workspace add ../review --name review -r main");
+  workspace_forget->footer(
+      "DEFAULTS:\n"
+      "  Forgets the current workspace when no names are given. It removes gg refs only;\n"
+      "  remove the Git worktree separately with `git worktree remove`.");
+  workspace_rename->footer(
+      "DETAILS:\n"
+      "  Renames the current workspace and its gg ref without moving the filesystem directory.");
+
+  sparse->footer(
+      "DETAILS:\n"
+      "  Inspects or resets the current workspace's native Git sparse-checkout configuration.");
+  sparse_list->footer(
+      "DEFAULTS:\n"
+      "  Prints native sparse-checkout patterns; prints `.` when sparse checkout is disabled.");
+  sparse_reset->footer(
+      "DETAILS:\n"
+      "  Runs `git sparse-checkout disable`, restoring all working-copy files.");
+  next->footer(
+      "DEFAULTS:\n"
+      "  Moves one child forward and creates a new empty working change there; --edit makes\n"
+      "  the target itself @. Ambiguous graph movement is rejected.");
+  previous->footer(
+      "DEFAULTS:\n"
+      "  Moves one ancestor back and creates a new empty working change there; --edit makes\n"
+      "  the target itself @. Ambiguous graph movement is rejected.");
+
+  config->footer(
+      "DETAILS:\n"
+      "  Uses native Git configuration: --user is global, --repo is .git/config, and\n"
+      "  --workspace is per-worktree config. gg creates no separate config format.");
+  config_edit->footer(
+      "DETAILS:\n"
+      "  Opens the selected native Git config file using Git's standard editor selection.");
+  config_get->footer(
+      "DEFAULTS:\n"
+      "  Reads the effective value from merged system, user, repository, and workspace Git config.");
+  config_list->footer(
+      "DEFAULTS:\n"
+      "  Lists effective merged Git configuration. A scope restricts the file;\n"
+      "  --include-overridden includes origin and precedence details.");
+  config_path->footer(
+      "DETAILS:\n"
+      "  Prints the filesystem path for exactly one selected native Git configuration scope.");
+  config_set->footer(
+      "DETAILS:\n"
+      "  Stores VALUE verbatim as a native Git configuration string in the selected scope.\n"
+      "EXAMPLES: gg config set --repo core.editor vim");
+  config_unset->footer(
+      "DETAILS:\n"
+      "  Deletes NAME from exactly one selected native Git configuration scope.");
+
   if (std::ranges::find(arguments, "--doc") != arguments.end()) {
     const auto [command, path] = doc_command(app, arguments);
     write_plain_doc(*command, path, output);
     return {0, std::monostate{}};
+  }
+
+  if (std::ranges::find(arguments, "--help") != arguments.end() ||
+      std::ranges::find(arguments, "-h") != arguments.end()) {
+    clear_doc_footers(app);
   }
 
   std::vector<std::string> storage{"gg"};
