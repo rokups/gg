@@ -226,7 +226,7 @@ git_oid import_tree(Repository& repo,
       continue;
     }
     const std::string path =
-        std::filesystem::relative(item.path(), source).generic_string();
+        item.path().lexically_relative(source).generic_string();
     std::string contents;
     std::uint32_t mode = GIT_FILEMODE_BLOB;
     if (std::filesystem::is_symlink(status)) {

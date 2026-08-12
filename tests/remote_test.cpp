@@ -6,6 +6,8 @@
 
 #include "repository.hpp"
 
+#include <algorithm>
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
