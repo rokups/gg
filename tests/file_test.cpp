@@ -4,7 +4,77 @@
 
 #include "test_support.hpp"
 
+#include "repository.hpp"
+
 namespace gg::test {
+
+TEST(FileSize, ParsesJujutsuCompatibleValues) {
+  using detail::parse_file_size;
+  EXPECT_EQ(parse_file_size("0"), 0U);
+  EXPECT_EQ(parse_file_size("17"), 17U);
+  EXPECT_EQ(parse_file_size("1K"), 1024U);
+  EXPECT_EQ(parse_file_size("2KB"), 2048U);
+  EXPECT_EQ(parse_file_size("3KiB"), 3072U);
+  EXPECT_EQ(parse_file_size("2MiB"), 2U * 1024 * 1024);
+  EXPECT_EQ(parse_file_size("1GiB"), 1024U * 1024 * 1024);
+  EXPECT_FALSE(parse_file_size("").has_value());
+  EXPECT_FALSE(parse_file_size("-1").has_value());
+  EXPECT_FALSE(parse_file_size("1.5MiB").has_value());
+  EXPECT_FALSE(parse_file_size("1TiB").has_value());
+  EXPECT_FALSE(parse_file_size("18446744073709551615GiB").has_value());
+}
+
+TEST_F(RepositoryTest, LimitsAutomaticTrackingOfNewFiles) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  write("exact.bin", std::string(1024 * 1024, 'x'));
+  write("oversized.bin", std::string(1024 * 1024 + 1, 'x'));
+  write("tracked.txt", std::string(1024 * 1024 + 1, 'x'));
+
+  const Result initial = invoke({"status"});
+  ASSERT_EQ(initial.code, 0) << initial.error;
+  EXPECT_NE(initial.output.find("A exact.bin"), std::string::npos);
+  EXPECT_NE(initial.output.find("? oversized.bin"), std::string::npos);
+  EXPECT_NE(initial.output.find("M tracked.txt"), std::string::npos);
+
+  ASSERT_EQ(invoke({"file", "track", "oversized.bin"}).code, 0);
+  EXPECT_NE(invoke({"status"}).output.find("A oversized.bin"),
+            std::string::npos);
+
+  ASSERT_EQ(invoke({"config", "set", "--repo",
+                    "snapshot.max-new-file-size", "0"})
+                .code,
+            0);
+  write("unlimited.bin", std::string(1024 * 1024 + 1, 'x'));
+  EXPECT_NE(invoke({"status"}).output.find("A unlimited.bin"),
+            std::string::npos);
+}
+
+TEST_F(RepositoryTest, ReReadsScopedAutomaticTrackingLimit) {
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"config", "set", "--repo",
+                    "snapshot.max-new-file-size", "1"})
+                .code,
+            0);
+  ASSERT_EQ(invoke({"config", "set", "--workspace",
+                    "snapshot.max-new-file-size", "2"})
+                .code,
+            0);
+  write("sized.bin", "12");
+  EXPECT_NE(invoke({"status"}).output.find("A sized.bin"), std::string::npos);
+
+  ASSERT_EQ(invoke({"file", "untrack", "sized.bin"}).code, 0);
+  ASSERT_EQ(invoke({"config", "unset", "--workspace",
+                    "snapshot.max-new-file-size"})
+                .code,
+            0);
+  EXPECT_NE(invoke({"status"}).output.find("? sized.bin"), std::string::npos);
+
+  ASSERT_EQ(invoke({"config", "set", "--repo",
+                    "snapshot.max-new-file-size", "invalid"})
+                .code,
+            0);
+  EXPECT_EQ(invoke({"status"}).code, 2);
+}
 
 TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);

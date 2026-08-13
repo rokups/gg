@@ -11,7 +11,10 @@
 #endif
 
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <fstream>
+#include <limits>
 #include <ranges>
 #include <system_error>
 
@@ -124,7 +127,86 @@ std::string stored_path(const std::string& path) {
   return path.empty() ? "." : path;
 }
 
+std::uint64_t maximum_new_file_size(const Repository& repo) {
+  constexpr std::uint64_t default_limit = 1024 * 1024;
+  git_config* raw_config = nullptr;
+  check(git_repository_config(&raw_config, repo.raw()),
+        "open Git configuration");
+  GitPtr<git_config, git_config_free> config(raw_config);
+  git_buf value = GIT_BUF_INIT;
+  const int result = git_config_get_string_buf(
+      &value, config.get(), "snapshot.max-new-file-size");
+  if (result == GIT_ENOTFOUND) {
+    git_error_clear();
+    return default_limit;
+  }
+  check(result, "read snapshot.max-new-file-size");
+  const auto parsed = parse_file_size(
+      std::string_view(value.ptr == nullptr ? "" : value.ptr, value.size));
+  git_buf_dispose(&value);
+  if (!parsed.has_value()) {
+    throw UserError("invalid snapshot.max-new-file-size");
+  }
+  return *parsed;
+}
+
+bool tree_contains(git_tree* tree, const char* path) {
+  git_tree_entry* raw_entry = nullptr;
+  const int result = git_tree_entry_bypath(&raw_entry, tree, path);
+  git_tree_entry_free(raw_entry);
+  if (result == GIT_ENOTFOUND) {
+    git_error_clear();
+    return false;
+  }
+  check(result, "inspect snapshot baseline");
+  return true;
+}
+
+bool explicitly_tracked(const FileTrackingState& tracking,
+                        std::string_view path) {
+  const auto selected = [&](const std::string& selector) {
+    return selects(selector, path);
+  };
+  return std::ranges::any_of(tracking.tracked, selected) ||
+         std::ranges::any_of(tracking.forced, selected);
+}
+
 }  // namespace
+
+std::optional<std::uint64_t> parse_file_size(std::string_view value) {
+  const std::size_t suffix_begin = value.find_first_not_of("0123456789");
+  const std::string_view number = value.substr(0, suffix_begin);
+  if (number.empty()) return std::nullopt;
+  std::uint64_t bytes = 0;
+  const auto [end, error] =
+      std::from_chars(number.data(), number.data() + number.size(), bytes);
+  if (error != std::errc{} || end != number.data() + number.size()) {
+    return std::nullopt;
+  }
+  std::string suffix(suffix_begin == std::string_view::npos
+                         ? std::string_view{}
+                         : value.substr(suffix_begin));
+  std::ranges::transform(suffix, suffix.begin(),
+                         [](unsigned char character) {
+                           return static_cast<char>(std::toupper(character));
+                         });
+  std::uint64_t multiplier = 1;
+  if (suffix.empty() || suffix == "B") {
+    multiplier = 1;
+  } else if (suffix == "K" || suffix == "KB" || suffix == "KIB") {
+    multiplier = 1024;
+  } else if (suffix == "M" || suffix == "MB" || suffix == "MIB") {
+    multiplier = 1024 * 1024;
+  } else if (suffix == "G" || suffix == "GB" || suffix == "GIB") {
+    multiplier = 1024ULL * 1024 * 1024;
+  } else {
+    return std::nullopt;
+  }
+  if (bytes > std::numeric_limits<std::uint64_t>::max() / multiplier) {
+    return std::nullopt;
+  }
+  return bytes * multiplier;
+}
 
 git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   git_index* raw_index = nullptr;
@@ -145,6 +227,31 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
                           nullptr),
         "snapshot working tree");
   const FileTrackingState tracking = read_tracking(*this);
+  const std::uint64_t maximum_size = maximum_new_file_size(*this);
+  if (maximum_size != 0) {
+    std::vector<std::string> oversized;
+    const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+    for (std::size_t position = 0;
+         position < git_index_entrycount(index.get()); ++position) {
+      const git_index_entry* entry =
+          git_index_get_byindex(index.get(), position);
+      if (entry == nullptr ||
+          (entry->mode != GIT_FILEMODE_BLOB &&
+           entry->mode != GIT_FILEMODE_BLOB_EXECUTABLE) ||
+          tree_contains(baseline.get(), entry->path) ||
+          explicitly_tracked(tracking, entry->path)) {
+        continue;
+      }
+      std::error_code error;
+      const std::uintmax_t size =
+          std::filesystem::file_size(workdir / entry->path, error);
+      if (!error && size > maximum_size) oversized.emplace_back(entry->path);
+    }
+    for (const std::string& path : oversized) {
+      check(git_index_remove_bypath(index.get(), path.c_str()),
+            "leave oversized file untracked");
+    }
+  }
   for (const std::string& path : tracking.untracked) {
     remove_selector(index.get(), path);
   }
@@ -160,6 +267,30 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   check(git_index_write(index.get()), "cache working-copy snapshot");
   preserve_conflicts(baseline_tree, result);
   return result;
+}
+
+std::vector<std::string> Repository::untracked_paths() const {
+  if (operation_view_.has_value()) return {};
+  git_status_options options = GIT_STATUS_OPTIONS_INIT;
+  options.show = GIT_STATUS_SHOW_WORKDIR_ONLY;
+  options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
+                  GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+  git_status_list* raw_status = nullptr;
+  check(git_status_list_new(&raw_status, repo_.get(), &options),
+        "scan untracked files");
+  GitPtr<git_status_list, git_status_list_free> status(raw_status);
+  std::vector<std::string> paths;
+  for (std::size_t index = 0; index < git_status_list_entrycount(status.get());
+       ++index) {
+    const git_status_entry* entry =
+        git_status_byindex(status.get(), index);
+    if (entry != nullptr && (entry->status & GIT_STATUS_WT_NEW) != 0 &&
+        entry->index_to_workdir != nullptr &&
+        entry->index_to_workdir->new_file.path != nullptr) {
+      paths.emplace_back(entry->index_to_workdir->new_file.path);
+    }
+  }
+  return paths;
 }
 
 git_oid Repository::selected_tree(const git_oid& base_tree,

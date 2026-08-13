@@ -427,7 +427,15 @@ void command_status(Repository& repo,
       deltas.push_back(delta);
     }
   }
-  if (deltas.empty()) {
+  std::vector<std::string> untracked = repo.untracked_paths();
+  if (!paths.empty()) {
+    std::erase_if(untracked, [&](const std::string& path) {
+      return std::ranges::none_of(paths, [&](const auto& fileset) {
+        return fileset_matches(fileset, path);
+      });
+    });
+  }
+  if (deltas.empty() && untracked.empty()) {
     output << "The working copy has no changes.\n";
   } else {
     output << "Working copy changes:\n";
@@ -445,6 +453,9 @@ void command_status(Repository& repo,
                        std::string(1, status) + " " + delta->new_file.path,
                        style)
              << '\n';
+    }
+    for (const std::string& path : untracked) {
+      output << styled(output, "? " + path, OutputStyle::added) << '\n';
     }
   }
   std::vector<std::string> conflicts = repo.conflict_paths(*workspace);

@@ -101,6 +101,8 @@ using TransactionPtr = GitPtr<git_transaction, git_transaction_free>;
 using RemotePtr = GitPtr<git_remote, git_remote_free>;
 using WorktreePtr = GitPtr<git_worktree, git_worktree_free>;
 
+std::optional<std::uint64_t> parse_file_size(std::string_view value);
+
 struct FileValue {
   bool present{false};
   git_oid oid{};
@@ -201,6 +203,8 @@ class Repository {
   git_oid empty_tree() const;
 
   git_oid snapshot_tree(const git_oid& baseline_tree) const;
+
+  std::vector<std::string> untracked_paths() const;
 
   git_oid selected_tree(const git_oid& base_tree,
                           const git_oid& final_tree,

@@ -903,6 +903,13 @@ int gg_repository_status(gg_status* out,
         entries.push_back(entry);
       }
     }
+    for (const std::string& path : repo.untracked_paths()) {
+      if (!selected(path.c_str())) continue;
+      gg_status_entry entry{};
+      entry.status = GIT_DELTA_UNTRACKED;
+      entry.new_path = duplicate(path);
+      entries.push_back(entry);
+    }
     if (!entries.empty()) {
       out->entries = static_cast<gg_status_entry*>(
           std::malloc(entries.size() * sizeof(gg_status_entry)));
