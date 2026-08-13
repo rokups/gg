@@ -244,6 +244,22 @@ TEST_F(RepositoryTest, SquashesAndAbandonsUnrelatedChanges) {
   ASSERT_EQ(invoke({"abandon", discarded_id}).code, 0);
 }
 
+TEST_F(RepositoryTest, SquashesIntoPushedHistoryWithoutAWorkspace) {
+  const git_oid destination = ref("refs/heads/main");
+  const git_oid source = raw_commit("source", {destination});
+  set_ref("refs/heads/side", source);
+  set_ref("refs/remotes/origin/main", destination);
+
+  const Result squashed = invoke({"squash", "-r", "side"});
+  ASSERT_EQ(squashed.code, 0) << squashed.error;
+  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+  detail::Repository repo(path_);
+  const git_oid rewritten = repo.resolve("side");
+  const git_oid main = repo.resolve("main");
+  EXPECT_EQ(git_oid_equal(&rewritten, &source), 0);
+  EXPECT_NE(git_oid_equal(&rewritten, &main), 0);
+}
+
 TEST_F(RepositoryTest, AbandonCanRetainBookmarksAndDescendantContents) {
   const Result parent = invoke({"new", "-m", "parent", "main"});
   ASSERT_EQ(parent.code, 0) << parent.error;

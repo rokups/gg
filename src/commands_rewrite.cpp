@@ -309,15 +309,19 @@ void command_squash(Repository& repo,
        {source_oid, rewritten_destination}},
       {source_oid});
   const auto workspace = repo.workspace();
-  git_oid new_workspace = *workspace;
-  if (*workspace == source_oid) {
-    new_workspace = repo.create_commit(
-        *git_commit_tree_id(source_commit.get()), {rewritten_destination}, "");
-  } else if (plan.commits.contains(*workspace)) {  // GG_COV_EXCL_BRANCH
-    new_workspace = plan.commits.at(*workspace);
+  if (workspace.has_value()) {
+    git_oid new_workspace = *workspace;
+    if (*workspace == source_oid) {
+      new_workspace = repo.create_commit(
+          *git_commit_tree_id(source_commit.get()), {rewritten_destination}, "");
+    } else if (plan.commits.contains(*workspace)) {  // GG_COV_EXCL_BRANCH
+      new_workspace = plan.commits.at(*workspace);
+    }
+    finish_workspace(repo, new_workspace, std::move(plan.updates), {},
+                     "gg squash");
+  } else {
+    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg squash");
   }
-  finish_workspace(repo, new_workspace, std::move(plan.updates), {},
-                   "gg squash");
   output << "Squashed into " << repo.short_commit_id(rewritten_destination).value
          << '\n';
 }
