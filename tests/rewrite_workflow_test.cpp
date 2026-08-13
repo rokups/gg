@@ -219,14 +219,55 @@ TEST_F(RepositoryTest, RejectsInvalidRewriteShapes) {
 
 }
 
-TEST_F(RepositoryTest, RejectsSquashingIntoANonParent) {
+TEST_F(RepositoryTest, SquashesIntoANonParent) {
   const Result source = invoke({"new", "-m", "source", "main"});
   ASSERT_EQ(source.code, 0) << source.error;
   const std::string source_id = token_after(source.output, "Working copy now at: ");
   const Result other = invoke({"new", "-m", "other", "main"});
   ASSERT_EQ(other.code, 0) << other.error;
   const std::string other_id = token_after(other.output, "Working copy now at: ");
-  EXPECT_EQ(invoke({"squash", "--from", source_id, "--into", other_id}).code, 2);
+  const Result squash =
+      invoke({"squash", "--from", source_id, "--into", other_id});
+  ASSERT_EQ(squash.code, 0) << squash.error;
+  detail::Repository repo(path_);
+  const git_oid resolved_source = repo.resolve(source_id);
+  const git_oid resolved_other = repo.resolve(other_id);
+  EXPECT_NE(git_oid_equal(&resolved_source, &resolved_other), 0);
+  expect_workspace_coherent();
+}
+
+TEST_F(RepositoryTest, SquashesEntireBranchIntoDestination) {
+  const Result root = invoke({"new", "-m", "branch root", "main"});
+  ASSERT_EQ(root.code, 0) << root.error;
+  write("root.txt", "root\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const Result tip = invoke({"new", "-m", "branch tip"});
+  ASSERT_EQ(tip.code, 0) << tip.error;
+  const std::string root_id = token_after(root.output, "Working copy now at: ");
+  const std::string tip_id = token_after(tip.output, "Working copy now at: ");
+  write("tip.txt", "tip\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+
+  const Result destination = invoke({"new", "-m", "destination", "main"});
+  ASSERT_EQ(destination.code, 0) << destination.error;
+  const std::string destination_id =
+      token_after(destination.output, "Working copy now at: ");
+  write("destination.txt", "destination\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+
+  const Result squash = invoke({"squash", "--from", tip_id, "--into",
+                                destination_id, "--entire-branch"});
+  ASSERT_EQ(squash.code, 0) << squash.error;
+  detail::Repository repo(path_);
+  const git_oid resolved_root = repo.resolve(root_id);
+  const git_oid resolved_tip = repo.resolve(tip_id);
+  const git_oid resolved_destination = repo.resolve(destination_id);
+  EXPECT_NE(git_oid_equal(&resolved_root, &resolved_destination), 0);
+  EXPECT_NE(git_oid_equal(&resolved_tip, &resolved_destination), 0);
+  EXPECT_TRUE(std::filesystem::exists(path_ / "root.txt"));
+  EXPECT_TRUE(std::filesystem::exists(path_ / "tip.txt"));
+  EXPECT_TRUE(std::filesystem::exists(path_ / "destination.txt"));
+  expect_workspace_coherent();
 }
 
 TEST_F(RepositoryTest, SquashesAndAbandonsUnrelatedChanges) {

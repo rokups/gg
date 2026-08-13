@@ -369,6 +369,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "-t,--into", squash_value.destination, "Destination revision");
   squash_revision->excludes(squash_source)->excludes(squash_destination);
   squash->add_option("-m,--message", squash_value.message, "Description");
+  squash->add_flag("--entire-branch", squash_value.entire_branch,
+                   "Also squash ancestors back to the branch divergence");
 
   AbandonCommand abandon_value;
   auto* abandon = app.add_subcommand("abandon", "Abandon a change");
@@ -1018,7 +1020,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   squash->footer(
       "DEFAULTS:\n"
       "  Squashes @ into its parent, removes the source, and restacks descendants.\n"
-      "  The explicit --into destination must be the source parent.\n"
+      "  --entire-branch squashes the source-side branch through the selected tip.\n"
       "EXAMPLES: gg squash -r @-");
   abandon->footer(
       "DEFAULTS:\n"

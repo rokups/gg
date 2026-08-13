@@ -96,6 +96,7 @@ struct SquashCommand {
   std::string source;
   std::string destination;
   std::string message;
+  bool entire_branch{false};
 };
 struct AbandonCommand {
   std::vector<std::string> revisions;

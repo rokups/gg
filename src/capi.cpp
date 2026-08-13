@@ -1185,14 +1185,26 @@ int gg_repository_split(gg_mutation_result* out,
   });
 }
 
+int gg_repository_squash_ex(gg_mutation_result* out,
+                            gg_repository* repository,
+                            const gg_squash_options* options,
+                            int entire_branch,
+                            const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "squash", [&](Repository& repo, std::ostream& output) {
+    const auto& value = required(options);
+    command_squash(repo,
+                   SquashCommand{string(value.revision), string(value.source),
+                                 string(value.destination), string(value.message),
+                                 entire_branch != 0},
+                   output);
+  });
+}
+
 int gg_repository_squash(gg_mutation_result* out,
                          gg_repository* repository,
                          const gg_squash_options* options,
                          const gg_operation_options* operation) {
-  return mutate(out, repository, operation, "squash", [&](Repository& repo, std::ostream& output) {
-    const auto& value = required(options);
-    command_squash(repo, SquashCommand{string(value.revision), string(value.source), string(value.destination), string(value.message)}, output);
-  });
+  return gg_repository_squash_ex(out, repository, options, 0, operation);
 }
 
 int gg_repository_abandon(gg_mutation_result* out,

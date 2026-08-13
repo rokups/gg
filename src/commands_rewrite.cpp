@@ -289,8 +289,42 @@ void command_squash(Repository& repo,
   const git_oid destination_oid =
       options.destination.empty() ? source_parents.front()
                                   : repo.resolve(options.destination);
-  if (!(destination_oid == source_parents.front())) {
-    throw UserError("MVP squash destination must be the source parent");
+  const int destination_is_descendant =
+      git_graph_descendant_of(repo.raw(), &destination_oid, &source_oid);
+  check(destination_is_descendant, "check squash destination");
+  if (destination_oid == source_oid || destination_is_descendant != 0) {
+    throw UserError("squash destination cannot be the source or its descendant");
+  }
+  std::set<git_oid, OidLess> selected{source_oid};
+  git_oid change_base = source_parents.front();
+  if (options.entire_branch) {
+    const std::vector<git_oid> branch = repo.resolve_set(
+        "ancestors(" + oid_string(source_oid) + ") ~ ancestors(" +
+        oid_string(destination_oid) + ")");
+    selected = std::set<git_oid, OidLess>(branch.begin(), branch.end());
+    std::vector<git_oid> roots;
+    for (const git_oid& oid : selected) {
+      const std::vector<git_oid> parents = repo.parents(oid);
+      if (std::ranges::none_of(parents, [&](const git_oid& parent) {
+            return selected.contains(parent);
+          })) {
+        roots.push_back(oid);
+      }
+    }
+    if (roots.size() != 1) {
+      throw UserError("squash branch must have one divergence root");
+    }
+    const std::vector<git_oid> root_parents = repo.parents(roots.front());
+    if (root_parents.size() != 1) {
+      throw UserError("squash branch root must have exactly one parent");
+    }
+    change_base = root_parents.front();
+    const int destination_is_below_root =
+        git_graph_descendant_of(repo.raw(), &destination_oid, &roots.front());
+    check(destination_is_below_root, "check squash branch destination");
+    if (destination_is_below_root != 0) {
+      throw UserError("squash destination cannot be inside the selected branch");
+    }
   }
   CommitPtr source_commit = repo.commit(source_oid);
   CommitPtr destination_commit = repo.commit(destination_oid);
@@ -301,19 +335,23 @@ void command_squash(Repository& repo,
       combined_message = first_line(git_commit_message(source_commit.get()));
     }
   }
+  const git_oid combined_tree = repo.replay(
+      change_base, destination_oid, *git_commit_tree_id(source_commit.get()));
   const git_oid rewritten_destination = repo.rewrite_commit(
-      destination_oid, repo.parents(destination_oid),
-      *git_commit_tree_id(source_commit.get()), combined_message);
-  RewritePlan plan = repo.descendants(
-      {{destination_oid, rewritten_destination},
-       {source_oid, rewritten_destination}},
-      {source_oid});
+      destination_oid, repo.parents(destination_oid), combined_tree,
+      combined_message);
+  std::map<git_oid, git_oid, OidLess> replacements{
+      {destination_oid, rewritten_destination}};
+  for (const git_oid& oid : selected) {
+    replacements.emplace(oid, rewritten_destination);
+  }
+  RewritePlan plan = repo.descendants(std::move(replacements), selected);
   const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     git_oid new_workspace = *workspace;
-    if (*workspace == source_oid) {
+    if (selected.contains(*workspace)) {
       new_workspace = repo.create_commit(
-          *git_commit_tree_id(source_commit.get()), {rewritten_destination}, "");
+          combined_tree, {rewritten_destination}, "");
     } else if (plan.commits.contains(*workspace)) {  // GG_COV_EXCL_BRANCH
       new_workspace = plan.commits.at(*workspace);
     }

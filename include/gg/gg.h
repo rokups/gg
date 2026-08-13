@@ -642,6 +642,10 @@ GG_EXTERN int gg_repository_split(
 GG_EXTERN int gg_repository_squash(
     gg_mutation_result *out, gg_repository *repository,
     const gg_squash_options *options, const gg_operation_options *operation);
+GG_EXTERN int gg_repository_squash_ex(
+    gg_mutation_result *out, gg_repository *repository,
+    const gg_squash_options *options, int entire_branch,
+    const gg_operation_options *operation);
 GG_EXTERN int gg_repository_abandon(
     gg_mutation_result *out, gg_repository *repository,
     const gg_abandon_options *options, const gg_operation_options *operation);
