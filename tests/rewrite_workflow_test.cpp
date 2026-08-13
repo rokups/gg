@@ -6,6 +6,8 @@
 
 #include "repository.hpp"
 
+#include <algorithm>
+
 namespace gg::test {
 
 TEST_F(RepositoryTest, RewritesAncestorsWhileEditingDescendants) {
@@ -22,6 +24,71 @@ TEST_F(RepositoryTest, RewritesAncestorsWhileEditingDescendants) {
   ASSERT_EQ(invoke({"squash", "-r", first_id, "-m", "combined"}).code, 0);
   EXPECT_NE(invoke({"log"}).output.find("descendant"), std::string::npos);
   expect_workspace_coherent();
+}
+
+TEST_F(RepositoryTest, DuplicatesABranchWithoutRewritingTheOriginal) {
+  const git_oid base = ref("HEAD");
+  const Result root_result = invoke({"new", "-m", "root", "main"});
+  ASSERT_EQ(root_result.code, 0) << root_result.error;
+  const std::string root_id = token_after(root_result.output, "Working copy now at: ");
+  write("root.txt", "root\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const Result child_result = invoke({"new", "-m", "child"});
+  ASSERT_EQ(child_result.code, 0) << child_result.error;
+  const std::string child_id = token_after(child_result.output, "Working copy now at: ");
+  write("child.txt", "child\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+
+  detail::Repository before(path_);
+  const git_oid original_root = before.resolve(root_id);
+  const git_oid original_child = before.resolve(child_id);
+  const Result duplicated = invoke({"duplicate", "-r", root_id, "--descendants"});
+  ASSERT_EQ(duplicated.code, 0) << duplicated.error;
+  EXPECT_NE(duplicated.output.find("Duplicated 2 revision(s)."), std::string::npos);
+
+  detail::Repository after(path_);
+  const git_oid duplicate_child = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(git_oid_equal(&duplicate_child, &original_child), 0);
+  const std::vector<git_oid> child_parents = after.parents(duplicate_child);
+  ASSERT_EQ(child_parents.size(), 1U);
+  const git_oid duplicate_root = child_parents.front();
+  ASSERT_EQ(git_oid_equal(&duplicate_root, &original_root), 0);
+  const std::vector<git_oid> root_parents = after.parents(duplicate_root);
+  ASSERT_EQ(root_parents.size(), 1U);
+  EXPECT_NE(git_oid_equal(&root_parents.front(), &base), 0);
+  EXPECT_NE(git_oid_equal(git_commit_tree_id(after.commit(original_root).get()),
+                git_commit_tree_id(after.commit(duplicate_root).get())), 0);
+  EXPECT_NE(git_oid_equal(git_commit_tree_id(after.commit(original_child).get()),
+                git_commit_tree_id(after.commit(duplicate_child).get())), 0);
+  const std::vector<git_oid> visible = after.resolve_set("all()");
+  const auto is_visible = [&](const git_oid& expected) {
+    return std::ranges::any_of(visible, [&](const git_oid& oid) {
+      return git_oid_equal(&oid, &expected) != 0;
+    });
+  };
+  EXPECT_TRUE(is_visible(original_root));
+  EXPECT_TRUE(is_visible(original_child));
+  EXPECT_TRUE(is_visible(duplicate_root));
+  EXPECT_TRUE(is_visible(duplicate_child));
+
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  const git_oid restored_workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&restored_workspace, &original_child), 0);
+}
+
+TEST_F(RepositoryTest, DuplicatesOnlyTheSelectedChangeByDefault) {
+  const Result root_result = invoke({"new", "-m", "root", "main"});
+  ASSERT_EQ(root_result.code, 0) << root_result.error;
+  const std::string root_id = token_after(root_result.output, "Working copy now at: ");
+  const Result child_result = invoke({"new", "-m", "child"});
+  ASSERT_EQ(child_result.code, 0) << child_result.error;
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+
+  const Result duplicated = invoke({"duplicate", "-r", root_id});
+  ASSERT_EQ(duplicated.code, 0) << duplicated.error;
+  EXPECT_NE(duplicated.output.find("Duplicated 1 revision(s)."), std::string::npos);
+  const git_oid unchanged_workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&unchanged_workspace, &workspace), 0);
 }
 
 TEST_F(RepositoryTest, RewritesChangesOutsideTheCurrentLine) {

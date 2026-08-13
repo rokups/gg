@@ -340,6 +340,13 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* rebase = app.add_subcommand("rebase", "Move a change and descendants");
   rebase->add_option("-s,--source", rebase_value.source, "Source revision")
       ->required();
+
+  DuplicateCommand duplicate_value;
+  auto* duplicate = app.add_subcommand("duplicate", "Copy a change without rewriting it");
+  duplicate->add_option("-r,--revision", duplicate_value.revision, "Revision")
+      ->default_val("@");
+  duplicate->add_flag("--descendants", duplicate_value.descendants,
+                      "Also copy every descendant");
   rebase
       ->add_option("-d,-o,--destination,--onto", rebase_value.destination,
                    "Destination revision")
@@ -999,6 +1006,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "DETAILS:\n"
       "  Replays a single-parent source onto the destination, then restacks descendants\n"
       "  and moves affected local refs. The destination cannot be below the source.");
+  duplicate->footer(
+      "DETAILS:\n"
+      "  Copies the selected change with the same content, description, author, and parents.\n"
+      "  --descendants preserves the selected branch topology and checks out its copy when @ is included.");
   split->footer(
       "DEFAULTS:\n"
       "  Splits @. Selected filesets become the first change; the remainder becomes its\n"
@@ -1349,6 +1360,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(metaedit_value)};
   } else if (rebase->parsed()) {
     command = RepositoryCommand{std::move(rebase_value)};
+  } else if (duplicate->parsed()) {
+    command = RepositoryCommand{std::move(duplicate_value)};
   } else if (split->parsed()) {
     command = RepositoryCommand{std::move(split_value)};
   } else if (squash->parsed()) {

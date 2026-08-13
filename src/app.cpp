@@ -147,6 +147,9 @@ int execute(Repository& repository,
             [&](const RebaseCommand& value) {
               command_rebase(repository, value, output);
             },
+            [&](const DuplicateCommand& value) {
+              command_duplicate(repository, value, output);
+            },
             [&](const SplitCommand& value) {
               command_split(repository, value, output);
             },

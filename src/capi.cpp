@@ -46,6 +46,7 @@ using gg::detail::MovementCommand;
 using gg::detail::MovementDirection;
 using gg::detail::MoveFilesCommand;
 using gg::detail::NewCommand;
+using gg::detail::DuplicateCommand;
 using gg::detail::OperationRestoreCommand;
 using gg::detail::RebaseCommand;
 using gg::detail::ReorderCommand;
@@ -414,6 +415,12 @@ int gg_metaedit_options_init(gg_metaedit_options* options,
 
 int gg_rebase_options_init(gg_rebase_options* options, unsigned int version) {
   return initialize(options, version, gg_rebase_options GG_REBASE_OPTIONS_INIT);
+}
+
+int gg_duplicate_options_init(gg_duplicate_options* options,
+                              unsigned int version) {
+  return initialize(options, version,
+                    gg_duplicate_options GG_DUPLICATE_OPTIONS_INIT);
 }
 
 int gg_reorder_options_init(gg_reorder_options* options,
@@ -1130,6 +1137,16 @@ int gg_repository_rebase(gg_mutation_result* out,
   return mutate(out, repository, operation, "rebase", [&](Repository& repo, std::ostream& output) {
     const auto& value = required(options);
     command_rebase(repo, RebaseCommand{string(value.source), string(value.destination)}, output);
+  });
+}
+
+int gg_repository_duplicate(gg_mutation_result* out,
+                            gg_repository* repository,
+                            const gg_duplicate_options* options,
+                            const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "duplicate", [&](Repository& repo, std::ostream& output) {
+    const auto& value = required(options);
+    command_duplicate(repo, DuplicateCommand{string(value.revision), value.descendants != 0}, output);
   });
 }
 

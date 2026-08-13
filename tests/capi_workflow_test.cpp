@@ -18,6 +18,7 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   gg_describe_options describe_options = GG_DESCRIBE_OPTIONS_INIT;
   gg_metaedit_options metaedit_options = GG_METAEDIT_OPTIONS_INIT;
   gg_rebase_options rebase_options = GG_REBASE_OPTIONS_INIT;
+  gg_duplicate_options duplicate_options = GG_DUPLICATE_OPTIONS_INIT;
   gg_reorder_options reorder_options = GG_REORDER_OPTIONS_INIT;
   gg_split_options split_options = GG_SPLIT_OPTIONS_INIT;
   gg_squash_options squash_options = GG_SQUASH_OPTIONS_INIT;
@@ -41,6 +42,7 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   EXPECT_EQ(gg_describe_options_init(&describe_options, 1), GIT_OK);
   EXPECT_EQ(gg_metaedit_options_init(&metaedit_options, 1), GIT_OK);
   EXPECT_EQ(gg_rebase_options_init(&rebase_options, 1), GIT_OK);
+  EXPECT_EQ(gg_duplicate_options_init(&duplicate_options, 1), GIT_OK);
   EXPECT_EQ(gg_reorder_options_init(&reorder_options, 1), GIT_OK);
   EXPECT_EQ(gg_split_options_init(&split_options, 1), GIT_OK);
   EXPECT_EQ(gg_squash_options_init(&squash_options, 1), GIT_OK);

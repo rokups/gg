@@ -84,6 +84,7 @@ void command_edit(Repository&, const EditCommand&, std::ostream&);
 void command_metaedit(Repository&, const MetaeditCommand&, std::ostream&);
 void command_describe(Repository&, const DescribeCommand&, std::ostream&);
 void command_rebase(Repository&, const RebaseCommand&, std::ostream&);
+void command_duplicate(Repository&, const DuplicateCommand&, std::ostream&);
 void command_reorder(Repository&, const ReorderCommand&, std::ostream&);
 void command_split(Repository&, const SplitCommand&, std::ostream&);
 void command_squash(Repository&, const SquashCommand&, std::ostream&);

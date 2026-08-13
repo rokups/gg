@@ -170,6 +170,7 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"rebase", "-s", "@"}).code, 2);
   EXPECT_EQ(invoke({"rebase", "-s", "@", "-d", "main", "extra"}).code, 2);
   EXPECT_EQ(invoke({"rebase", "-s", "@", "-d", "@"}).code, 2);
+  EXPECT_EQ(invoke({"duplicate", "extra"}).code, 2);
   EXPECT_EQ(invoke({"split"}).code, 2);
   EXPECT_EQ(invoke({"split", "/absolute"}).code, 2);
   EXPECT_EQ(invoke({"split", ""}).code, 2);

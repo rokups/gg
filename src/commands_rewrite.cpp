@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <utility>
@@ -48,6 +49,67 @@ void command_rebase(Repository& repo,
   }
   output << "Rebased " << repo.short_commit_id(old).value << " as "
          << repo.short_commit_id(rewritten).value << '\n';
+}
+
+void command_duplicate(Repository& repo,
+                       const DuplicateCommand& options,
+                       std::ostream& output) {
+  repo.sync_for_command();
+  const git_oid root = repo.resolve(options.revision.empty() ? "@" : options.revision);
+  const std::vector<git_oid> values = options.descendants
+      ? repo.resolve_set("descendants(" + oid_string(root) + ")")
+      : std::vector<git_oid>{root};
+  const std::set<git_oid, OidLess> selected(values.begin(), values.end());
+  std::set<git_oid, OidLess> existing;
+  const std::vector<git_oid> visible = repo.resolve_set("all()");
+  existing.insert(visible.begin(), visible.end());
+  std::map<git_oid, git_oid, OidLess> copies;
+
+  std::function<git_oid(const git_oid&)> copy = [&](const git_oid& old) {
+    if (const auto found = copies.find(old); found != copies.end()) {
+      return found->second;
+    }
+    std::vector<git_oid> parents = repo.parents(old);
+    for (git_oid& parent : parents) {
+      if (selected.contains(parent)) parent = copy(parent);
+    }
+    CommitPtr source = repo.commit(old);
+    SignaturePtr committer = repo.signature();
+    git_oid result{};
+    do {
+      result = repo.create_commit(*git_commit_tree_id(source.get()), parents,
+                                  git_commit_message(source.get()),
+                                  git_commit_author(source.get()), committer.get());
+      ++committer->when.time;
+    } while (existing.contains(result));
+    existing.insert(result);
+    copies.emplace(old, result);
+    return result;
+  };
+  for (const git_oid& oid : selected) copy(oid);
+
+  std::set<git_oid, OidLess> non_heads;
+  for (const git_oid& oid : selected) {
+    for (const git_oid& parent : repo.parents(oid)) {
+      if (selected.contains(parent)) non_heads.insert(parent);
+    }
+  }
+  std::map<std::string, git_oid> updates;
+  for (const git_oid& oid : selected) {
+    if (non_heads.contains(oid)) continue;
+    updates.emplace(std::string(kVisibleHeadPrefix) + oid_string(oid), oid);
+    const git_oid duplicated = copies.at(oid);
+    updates.emplace(std::string(kVisibleHeadPrefix) + oid_string(duplicated), duplicated);
+  }
+
+  const auto workspace = repo.workspace();
+  if (workspace.has_value() && copies.contains(*workspace)) {
+    finish_workspace(repo, copies.at(*workspace), std::move(updates), {},
+                     "gg duplicate");
+  } else {
+    repo.record(std::move(updates), {}, repo.head_state(), "gg duplicate");
+  }
+  output << "Duplicated " << selected.size() << " revision(s).\n";
 }
 
 void command_reorder(Repository& repo,

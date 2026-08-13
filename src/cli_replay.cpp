@@ -129,6 +129,11 @@ std::vector<std::string> repository_replay_arguments(
             return std::vector<std::string>{"rebase", "-s", value.source, "-d",
                                             value.destination};
           },
+          [](const DuplicateCommand& value) {
+            std::vector<std::string> result{"duplicate", "-r", value.revision};
+            if (value.descendants) result.emplace_back("--descendants");
+            return result;
+          },
           [](const SplitCommand& value) {
             std::vector<std::string> result{"split"};
             add_option(result, "-r", value.revision);

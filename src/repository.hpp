@@ -26,6 +26,7 @@ inline constexpr std::string_view kAliasMapRef = "refs/gg/commit-aliases";
 inline constexpr std::string_view kLegacyChangePrefix = "refs/gg/changes/";
 inline constexpr std::string_view kLegacyChangeMapRef = "refs/gg/change-map";
 inline constexpr std::string_view kWorkspacePrefix = "refs/gg/workspaces/";
+inline constexpr std::string_view kVisibleHeadPrefix = "refs/gg/visible-heads/";
 inline constexpr std::string_view kWorkspaceRef = "refs/gg/workspaces/default";
 inline constexpr std::string_view kOperationRef = "refs/gg/operations/current";
 inline constexpr std::string_view kRewriteRef = "refs/gg/rewrite";

@@ -76,6 +76,10 @@ struct RebaseCommand {
   std::string source;
   std::string destination;
 };
+struct DuplicateCommand {
+  std::string revision;
+  bool descendants{false};
+};
 enum class ReorderPlacement { before, after };
 struct ReorderCommand {
   std::string source;
@@ -293,7 +297,7 @@ struct ConfigCommand {
 
 using RepositoryCommand =
     std::variant<StatusCommand, LogCommand, NewCommand, DescribeCommand,
-                 EditCommand, MetaeditCommand, RebaseCommand, SplitCommand,
+                 EditCommand, MetaeditCommand, RebaseCommand, DuplicateCommand, SplitCommand,
                  SquashCommand,
                  AbandonCommand, CommitCommand, RestoreCommand,
                  SimplifyParentsCommand, FileCommand, DiffCommand, ShowCommand,
