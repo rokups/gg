@@ -539,7 +539,8 @@ bool Repository::sync_workspace() const {
 }
 
 void Repository::add_remote_bookmark_updates(
-    std::map<std::string, git_oid>& updates) const {
+    std::map<std::string, git_oid>& updates,
+    bool advance_bookmarks) const {
   constexpr std::string_view remote_prefix = "refs/remotes/";
   std::set<std::string> tracking_refs;
   for (const auto& [reference, oid] : data_refs()) {
@@ -567,6 +568,7 @@ void Repository::add_remote_bookmark_updates(
     if (previous_remote.has_value() && !(*previous_remote == *remote)) {
       updates[tracking] = *remote;
     }
+    if (!advance_bookmarks) continue;
 
     const std::size_t slash = suffix.find('/');
     if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
@@ -582,7 +584,7 @@ void Repository::add_remote_bookmark_updates(
   }
 }
 
-bool Repository::sync_remote_bookmarks() const {
+bool Repository::sync_remote_bookmarks(bool advance_bookmarks) const {
   if (operation_view_.has_value()) return false;
   std::map<std::string, git_oid> updates;
   const auto current_operation = operation();
@@ -598,7 +600,7 @@ bool Repository::sync_remote_bookmarks() const {
       }
     }
   }
-  add_remote_bookmark_updates(updates);
+  add_remote_bookmark_updates(updates, advance_bookmarks);
   if (updates.empty()) return false;
   record(std::move(updates), {}, head_state(), "gg import remote bookmarks");
   return true;

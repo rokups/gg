@@ -565,6 +565,9 @@ GG_EXTERN git_repository *gg_repository_raw(gg_repository *repository);
 
 GG_EXTERN int gg_repository_adopt_git_history(
     gg_repository *repository, const gg_operation_options *options);
+GG_EXTERN int gg_repository_adopt_git_history_ex(
+    gg_repository *repository, int advance_bookmarks,
+    const gg_operation_options *options);
 GG_EXTERN int gg_repository_snapshot_working_copy(
     int *changed, gg_repository *repository,
     const gg_operation_options *options);
@@ -701,6 +704,10 @@ GG_EXTERN int gg_repository_plan_fetch(gg_transport_plan *out,
 GG_EXTERN int gg_repository_complete_fetch(
     gg_mutation_result *out, gg_repository *repository,
     const gg_transport_plan *plan,
+    const gg_operation_options *operation);
+GG_EXTERN int gg_repository_complete_fetch_ex(
+    gg_mutation_result *out, gg_repository *repository,
+    const gg_transport_plan *plan, int advance_bookmarks,
     const gg_operation_options *operation);
 GG_EXTERN int gg_repository_plan_push(gg_transport_plan *out,
                                       gg_repository *repository,

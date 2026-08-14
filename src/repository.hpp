@@ -334,9 +334,10 @@ class Repository {
   bool sync_workspace() const;
 
   void add_remote_bookmark_updates(
-      std::map<std::string, git_oid>& updates) const;
+      std::map<std::string, git_oid>& updates,
+      bool advance_bookmarks = true) const;
 
-  bool sync_remote_bookmarks() const;
+  bool sync_remote_bookmarks(bool advance_bookmarks = true) const;
 
   bool sync_for_command() const;
 

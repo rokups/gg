@@ -518,6 +518,12 @@ git_repository* gg_repository_raw(gg_repository* repository) {
 
 int gg_repository_adopt_git_history(gg_repository* repository,
                                     const gg_operation_options* options) {
+  return gg_repository_adopt_git_history_ex(repository, 1, options);
+}
+
+int gg_repository_adopt_git_history_ex(gg_repository* repository,
+                                       int advance_bookmarks,
+                                       const gg_operation_options* options) {
   return boundary([&] {
     if (repository == nullptr) {
       throw gg::detail::UserError("repository must not be null");
@@ -526,7 +532,7 @@ int gg_repository_adopt_git_history(gg_repository* repository,
     Repository& implementation = repository->implementation;
     implementation.invalidate_ref_cache();
     implementation.import_git_history();
-    implementation.sync_remote_bookmarks();
+    implementation.sync_remote_bookmarks(advance_bookmarks != 0);
     finish_operation(options, "adopt_git_history");
     return GIT_OK;
   });
@@ -1553,6 +1559,14 @@ int gg_repository_complete_fetch(gg_mutation_result* out,
                                  gg_repository* repository,
                                  const gg_transport_plan* plan,
                                  const gg_operation_options* operation) {
+  return gg_repository_complete_fetch_ex(out, repository, plan, 1, operation);
+}
+
+int gg_repository_complete_fetch_ex(gg_mutation_result* out,
+                                    gg_repository* repository,
+                                    const gg_transport_plan* plan,
+                                    int advance_bookmarks,
+                                    const gg_operation_options* operation) {
   return mutate(out, repository, operation, "complete_fetch", [&](Repository& repo, std::ostream&) {
     if (plan == nullptr || plan->version != GG_OPTIONS_VERSION ||
         (plan->refspec_count != 0 && plan->refspecs == nullptr)) {
@@ -1595,7 +1609,7 @@ int gg_repository_complete_fetch(gg_mutation_result* out,
         throw gg::detail::UserError("invalid fetch destination");
       }
     }
-    repo.add_remote_bookmark_updates(updates);
+    repo.add_remote_bookmark_updates(updates, advance_bookmarks != 0);
     repo.record(std::move(updates), std::move(deletes), repo.head_state(),
                 "gg fetch");
   });
