@@ -11,6 +11,40 @@
 
 namespace gg::test {
 
+TEST_F(RepositoryTest, ListsExistingGitWorktreesBeforeTheyAreManaged) {
+  const std::filesystem::path linked = path_.string() + "-existing-worktree";
+  std::filesystem::remove_all(linked);
+  const Result added =
+      invoke_git({"worktree", "add", "--detach", linked.string()});
+  ASSERT_EQ(added.code, 0) << added.error;
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  gg_workspace_array workspaces{};
+  ASSERT_EQ(gg_repository_workspaces(&workspaces, repository), GIT_OK);
+  ASSERT_EQ(workspaces.count, 2U);
+
+  const auto existing = std::find_if(
+      workspaces.items, workspaces.items + workspaces.count,
+      [&](const gg_workspace& workspace) {
+        return workspace.root != nullptr &&
+               std::filesystem::weakly_canonical(workspace.root) ==
+                   std::filesystem::weakly_canonical(linked);
+      });
+  ASSERT_NE(existing, workspaces.items + workspaces.count);
+  EXPECT_TRUE(existing->has_working_copy);
+  EXPECT_FALSE(existing->stale);
+  EXPECT_FALSE(existing->managed);
+  const git_oid head = ref("HEAD");
+  EXPECT_NE(git_oid_equal(&existing->working_copy, &head), 0);
+
+  gg_workspace_array_dispose(&workspaces);
+  gg_repository_free(repository);
+  ASSERT_EQ(invoke_git({"worktree", "remove", "--force", linked.string()})
+                .code,
+            0);
+}
+
 TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   gg_operation_options operation = GG_OPERATION_OPTIONS_INIT;
   gg_new_options new_options = GG_NEW_OPTIONS_INIT;
@@ -114,7 +148,9 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   ASSERT_EQ(gg_repository_workspaces(&workspaces, repository), GIT_OK);
   ASSERT_EQ(workspaces.count, 1U);
   EXPECT_STREQ(workspaces.items[0].name, "default");
+  EXPECT_TRUE(workspaces.items[0].has_working_copy);
   EXPECT_FALSE(workspaces.items[0].stale);
+  EXPECT_TRUE(workspaces.items[0].managed);
   gg_workspace_array_dispose(&workspaces);
 
   write("tracked.txt", "changed\n");

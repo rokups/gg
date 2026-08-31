@@ -508,6 +508,8 @@ typedef struct gg_workspace {
   char *root;
   git_oid working_copy;
   int stale;
+  int has_working_copy;
+  int managed;
 } gg_workspace;
 
 typedef struct gg_workspace_array {

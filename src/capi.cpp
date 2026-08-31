@@ -1068,24 +1068,74 @@ int gg_repository_workspaces(gg_workspace_array* out,
     *out = {};
     Repository& repo = repository->implementation;
     const auto roots = repo.workspace_roots();
-    std::vector<std::pair<std::string, git_oid>> workspaces;
+    struct WorkspaceInfo {
+      std::filesystem::path root;
+      std::optional<git_oid> working_copy;
+      bool managed = false;
+      bool stale = false;
+    };
+    std::map<std::string, WorkspaceInfo> workspaces;
+    for (const auto& [name, root] : roots) {
+      std::error_code error;
+      const bool available = std::filesystem::is_directory(root, error);
+      workspaces.emplace(name, WorkspaceInfo{root, std::nullopt, false,
+                                             error || !available});
+    }
     for (const auto& [reference, oid] : repo.data_refs()) {
       if (reference.starts_with(gg::detail::kWorkspacePrefix)) {
-        workspaces.emplace_back(
-            reference.substr(gg::detail::kWorkspacePrefix.size()), oid);
+        const std::string name =
+            reference.substr(gg::detail::kWorkspacePrefix.size());
+        WorkspaceInfo& workspace = workspaces[name];
+        workspace.working_copy = oid;
+        workspace.managed = true;
+        if (workspace.root.empty()) workspace.stale = true;
       }
     }
-    if (workspaces.empty()) return GIT_OK;
+
+    // Plain Git worktrees are useful navigation targets even before gg has
+    // created an isolated working change in them. Resolve their local HEAD
+    // without mutating or adopting the worktree.
+    for (auto& [name, workspace] : workspaces) {
+      (void)name;
+      if (workspace.managed || workspace.stale) continue;
+      git_repository* raw_worktree = nullptr;
+      if (git_repository_open(&raw_worktree,
+                              workspace.root.string().c_str()) != GIT_OK) {
+        git_error_clear();
+        workspace.stale = true;
+        continue;
+      }
+      gg::detail::RepositoryPtr worktree(raw_worktree);
+      git_object* raw_head = nullptr;
+      const int result = git_revparse_single(&raw_head, worktree.get(), "HEAD");
+      if (result == GIT_OK) {
+        gg::detail::ObjectPtr head(raw_head);
+        git_object* raw_commit = nullptr;
+        if (git_object_peel(&raw_commit, head.get(), GIT_OBJECT_COMMIT) ==
+            GIT_OK) {
+          gg::detail::ObjectPtr commit(raw_commit);
+          workspace.working_copy = *git_object_id(commit.get());
+        } else {
+          git_error_clear();
+        }
+      } else {
+        git_error_clear();
+      }
+    }
+
     out->items = static_cast<gg_workspace*>(
         std::calloc(workspaces.size(), sizeof(gg_workspace)));
     if (out->items == nullptr) throw std::bad_alloc();
-    for (const auto& [name, oid] : workspaces) {
+    for (const auto& [name, workspace] : workspaces) {
       gg_workspace& item = out->items[out->count];
       item.name = duplicate(name);
-      item.working_copy = oid;
-      const auto root = roots.find(name);
-      item.stale = root == roots.end();
-      item.root = duplicate(item.stale ? "" : root->second.string());
+      if (workspace.working_copy.has_value()) {
+        item.working_copy = *workspace.working_copy;
+        item.has_working_copy = 1;
+      }
+      item.stale = workspace.stale;
+      item.managed = workspace.managed;
+      item.root = duplicate(item.stale ? "" : workspace.root.string());
       ++out->count;
     }
     return GIT_OK;
