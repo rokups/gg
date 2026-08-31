@@ -10,6 +10,55 @@
 #include <sstream>
 
 namespace gg::detail {
+namespace {
+
+bool is_conflict_marker(std::string_view line) {
+  if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+  if (line.size() < 7) return false;
+  const char marker = line.front();
+  const std::size_t marker_end = line.find_first_not_of(marker);
+  const std::size_t marker_length =
+      marker_end == std::string_view::npos ? line.size() : marker_end;
+  if (marker_length < 7) return false;
+  const std::string_view label = line.substr(marker_length);
+  switch (marker) {
+    case '<':
+    case '>':
+    case '|':
+      return label.empty() || label.starts_with(' ');
+    case '=':
+      return label.empty();
+    case '+':
+      return label.starts_with(" Side #");
+    case '-':
+      return label.starts_with(" Base #");
+    default:
+      return false;
+  }
+}
+
+bool has_conflict_marker(git_repository* repository,
+                         const git_tree_entry* entry) {
+  if (git_tree_entry_type(entry) != GIT_OBJECT_BLOB) return false;
+  git_blob* raw_blob = nullptr;
+  check(git_blob_lookup(&raw_blob, repository, git_tree_entry_id(entry)),
+        "read conflict marker");
+  BlobPtr blob(raw_blob);
+  if (git_blob_rawsize(blob.get()) == 0) return false;
+  std::string_view contents(
+      static_cast<const char*>(git_blob_rawcontent(blob.get())),
+      static_cast<std::size_t>(git_blob_rawsize(blob.get())));
+  while (!contents.empty()) {
+    const std::size_t line_end = contents.find('\n');
+    const std::string_view line = contents.substr(0, line_end);
+    if (is_conflict_marker(line)) return true;
+    if (line_end == std::string_view::npos) break;
+    contents.remove_prefix(line_end + 1);
+  }
+  return false;
+}
+
+}  // namespace
 
 bool Repository::has_legacy_rewrite() const {
   return ref_target(rewrite_ref_name()).has_value();
@@ -155,7 +204,9 @@ void Repository::preserve_conflicts(const git_oid& old_tree,
                             *git_tree_entry_id(after_entry.get())));
     if (before_result != 0 && before_result != GIT_ENOTFOUND) check(before_result, "read conflict materialization");  // GG_COV_EXCL_BRANCH
     if (after_result != 0 && after_result != GIT_ENOTFOUND) check(after_result, "read conflict snapshot");  // GG_COV_EXCL_BRANCH
-    if (same) retained.emplace(path, conflict);
+    const bool marked = !same && after_result == 0 &&
+                        has_conflict_marker(repo_.get(), after_entry.get());
+    if (same || marked) retained.emplace(path, conflict);
   }
   record_conflicts(new_tree, std::move(retained));
 }

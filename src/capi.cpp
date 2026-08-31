@@ -138,6 +138,25 @@ git_oid commit_target(Repository& repository, std::string_view reference) {
   return *git_object_id(commit.get());
 }
 
+std::optional<git_oid> optional_commit_target(
+    Repository& repository, std::string_view reference) {
+  git_object* raw_object = nullptr;
+  gg::detail::check(git_revparse_single(&raw_object, repository.raw(),
+                                        std::string(reference).c_str()),
+                    "resolve reference target");
+  gg::detail::ObjectPtr target(raw_object);
+  while (git_object_type(target.get()) == GIT_OBJECT_TAG) {
+    git_object* raw_target = nullptr;
+    gg::detail::check(
+        git_tag_target(&raw_target,
+                       reinterpret_cast<const git_tag*>(target.get())),
+        "resolve tag target");
+    target.reset(raw_target);
+  }
+  if (git_object_type(target.get()) != GIT_OBJECT_COMMIT) return std::nullopt;
+  return *git_object_id(target.get());
+}
+
 void add_refspec(gg_transport_plan* plan,
                  const std::string& remote,
                  const std::string& source,
@@ -173,6 +192,43 @@ Repository& query_repository(
   historical->enable_ref_cache();
   historical->view_at_operation(at_operation);
   return *historical;
+}
+
+void fill_revision(gg_revision& item, Repository& repo, const git_oid& oid) {
+  item.oid = oid;
+  const auto parents = repo.parents(oid);
+  if (!parents.empty()) {
+    item.parents.ids =
+        static_cast<git_oid*>(std::malloc(parents.size() * sizeof(git_oid)));
+    if (item.parents.ids == nullptr) throw std::bad_alloc();
+    std::ranges::copy(parents, item.parents.ids);
+    item.parents.count = parents.size();
+  }
+  const auto aliases = repo.commit_aliases(oid);
+  if (!aliases.empty()) {
+    item.aliases.ids =
+        static_cast<git_oid*>(std::malloc(aliases.size() * sizeof(git_oid)));
+    if (item.aliases.ids == nullptr) throw std::bad_alloc();
+    std::ranges::copy(aliases, item.aliases.ids);
+    item.aliases.count = aliases.size();
+  }
+  auto commit = repo.commit(oid);
+  item.description = duplicate(git_commit_message(commit.get()) == nullptr
+                                   ? ""
+                                   : git_commit_message(commit.get()));
+  gg::detail::check(git_signature_dup(&item.author,
+                                      git_commit_author(commit.get())),
+                    "copy author");
+  gg::detail::check(git_signature_dup(&item.committer,
+                                      git_commit_committer(commit.get())),
+                    "copy committer");
+  item.has_conflicts = repo.commit_has_conflicts(oid);
+  if (parents.empty()) {
+    item.empty = git_tree_entrycount(repo.tree(*git_commit_tree_id(commit.get())).get()) == 0;
+  } else {
+    item.empty = git_oid_equal(git_commit_tree_id(commit.get()),
+                               git_commit_tree_id(repo.commit(parents[0]).get()));
+  }
 }
 
 int user_error_code(const gg::detail::UserError& error) {
@@ -553,6 +609,23 @@ int gg_repository_snapshot_working_copy(int* changed,
   });
 }
 
+int gg_repository_snapshot_working_copy_paths(
+    int* changed, gg_repository* repository, gg_string_array paths,
+    const gg_operation_options* options) {
+  return boundary([&] {
+    if (changed == nullptr || repository == nullptr ||
+        (paths.count != 0 && paths.strings == nullptr)) {
+      throw gg::detail::UserError(
+          "snapshot output, repository, and paths must not be null");
+    }
+    begin_operation(options, "snapshot_working_copy");
+    repository->implementation.invalidate_ref_cache();
+    *changed = repository->implementation.sync_workspace(strings(paths));
+    finish_operation(options, "snapshot_working_copy");
+    return GIT_OK;
+  });
+}
+
 int gg_repository_resolve(git_oid* out,
                           gg_repository* repository,
                           const char* revision) {
@@ -690,9 +763,13 @@ int gg_repository_named_refs(gg_named_ref_array* out,
       } else {
         continue;
       }
-      values.push_back(
-          {std::move(name), std::move(remote), commit_target(repo, reference),
-           kind, tracked});
+      const auto target = optional_commit_target(repo, reference);
+      // Git permits tags to name trees, blobs, and other tags that ultimately
+      // do not resolve to a commit. Such refs cannot annotate a revision in
+      // the UI, but must not prevent the repository from loading.
+      if (!target.has_value()) continue;
+      values.push_back({std::move(name), std::move(remote), *target, kind,
+                        tracked});
     }
     if (values.empty()) return GIT_OK;
     out->items = static_cast<gg_named_ref*>(
@@ -795,39 +872,36 @@ int gg_repository_revisions(gg_revision_array* out,
     if (out->items == nullptr) throw std::bad_alloc();
     for (const git_oid& oid : revisions) {
       gg_revision& item = out->items[out->count];
-      item.oid = oid;
-      const auto parents = repo.parents(oid);
-      if (!parents.empty()) {
-        item.parents.ids = static_cast<git_oid*>(
-            std::malloc(parents.size() * sizeof(git_oid)));
-        if (item.parents.ids == nullptr) throw std::bad_alloc();
-        std::ranges::copy(parents, item.parents.ids);
-        item.parents.count = parents.size();
-      }
-      const auto aliases = repo.commit_aliases(oid);
-      if (!aliases.empty()) {
-        item.aliases.ids = static_cast<git_oid*>(
-            std::malloc(aliases.size() * sizeof(git_oid)));
-        if (item.aliases.ids == nullptr) throw std::bad_alloc();
-        std::ranges::copy(aliases, item.aliases.ids);
-        item.aliases.count = aliases.size();
-      }
-      auto commit = repo.commit(oid);
-      item.description = duplicate(git_commit_message(commit.get()) == nullptr
-                                       ? ""
-                                       : git_commit_message(commit.get()));
-      git_signature* author = nullptr;
-      git_signature* committer = nullptr;
-      gg::detail::check(git_signature_dup(&author,
-                                          git_commit_author(commit.get())),
-                        "copy author");
-      item.author = author;
-      gg::detail::check(git_signature_dup(&committer,
-                                          git_commit_committer(commit.get())),
-                        "copy committer");
-      item.committer = committer;
-      item.has_conflicts = repo.commit_has_conflicts(oid);
+      fill_revision(item, repo, oid);
       ++out->count;
+    }
+    return GIT_OK;
+  });
+}
+
+int gg_repository_lookup_revisions(gg_revision_array* out,
+                                   gg_repository* repository,
+                                   gg_oid_array revisions) {
+  return boundary([&] {
+    if (out == nullptr || repository == nullptr ||
+        (revisions.count != 0 && revisions.ids == nullptr)) {
+      throw gg::detail::UserError(
+          "revision output, repository, and IDs must not be null");
+    }
+    *out = {};
+    if (revisions.count == 0) return GIT_OK;
+    out->items = static_cast<gg_revision*>(
+        std::calloc(revisions.count, sizeof(gg_revision)));
+    if (out->items == nullptr) throw std::bad_alloc();
+    try {
+      while (out->count < revisions.count) {
+        gg_revision& item = out->items[out->count++];
+        fill_revision(item, repository->implementation,
+                      revisions.ids[out->count - 1]);
+      }
+    } catch (...) {
+      gg_revision_array_dispose(out);
+      throw;
     }
     return GIT_OK;
   });
@@ -1170,7 +1244,7 @@ int gg_repository_reorder(gg_mutation_result* out,
     }
     command_reorder(repo,
                     ReorderCommand{string(value.source), string(value.target),
-                                   placement},
+                                   placement, value.copy != 0},
                     output);
   });
 }

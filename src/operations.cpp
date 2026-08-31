@@ -23,6 +23,7 @@ bool refs_equal(const std::map<std::string, git_oid>& left,
 
 constexpr std::string_view kOperationV2 = "gg-operation-v2";
 constexpr std::string_view kOperationV3 = "gg-operation-v3";
+constexpr std::string_view kOperationV4 = "gg-operation-v4";
 constexpr std::size_t kMaxOperationParents = 128;
 
 git_oid create_keepalive(const Repository& repo,
@@ -67,7 +68,8 @@ OperationState parse_operation_state(std::string_view text,
                                      git_oid_t oid_type) {
   std::istringstream input(std::string{text});
   std::string line;
-  if (!std::getline(input, line) || line != kOperationV2) {  // GG_COV_EXCL_BRANCH
+  if (!std::getline(input, line) ||
+      (line != kOperationV2 && line != kOperationV4)) {  // GG_COV_EXCL_BRANCH
     throw GitError("invalid gg operation snapshot");
   }
   OperationState state;
@@ -112,7 +114,7 @@ std::string operation_metadata(std::optional<git_oid> previous,
                                std::string_view description,
                                std::string_view workspace_name) {
   std::ostringstream output;
-  output << kOperationV3 << "\nprevious "
+  output << kOperationV4 << "\nprevious "
          << (previous.has_value() ? oid_string(*previous) : "-")
          << "\ndescription " << description << "\nworkspace "
          << workspace_name << '\n';
@@ -122,14 +124,18 @@ std::string operation_metadata(std::optional<git_oid> previous,
 }  // namespace
 
 OperationState Repository::state() const {
-  return {head_state(), data_refs(), workspace_name()};
+  auto refs = data_refs();
+  std::erase_if(refs, [](const auto& item) {
+    return starts_with(item.first, kAliasPrefix) || item.first == kAliasMapRef;
+  });
+  return {head_state(), std::move(refs), workspace_name()};
 }
 
 std::string Repository::serialize(const OperationState& state,
                       std::optional<git_oid> previous,
                       std::string_view description) const {
   std::ostringstream output;
-  output << "gg-operation-v2\nprevious "
+  output << kOperationV2 << "\nprevious "
          << (previous.has_value() ? oid_string(*previous) : "-")
          << "\ndescription " << description << "\nhead "
          << (state.head.symbolic ? 'S' : 'D')
@@ -150,7 +156,7 @@ OperationState Repository::parse_operation(const git_commit* operation) const {
   if (message.starts_with(kOperationV2)) {
     return parse_operation_state(message, git_repository_oid_type(repo_.get()));
   }
-  if (!message.starts_with(kOperationV3)) {
+  if (!message.starts_with(kOperationV3) && !message.starts_with(kOperationV4)) {
     throw GitError("invalid gg operation snapshot");
   }
   git_tree* raw_tree = nullptr;
@@ -194,7 +200,7 @@ std::string Repository::operation_description(
   std::istringstream input(git_commit_message(operation));
   std::string line;
   if (!std::getline(input, line) ||
-      (line != kOperationV2 && line != kOperationV3)) {
+      (line != kOperationV2 && line != kOperationV3 && line != kOperationV4)) {
     throw GitError("invalid gg operation snapshot");
   }
   if (!std::getline(input, line) || !starts_with(line, "previous ")) {
@@ -233,7 +239,8 @@ std::optional<git_oid> Repository::operation_previous(
   std::string keyword;
   std::string previous;
   if (!(input >> header >> keyword >> previous) ||
-      (header != kOperationV2 && header != kOperationV3) ||  // GG_COV_EXCL_BRANCH
+      (header != kOperationV2 && header != kOperationV3 &&
+       header != kOperationV4) ||  // GG_COV_EXCL_BRANCH
       keyword != "previous") {
     throw GitError("invalid gg operation predecessor");
   }
@@ -259,16 +266,28 @@ git_oid Repository::create_operation(const OperationState& state,
   if (previous.has_value()) {
     parents.push_back(*previous);
     seen.insert(*previous);
-    previous_state = parse_operation(*previous);
+    CommitPtr previous_commit = commit(*previous);
+    if (std::string_view(git_commit_message(previous_commit.get()))
+            .starts_with(kOperationV4)) {
+      previous_state = parse_operation(previous_commit.get());
+    }
+  }
+  std::vector<git_oid> displaced_targets;
+  if (previous_state.has_value()) {
+    for (const auto& [name, target] : previous_state->refs) {
+      const auto replacement = state.refs.find(name);
+      if (replacement == state.refs.end() || !(replacement->second == target)) {
+        displaced_targets.push_back(target);
+      }
+    }
   }
   for (const auto& [name, target] : state.refs) {
-    const auto old = previous_state.has_value()
-                         ? previous_state->refs.find(name)
-                         : state.refs.end();
-    if (previous_state.has_value() && old != previous_state->refs.end() &&
-        old->second == target) {
-      continue;
+    const auto physical = ref_target(name);
+    if (!physical.has_value() || !(*physical == target)) {
+      displaced_targets.push_back(target);
     }
+  }
+  for (const git_oid& target : displaced_targets) {
     git_commit* raw_commit = nullptr;
     if (!seen.contains(target) &&
         git_commit_lookup(&raw_commit, repo_.get(), &target) == 0) {
@@ -286,7 +305,8 @@ git_oid Repository::create_operation(const OperationState& state,
     parents.erase(first_target, parents.end());
     parents.push_back(keepalive);
   }
-  const std::string serialized = serialize(state, previous, description);
+  std::string serialized = serialize(state, previous, description);
+  serialized.replace(0, kOperationV2.size(), kOperationV4);
   git_oid state_oid{};
   check(git_blob_create_from_buffer(&state_oid, repo_.get(), serialized.data(),
                                     serialized.size()),
@@ -407,19 +427,35 @@ void Repository::view_at_operation(std::string_view expression) {
 }
 
 git_oid Repository::ensure_operation() const {
-  migrate_operation_history();
   const auto current = operation();
   if (current.has_value()) {
-    const OperationState recorded = parse_operation(*current);
-    const OperationState actual = state();
-    if (recorded.head.symbolic == actual.head.symbolic &&
-        recorded.head.value == actual.head.value &&
-        refs_equal(recorded.refs, actual.refs)) {
-      return *current;
+    CommitPtr current_commit = commit(*current);
+    if (std::string_view(git_commit_message(current_commit.get()))
+            .starts_with(kOperationV4)) {
+      const OperationState recorded = parse_operation(current_commit.get());
+      const OperationState actual = state();
+      if (recorded.head.symbolic == actual.head.symbolic &&
+          recorded.head.value == actual.head.value &&
+          refs_equal(recorded.refs, actual.refs)) {
+        return *current;
+      }
+    }
+  }
+  std::optional<git_oid> predecessor;
+  if (current.has_value()) {
+    CommitPtr current_commit = commit(*current);
+    // A legacy repository transitions directly to V4 while retaining its
+    // existing operation as the restoration predecessor. A mismatch against
+    // an existing V4 operation, however, represents state changed outside
+    // this worktree (for example another linked workspace). Establish a fresh
+    // baseline so undo in this worktree cannot roll back that external state.
+    if (!std::string_view(git_commit_message(current_commit.get()))
+             .starts_with(kOperationV4)) {
+      predecessor = current;
     }
   }
   const git_oid synchronized = create_operation(
-      state(), std::nullopt,
+      state(), predecessor,
       current.has_value() ? "synchronize workspace" : "initialize repository");
   apply_refs({{operation_ref_name(), synchronized}}, {},
              "gg synchronize workspace");
@@ -431,10 +467,6 @@ void Repository::record(std::map<std::string, git_oid> updates,
             const HeadState& head,
             std::string_view description,
             bool manage_workspaces) const {
-  for (const std::string& expired : expired_alias_refs()) {
-    updates.erase(expired);
-    deletes.insert(expired);
-  }
   if (!manage_workspaces) {
     const std::string current_workspace = workspace_ref_name();
     for (const auto& [name, target] : updates) {
@@ -458,50 +490,15 @@ void Repository::record(std::map<std::string, git_oid> updates,
   OperationState next = state();
   next.head = head;
   for (const std::string& name : deletes) {
+    if (starts_with(name, kAliasPrefix) || name == kAliasMapRef) continue;
     next.refs.erase(name);
   }
   for (const auto& [name, oid] : updates) {
+    if (starts_with(name, kAliasPrefix) || name == kAliasMapRef ||
+        starts_with(name, "refs/gg/operations/")) {
+      continue;
+    }
     next.refs[name] = oid;
-  }
-  git_revwalk* raw_walk = nullptr;
-  check(git_revwalk_new(&raw_walk, repo_.get()), "create commit identity walk");
-  RevwalkPtr walk(raw_walk);
-  const auto push_commit = [&](const git_oid& oid) {
-    git_object* raw_object = nullptr;
-    if (git_object_lookup(&raw_object, repo_.get(), &oid, GIT_OBJECT_ANY) < 0) {
-      git_error_clear();
-      return;
-    }
-    ObjectPtr object(raw_object);
-    git_object* raw_commit = nullptr;
-    if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
-      git_error_clear();
-      return;
-    }
-    ObjectPtr commit(raw_commit);
-    check(git_revwalk_push(walk.get(), git_object_id(commit.get())),
-          "walk commit identities");
-  };
-  for (const auto& [name, oid] : next.refs) {
-    (void)name;
-    push_commit(oid);
-  }
-  if (!next.head.symbolic) {
-    git_oid head{};
-    if (git_oid_fromstr(&head, next.head.value.c_str(),
-                        git_repository_oid_type(repo_.get())) == 0) {
-      push_commit(head);
-    } else {
-      git_error_clear();
-    }
-  }
-  git_oid identity{};
-  while (git_revwalk_next(&identity, walk.get()) == 0) {
-    const std::string name = std::string(kAliasPrefix) + oid_string(identity);
-    if (!next.refs.contains(name)) {
-      next.refs[name] = identity;
-      updates[name] = identity;
-    }
   }
   const git_oid operation_oid =
       create_operation(next, ensure_operation(), description);

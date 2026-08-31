@@ -641,7 +641,9 @@ git_oid combined_tree(Repository& repo, const std::vector<git_oid>& parents) {
     }
     const git_oid their_tree =
         *git_commit_tree_id(repo.commit(parents[index]).get());
-    result = repo.merge_trees(ancestor_tree, result, their_tree);
+    result = repo.merge_trees(ancestor_tree, result, their_tree,
+                              /*preserve_ours_conflicts=*/true,
+                              /*preserve_theirs_conflicts=*/true);
   }
   return result;
 }
@@ -651,11 +653,17 @@ void finish_workspace(Repository& repo,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation) {
+  bool tree_unchanged = false;
+  if (const auto current = repo.workspace(); current.has_value()) {
+    tree_unchanged = git_oid_equal(
+        git_commit_tree_id(repo.commit(*current).get()),
+        git_commit_tree_id(repo.commit(workspace).get())) != 0;
+  }
   updates[repo.workspace_ref_name()] = workspace;
   const HeadState head = repo.head_for_workspace(workspace);
   repo.record(std::move(updates), std::move(deletes), head, operation);
   repo.set_head(head);
-  repo.checkout(workspace);
+  if (!tree_unchanged) repo.checkout(workspace);
 }
 
 void edit_file_with_editor(Repository& repo,
@@ -769,6 +777,17 @@ void command_util_gc(Repository& repo,
       command_util_exec(command, git_repository_path(repo.raw()));
   if (status != 0) throw UserError("garbage collection failed");  // GG_COV_EXCL_BRANCH
   output << "Garbage collection completed.\n";
+}
+
+void command_util_optimize(Repository& repo, std::ostream& output) {
+  (void)repo.collect_expired_aliases("gg util optimize");
+  UtilExecCommand command{
+      "git", {"--git-dir=" + std::string(git_repository_path(repo.raw())),
+              "commit-graph", "write", "--reachable"}};
+  if (command_util_exec(command, git_repository_path(repo.raw())) != 0) {
+    throw UserError("commit-graph optimization failed");
+  }
+  output << "Repository optimization completed.\n";
 }
 
 void command_util_snapshot(Repository& repo, std::ostream& output) {

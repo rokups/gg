@@ -15,7 +15,7 @@ Use one named change per task:
 4. Verify with `gg diff` and `gg status`.
 5. Leave the named change as the working-copy change at `@`.
 
-Expect gg to snapshot tracked working-copy files automatically when revision-facing commands run; no staging or final commit step is required. Treat `@` as the working-copy change and `@-` as its parent. Rewrites retain old commit IDs as aliases, restack descendants, and move affected local refs.
+Expect content-sensitive commands to snapshot tracked working-copy files automatically; history, show/list, and ref-only operations intentionally do not scan the filesystem. Use `gg util snapshot` when explicit synchronization is needed. `gg log` loads 256 revisions by default; use `--limit` or explicit `--all` for more. Treat `@` as the working-copy change and `@-` as its parent. Rewrites retain old commit IDs as aliases, restack descendants, and move affected local refs.
 
 When conflicts appear, inspect them with `gg status`, resolve the materialized files normally, and run another gg command to snapshot the resolution. Do not push conflicted history.
 

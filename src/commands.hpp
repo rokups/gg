@@ -111,6 +111,7 @@ void command_operation_restore(Repository&, const OperationRestoreCommand&,
                                std::ostream&);
 int command_util_exec(const UtilExecCommand&, const std::filesystem::path&);
 void command_util_gc(Repository&, const UtilGcCommand&, std::ostream&);
+void command_util_optimize(Repository&, std::ostream&);
 void command_util_snapshot(Repository&, std::ostream&);
 void command_util_install_git_hooks(Repository&, std::ostream&);
 void command_util_check_push_conflicts(Repository&, std::istream&);

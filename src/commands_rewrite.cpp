@@ -37,6 +37,12 @@ void command_rebase(Repository& repo,
                                    *git_commit_tree_id(source_commit.get()));
   const git_oid rewritten = repo.rewrite_commit(old, {parent}, tree);
   RewritePlan plan = repo.descendants({{old, rewritten}});
+  // The source's former parent becomes a graph head when only the source cone
+  // is moved. Keep that head explicit instead of relying on historical
+  // identity aliases to make it visible.
+  plan.updates.emplace(std::string(kVisibleHeadPrefix) +
+                           oid_string(old_parents.front()),
+                       old_parents.front());
   const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     const git_oid new_workspace = plan.commits.contains(*workspace)
@@ -163,29 +169,44 @@ void command_reorder(Repository& repo,
     }
   }
 
-  std::vector<git_oid> reordered = segment;
+  struct ReorderEntry {
+    git_oid oid{};
+    bool copy{false};
+  };
+  std::vector<ReorderEntry> reordered;
+  reordered.reserve(segment.size() + (options.copy ? 1U : 0U));
+  for (const git_oid& oid : segment) reordered.push_back({oid, false});
   const auto oid_is = [](const git_oid& value, const git_oid& expected) {
     return value == expected;
   };
-  const auto source_it =
-      std::find_if(reordered.begin(), reordered.end(),
-                   [&](const git_oid& value) { return oid_is(value, source); });
-  reordered.erase(source_it);
+  if (!options.copy) {
+    const auto source_it = std::find_if(
+        reordered.begin(), reordered.end(), [&](const ReorderEntry& value) {
+          return !value.copy && oid_is(value.oid, source);
+        });
+    reordered.erase(source_it);
+  }
   auto target_it =
       std::find_if(reordered.begin(), reordered.end(),
-                   [&](const git_oid& value) { return oid_is(value, target); });
+                   [&](const ReorderEntry& value) {
+                     return !value.copy && oid_is(value.oid, target);
+                   });
   if (options.placement == ReorderPlacement::after) ++target_it;
-  reordered.insert(target_it, source);
-  if (std::equal(reordered.begin(), reordered.end(), segment.begin(), oid_is)) {
+  reordered.insert(target_it, {source, options.copy});
+  if (!options.copy && reordered.size() == segment.size() &&
+      std::equal(reordered.begin(), reordered.end(), segment.begin(),
+                 [&](const ReorderEntry& value, const git_oid& expected) {
+                   return !value.copy && oid_is(value.oid, expected);
+                 })) {
     output << "Nothing changed.\n";
     return;
   }
 
   std::map<git_oid, git_oid, OidLess> roots;
   std::vector<git_oid> parents = base_parents;
-  for (const git_oid& old : reordered) {
-    const git_oid rewritten = repo.rewrite_commit(old, parents);
-    roots.emplace(old, rewritten);
+  for (const ReorderEntry& entry : reordered) {
+    const git_oid rewritten = repo.rewrite_commit(entry.oid, parents);
+    if (!entry.copy) roots.emplace(entry.oid, rewritten);
     parents = {rewritten};
   }
   const git_oid new_tip = parents.front();
@@ -217,7 +238,8 @@ void command_reorder(Repository& repo,
   } else {
     repo.record(std::move(plan.updates), {}, repo.head_state(), "gg reorder");
   }
-  output << "Reordered " << repo.short_commit_id(source).value << '\n';
+  output << (options.copy ? "Copied " : "Reordered ")
+         << repo.short_commit_id(source).value << '\n';
 }
 
 void command_split(Repository& repo,
@@ -336,7 +358,8 @@ void command_squash(Repository& repo,
     }
   }
   const git_oid combined_tree = repo.replay(
-      change_base, destination_oid, *git_commit_tree_id(source_commit.get()));
+      change_base, destination_oid, *git_commit_tree_id(source_commit.get()),
+      /*preserve_new_parent_conflicts=*/true);
   const git_oid rewritten_destination = repo.rewrite_commit(
       destination_oid, repo.parents(destination_oid), combined_tree,
       combined_message);

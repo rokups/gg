@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <queue>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -481,8 +482,27 @@ void command_log(Repository& repo,
   git_revwalk* raw_walk = nullptr;
   check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
   RevwalkPtr walk(raw_walk);
+  // Explicit revsets retain full topological ordering. The bounded default
+  // path below uses its own streaming frontier and does not consume this walk.
   git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME);
   std::optional<std::set<git_oid, OidLess>> selected_revisions;
+  struct Candidate {
+    std::int64_t time;
+    std::uint64_t order;
+    git_oid oid;
+    bool operator<(const Candidate& other) const {
+      return time != other.time ? time < other.time : order < other.order;
+    }
+  };
+  std::priority_queue<Candidate> frontier;
+  std::set<git_oid, OidLess> queued;
+  std::uint64_t queue_order = 0;
+  const auto queue = [&](const git_oid& oid) {
+    if (!queued.insert(oid).second) return;
+    CommitPtr value = repo.commit(oid);
+    frontier.push({git_commit_committer(value.get())->when.time,
+                   ++queue_order, oid});
+  };
   if (!options.revision.empty()) {
     const std::vector<git_oid> selected = repo.resolve_set(options.revision);
     selected_revisions.emplace(selected.begin(), selected.end());
@@ -490,21 +510,24 @@ void command_log(Repository& repo,
       check(git_revwalk_push(walk.get(), &oid), "walk revisions");
     }
   } else {
-    const auto workspace = repo.workspace();
-    if (workspace.has_value()) {
-      check(git_revwalk_push(walk.get(), &*workspace), "walk revisions");
-    }
     for (const auto& [name, oid] : repo.data_refs()) {
-      if (starts_with(name, "refs/heads/")) {
-        check(git_revwalk_push(walk.get(), &oid), "walk revisions");
-      }
+      if (starts_with(name, "refs/heads/")) queue(oid);
     }
+    const auto workspace = repo.workspace();
+    if (workspace.has_value()) queue(*workspace);
   }
   const auto workspace = repo.workspace();
   std::vector<git_oid> revisions;
-  git_oid oid{};
-  while (revisions.size() < options.limit &&
-         git_revwalk_next(&oid, walk.get()) == 0) {
+  while (revisions.size() < options.limit) {
+    git_oid oid{};
+    if (selected_revisions.has_value()) {
+      if (git_revwalk_next(&oid, walk.get()) != 0) break;
+    } else {
+      if (frontier.empty()) break;
+      oid = frontier.top().oid;
+      frontier.pop();
+      for (const git_oid& parent : repo.parents(oid)) queue(parent);
+    }
     if (selected_revisions.has_value() &&
         !selected_revisions->contains(oid)) {
       continue;
@@ -551,20 +574,11 @@ void command_log(Repository& repo,
   show_diff |= options.format.ignore_space_change;
   std::map<git_oid, std::vector<std::string>, OidLess> tags;
   constexpr std::string_view tag_prefix = "refs/tags/";
+  const std::set<git_oid, OidLess> loaded(revisions.begin(), revisions.end());
   for (const auto& [reference, target] : repo.data_refs()) {
-    if (!starts_with(reference, tag_prefix)) continue;
-    git_object* raw_object = nullptr;
-    check(git_object_lookup(&raw_object, repo.raw(), &target, GIT_OBJECT_ANY),
-          "read tag");
-    ObjectPtr object(raw_object);
-    git_object* raw_commit = nullptr;
-    if (git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT) < 0) {
-      git_error_clear();
-      continue;
+    if (starts_with(reference, tag_prefix) && loaded.contains(target)) {
+      tags[target].push_back(reference.substr(tag_prefix.size()));
     }
-    ObjectPtr commit(raw_commit);
-    tags[*git_object_id(commit.get())].push_back(
-        reference.substr(tag_prefix.size()));
   }
   GraphRenderer graph;
   for (const git_oid& revision : revisions) {

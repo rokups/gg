@@ -17,8 +17,8 @@ diff, fetch, and push.
 Git normally asks you to stage files, create a commit, and use a separate
 history-editing workflow when an earlier commit needs to change. With `gg`:
 
-- The working copy is a mutable change that `gg` snapshots automatically. A
-  separate staging step is optional.
+- The working copy is a mutable change. Content-sensitive commands reconcile it
+  automatically; history and ref-only commands leave filesystem edits untouched.
 - Each change is identified by its current Git commit ID. When a rewrite
   changes that ID, its previous commit IDs remain usable as aliases.
 - `gg edit` can make any change the working copy. Further edits rewrite that
@@ -46,7 +46,8 @@ cd project
 gg new -m "Add the parser"
 gg bookmark create topic
 # edit files
-gg log                    # snapshots and displays the current change
+gg log                    # displays up to 256 changes without scanning files
+gg util snapshot          # explicitly synchronize filesystem edits into @
 
 gg new -m "Add parser tests"
 # edit files
@@ -158,7 +159,7 @@ The following is the full implemented command surface shown by `gg --help`.
 
 ```text
 gg status [FILESET...]
-gg log [-r REVSET] [-n LIMIT] [--reversed] [--count] [FILESET...]
+gg log [-r REVSET] [-n LIMIT | --all] [--reversed] [--count] [FILESET...]
 gg new [-m DESCRIPTION] [--no-edit] [PARENT...]
 gg new [-m DESCRIPTION] [--no-edit] (--insert-after REV | --insert-before REV)
 gg describe [-m DESCRIPTION | --stdin | --editor] [REV]
@@ -200,6 +201,7 @@ gg operation restore [--what repo|remote-tracking] OPERATION
 gg util completion (bash|elvish|fish|nushell|power-shell|zsh)
 gg util exec -- COMMAND [ARG...]
 gg util gc [--expire now]
+gg util optimize
 gg util install-git-hooks
 gg util install-man-pages PATH
 gg util markdown-help
@@ -247,7 +249,9 @@ Rewrites restack descendants and move affected local refs together. Conflicts
 are recorded as local logical merge terms, so operations still succeed and
 conflicted descendants can be rewritten again without nesting marker text.
 Editing a conflicted change materializes its sides in the working tree. Resolve
-the files normally; the next gg command snapshots the resolution. `gg push`
+the files normally; standard or gg conflict markers keep the file conflicted,
+and graph rewrites preserve that state until the markers are removed. The next
+gg command snapshots the resolution. `gg push`
 refuses any selection whose reachable history contains a conflict. Run
 `gg util install-git-hooks` to install a managed `pre-push` hook that applies
 the same check to native `git push`; an existing hook is preserved and chained.
@@ -307,6 +311,9 @@ so command-line editors, external diff tools, and arbitrary subprocesses are
 not part of its interface.
 Repository access, snapshots, revision lookup, rewrites, operation history,
 and conflict state remain shared workflow implementation under `src/`.
+The C API's `gg_repository_lookup_revisions()` hydrates an explicitly bounded
+OID batch in input order—including parents, aliases, conflict state, and
+emptiness—without walking repository history.
 
 ## Build and test
 

@@ -4,6 +4,9 @@
 
 #include "repository.hpp"
 
+#include <git2/odb.h>
+#include <git2/sys/commit_graph.h>
+
 #include <git2/sys/errors.h>
 
 #include <algorithm>
@@ -122,6 +125,29 @@ void Repository::initialize() {
   if (git_repository_is_bare(repo_.get()) != 0) {
     throw UserError("this command requires a working tree", GIT_EBAREREPO);
   }
+
+  // Commit-graphs are optional accelerators. libgit2 deliberately requires
+  // callers to attach them to the object database; invalid or stale files
+  // must never prevent a repository from opening.
+  git_commit_graph* graph = nullptr;
+  git_commit_graph_open_options graph_options =
+      GIT_COMMIT_GRAPH_OPEN_OPTIONS_INIT;
+#ifdef GIT_EXPERIMENTAL_SHA256
+  graph_options.oid_type = git_repository_oid_type(repo_.get());
+#endif
+  const std::filesystem::path objects =
+      std::filesystem::path(git_repository_commondir(repo_.get())) / "objects";
+  if (git_commit_graph_open(&graph, objects.string().c_str(),
+                            &graph_options) == GIT_OK) {
+    git_odb* odb = nullptr;
+    if (git_repository_odb(&odb, repo_.get()) == GIT_OK) {
+      if (git_odb_set_commit_graph(odb, graph) == GIT_OK)
+        graph = nullptr;  // Ownership transferred to the ODB.
+      git_odb_free(odb);
+    }
+  }
+  if (graph != nullptr) git_commit_graph_free(graph);
+  git_error_clear();
 
   linked_worktree_ = git_repository_is_worktree(repo_.get()) != 0;
   if (linked_worktree_) {
@@ -255,12 +281,9 @@ std::map<std::string, git_oid> Repository::data_refs() const {
         starts_with(name, kBookmarkTrackingPrefix) ||
         starts_with(name, kTagTrackingPrefix) ||  // GG_COV_EXCL_BRANCH
         starts_with(name, kWorkspacePrefix) ||  // GG_COV_EXCL_BRANCH
-        starts_with(name, kVisibleHeadPrefix)) {
+        starts_with(name, kVisibleHeadPrefix) || starts_with(name, kAliasPrefix)) {
       refs.emplace(name, *git_reference_target(resolved.get()));
     }
-  }
-  for (const auto& [alias, value] : read_alias_map()) {
-    refs.insert_or_assign(std::string(kAliasPrefix) + alias, value.target);
   }
   return refs;
 }
@@ -366,9 +389,24 @@ std::map<std::string, git_oid> Repository::rewrite_refs() const {
         starts_with(iterator->first,  // GG_COV_EXCL_BRANCH
                     kTagTrackingPrefix)) {  // GG_COV_EXCL_BRANCH
       iterator = refs.erase(iterator);
-    } else {
-      ++iterator;
+      continue;
     }
+    git_object* raw_object = nullptr;
+    git_object* raw_commit = nullptr;
+    const int lookup = git_object_lookup(&raw_object, repo_.get(), &iterator->second,
+                                         GIT_OBJECT_ANY);
+    ObjectPtr object(raw_object);
+    const int peel = lookup < 0
+                         ? lookup
+                         : git_object_peel(&raw_commit, object.get(),
+                                           GIT_OBJECT_COMMIT);
+    ObjectPtr commit(raw_commit);
+    if (peel < 0) {
+      git_error_clear();
+      iterator = refs.erase(iterator);
+      continue;
+    }
+    ++iterator;
   }
   return refs;
 }

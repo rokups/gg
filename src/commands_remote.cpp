@@ -211,11 +211,11 @@ void render_operation_patches(
   std::set<std::string> changes;
   for (const auto& [name, oid] : before->refs) {
     (void)oid;
-    if (starts_with(name, kAliasPrefix)) changes.insert(name);
+    changes.insert(name);
   }
   for (const auto& [name, oid] : after.refs) {
     (void)oid;
-    if (starts_with(name, kAliasPrefix)) changes.insert(name);
+    changes.insert(name);
   }
   std::set<std::string> rendered;
   for (const std::string& name : changes) {
@@ -229,7 +229,7 @@ void render_operation_patches(
     const auto current = after.refs.find(name);
     const bool has_new = current != after.refs.end();
     const git_oid new_oid = has_new ? current->second : git_oid{};
-    if (!has_old) {
+    if (!has_old && starts_with(name, kAliasPrefix)) {
       const std::string alias = name.substr(kAliasPrefix.size());
       check(git_oid_fromstr(&old_oid, alias.c_str(),
                             git_repository_oid_type(repo.raw())),
@@ -241,6 +241,17 @@ void render_operation_patches(
     }
     const std::string pair = oid_string(old_oid) + oid_string(new_oid);
     if (!rendered.insert(pair).second) continue;
+    const auto is_commit = [&](const git_oid& oid) {
+      git_commit* commit = nullptr;
+      const int result = git_commit_lookup(&commit, repo.raw(), &oid);
+      git_commit_free(commit);
+      if (result < 0) git_error_clear();
+      return result == 0;
+    };
+    if ((has_old && !is_commit(old_oid)) ||
+        (has_new && !is_commit(new_oid))) {
+      continue;
+    }
     if (selected.has_value()) {
       bool matches = false;
       if (has_new) matches = selected->contains(new_oid);

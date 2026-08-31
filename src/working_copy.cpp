@@ -212,30 +212,76 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   git_index* raw_index = nullptr;
   check(git_repository_index(&raw_index, repo_.get()), "open index");
   IndexPtr index(raw_index);
+  check(git_index_read(index.get(), true), "refresh index");
   TreePtr baseline = tree(baseline_tree);
+  const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+  bool sparse = false;
+  for (std::size_t position = 0;
+       position < git_index_entrycount(index.get()); ++position) {
+    const git_index_entry* entry = git_index_get_byindex(index.get(), position);
+    if (entry != nullptr &&
+        (entry->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE) != 0) {
+      sparse = true;
+      break;
+    }
+  }
   git_oid indexed_tree{};
   const bool prepared =
       git_index_write_tree_to(&indexed_tree, index.get(), repo_.get()) == 0 &&  // GG_COV_EXCL_BRANCH
       indexed_tree == baseline_tree;
-  if (!prepared) {
+  if (!prepared && !sparse) {
     git_error_clear();
     check(git_index_read_tree(index.get(), baseline.get()), "prepare snapshot");
   }
-  check(git_index_update_all(index.get(), nullptr, nullptr, nullptr),
-        "snapshot tracked files");
-  check(git_index_add_all(index.get(), nullptr, GIT_INDEX_ADD_DEFAULT, nullptr,
-                          nullptr),
-        "snapshot working tree");
+  if (sparse) {
+    // add_all treats absent skip-worktree entries as deletions and rebuilding
+    // them makes a sparse checkout scale with the full repository. The status
+    // scan already honors sparse boundaries, so add only materialized new
+    // paths while update_all handles tracked modifications and deletions.
+    std::vector<std::string> materialized;
+    materialized.reserve(git_index_entrycount(index.get()));
+    for (std::size_t position = 0;
+         position < git_index_entrycount(index.get()); ++position) {
+      const git_index_entry* entry = git_index_get_byindex(index.get(), position);
+      if (entry != nullptr && GIT_INDEX_ENTRY_STAGE(entry) == 0 &&
+          (entry->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE) == 0) {
+        materialized.emplace_back(entry->path);
+      }
+    }
+    for (const std::string& path : materialized) {
+      std::error_code error;
+      const auto status = std::filesystem::symlink_status(workdir / path, error);
+      if (!error && status.type() != std::filesystem::file_type::not_found) {
+        check(git_index_add_bypath(index.get(), path.c_str()),
+              "snapshot sparse tracked file");
+      } else if (!error || error == std::errc::no_such_file_or_directory) {
+        check(git_index_remove_bypath(index.get(), path.c_str()),
+              "snapshot sparse deleted file");
+      } else {
+        throw GitError("inspect sparse working-tree file: " + error.message());
+      }
+    }
+    for (const std::string& path : untracked_paths()) {
+      check(git_index_add_bypath(index.get(), path.c_str()),
+            "snapshot sparse working-tree file");
+    }
+  } else {
+    check(git_index_update_all(index.get(), nullptr, nullptr, nullptr),
+          "snapshot tracked files");
+    check(git_index_add_all(index.get(), nullptr, GIT_INDEX_ADD_DEFAULT,
+                            nullptr, nullptr),
+          "snapshot working tree");
+  }
   const FileTrackingState tracking = read_tracking(*this);
   const std::uint64_t maximum_size = maximum_new_file_size(*this);
   if (maximum_size != 0) {
     std::vector<std::string> oversized;
-    const std::filesystem::path workdir = git_repository_workdir(repo_.get());
     for (std::size_t position = 0;
          position < git_index_entrycount(index.get()); ++position) {
       const git_index_entry* entry =
           git_index_get_byindex(index.get(), position);
       if (entry == nullptr ||
+          (entry->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE) != 0 ||
           (entry->mode != GIT_FILEMODE_BLOB &&
            entry->mode != GIT_FILEMODE_BLOB_EXECUTABLE) ||
           tree_contains(baseline.get(), entry->path) ||
@@ -265,6 +311,142 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   check(git_index_write_tree_to(&result, index.get(), repo_.get()),
         "write working-copy tree");
   check(git_index_write(index.get()), "cache working-copy snapshot");
+  preserve_conflicts(baseline_tree, result);
+  return result;
+}
+
+git_oid Repository::snapshot_tree(
+    const git_oid& baseline_tree,
+    const std::vector<std::string>& requested_paths) const {
+  if (requested_paths.empty()) return snapshot_tree(baseline_tree);
+
+  std::vector<std::string> paths;
+  paths.reserve(requested_paths.size());
+  for (const std::string& requested : requested_paths) {
+    const std::string path = stored_path(requested);
+    if (path == "." || path.empty() || path.starts_with("../") ||
+        std::filesystem::path(path).is_absolute()) {
+      return snapshot_tree(baseline_tree);
+    }
+    if (std::ranges::find(paths, path) == paths.end()) paths.push_back(path);
+  }
+
+  TreePtr baseline = tree(baseline_tree);
+  const FileTrackingState tracking = read_tracking(*this);
+  const std::uint64_t maximum_size = maximum_new_file_size(*this);
+  const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+  std::vector<git_tree_update> updates;
+  updates.reserve(paths.size());
+  for (const std::string& path : paths) {
+    git_tree_entry* raw_baseline_entry = nullptr;
+    const int lookup = git_tree_entry_bypath(
+        &raw_baseline_entry, baseline.get(), path.c_str());
+    TreeEntryPtr baseline_entry(raw_baseline_entry);
+    if (lookup != 0 && lookup != GIT_ENOTFOUND) {
+      check(lookup, "inspect incremental snapshot baseline");
+    }
+    if (lookup == GIT_ENOTFOUND) git_error_clear();
+    const bool in_baseline = baseline_entry != nullptr;
+
+    const auto selected_by = [&](const std::set<std::string>& selectors) {
+      return std::ranges::any_of(
+          selectors, [&](const std::string& selector) {
+            return selects(selector, path);
+          });
+    };
+    const bool excluded = selected_by(tracking.untracked);
+    const bool forced = selected_by(tracking.forced);
+    const bool tracked = forced || selected_by(tracking.tracked);
+
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(workdir / path, error);
+    const bool missing = !error &&
+                         status.type() == std::filesystem::file_type::not_found;
+    if (error == std::errc::no_such_file_or_directory) {
+      error.clear();
+    } else if (error) {
+      throw GitError("inspect incremental working-tree path: " +
+                     error.message());
+    }
+    if (excluded || missing) {
+      if (in_baseline) {
+        updates.push_back(
+            {GIT_TREE_UPDATE_REMOVE, {}, GIT_FILEMODE_UNREADABLE,
+             path.c_str()});
+      }
+      continue;
+    }
+    if (status.type() == std::filesystem::file_type::directory) {
+      return snapshot_tree(baseline_tree);
+    }
+    if (in_baseline && git_tree_entry_type(baseline_entry.get()) == GIT_OBJECT_TREE) {
+      return snapshot_tree(baseline_tree);
+    }
+
+    if (!in_baseline && !tracked) {
+      int ignored = 0;
+      check(git_ignore_path_is_ignored(&ignored, repo_.get(), path.c_str()),
+            "check incremental ignored path");
+      if (ignored != 0) continue;
+      if (maximum_size != 0 &&
+          status.type() == std::filesystem::file_type::regular) {
+        const std::uintmax_t size =
+            std::filesystem::file_size(workdir / path, error);
+        if (error) {
+          throw GitError("inspect incremental file size: " + error.message());
+        }
+        if (size > maximum_size) continue;
+      }
+    }
+
+    git_oid blob{};
+    git_filemode_t mode = GIT_FILEMODE_BLOB;
+    if (status.type() == std::filesystem::file_type::symlink) {
+      const std::filesystem::path target =
+          std::filesystem::read_symlink(workdir / path, error);
+      if (error) {
+        throw GitError("read incremental symbolic link: " + error.message());
+      }
+      const std::string value = target.string();
+      check(git_blob_create_from_buffer(&blob, repo_.get(), value.data(),
+                                        value.size()),
+            "snapshot incremental symbolic link");
+      mode = GIT_FILEMODE_LINK;
+    } else if (status.type() == std::filesystem::file_type::regular) {
+      check(git_blob_create_fromworkdir(&blob, repo_.get(), path.c_str()),
+            "snapshot incremental file");
+      const auto executable = std::filesystem::perms::owner_exec |
+                              std::filesystem::perms::group_exec |
+                              std::filesystem::perms::others_exec;
+      if ((status.permissions() & executable) != std::filesystem::perms::none) {
+        mode = GIT_FILEMODE_BLOB_EXECUTABLE;
+      }
+    } else {
+      return snapshot_tree(baseline_tree);
+    }
+    updates.push_back({GIT_TREE_UPDATE_UPSERT, blob, mode, path.c_str()});
+  }
+  if (updates.empty()) return baseline_tree;
+
+  git_oid result{};
+  check(git_tree_create_updated(&result, repo_.get(), baseline.get(),
+                                updates.size(), updates.data()),
+        "write incremental working-copy tree");
+
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo_.get()), "open index");
+  IndexPtr index(raw_index);
+  check(git_index_read(index.get(), true), "refresh index");
+  for (const git_tree_update& update : updates) {
+    if (update.action == GIT_TREE_UPDATE_REMOVE) {
+      git_index_remove_bypath(index.get(), update.path);
+      git_index_remove_directory(index.get(), update.path, 0);
+    } else {
+      check(git_index_add_bypath(index.get(), update.path),
+            "cache incremental working-copy file");
+    }
+  }
+  check(git_index_write(index.get()), "cache incremental working-copy snapshot");
   preserve_conflicts(baseline_tree, result);
   return result;
 }
@@ -356,37 +538,6 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
                 std::string_view message) const {
   std::map<std::string, git_oid> physical_updates = updates;
   std::set<std::string> physical_deletes = deletes;
-  std::map<std::string, CommitAlias> mapped_aliases = read_alias_map();
-  bool alias_map_modified = false;
-  const std::int64_t now = commit_alias_time();
-  for (auto iterator = physical_updates.begin();
-       iterator != physical_updates.end();) {
-    if (!starts_with(iterator->first, kAliasPrefix)) {
-      ++iterator;
-      continue;
-    }
-    const std::string alias = iterator->first.substr(kAliasPrefix.size());
-    const auto existing = mapped_aliases.find(alias);
-    const std::int64_t last_used =
-        existing == mapped_aliases.end() ||
-                (oid_string(existing->second.target) == alias &&
-                 !(existing->second.target == iterator->second))
-            ? now
-            : existing->second.last_used;
-    mapped_aliases[alias] = {iterator->second, last_used};
-    iterator = physical_updates.erase(iterator);
-    alias_map_modified = true;
-  }
-  for (auto iterator = physical_deletes.begin();
-       iterator != physical_deletes.end();) {
-    if (!starts_with(*iterator, kAliasPrefix)) {
-      ++iterator;
-      continue;
-    }
-    mapped_aliases.erase(iterator->substr(kAliasPrefix.size()));
-    iterator = physical_deletes.erase(iterator);
-    alias_map_modified = true;
-  }
   const std::set<std::string> legacy_refs = legacy_change_refs();
   if (!legacy_refs.empty()) {
     physical_deletes.insert(legacy_refs.begin(), legacy_refs.end());
@@ -394,17 +545,6 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
   if (ref_target(kLegacyChangeMapRef).has_value()) {
     physical_deletes.insert(std::string(kLegacyChangeMapRef));
   }
-  if (alias_map_modified) {
-    if (mapped_aliases.empty()) {
-      if (ref_target(kAliasMapRef).has_value()) {
-        physical_deletes.insert(std::string(kAliasMapRef));
-      }
-    } else {
-      physical_updates[std::string(kAliasMapRef)] =
-          write_alias_map(mapped_aliases);
-    }
-  }
-
   const bool should_compress =
       physical_updates.size() + physical_deletes.size() >= 1024 ||
       has_many_loose_change_refs(repo_.get());
@@ -432,10 +572,23 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
   }
 #endif
   for (const std::string& name : names) {
+    if (physical_updates.contains(name) && starts_with(name, kAliasPrefix)) {
+      check(git_reference_ensure_log(repo_.get(), name.c_str()),
+            "prepare commit alias usage log");
+    }
     check(git_transaction_lock_ref(transaction.get(), name.c_str()),
           "lock reference");
   }
   SignaturePtr actor = signature();
+  if (std::ranges::any_of(physical_updates, [](const auto& update) {
+        return starts_with(update.first, kAliasPrefix);
+      })) {
+    git_signature* timed = nullptr;
+    check(git_signature_new(&timed, actor->name, actor->email,
+                            commit_alias_time(), actor->when.offset),
+          "timestamp commit alias");
+    actor.reset(timed);
+  }
   const std::string owned_message(message);
   for (const auto& [name, oid] : physical_updates) {
     check(git_transaction_set_target(transaction.get(), name.c_str(), &oid,
@@ -490,14 +643,22 @@ void Repository::checkout(const git_oid& oid) const {
 }
 
 bool Repository::sync_workspace() const {
+  return sync_workspace({});
+}
+
+bool Repository::sync_workspace(const std::vector<std::string>& paths) const {
   if (ignore_working_copy_) return false;
+  const auto snapshot = [&](const git_oid& baseline) {
+    return paths.empty() ? snapshot_tree(baseline)
+                         : snapshot_tree(baseline, paths);
+  };
   const auto workspace_reference = workspace_ref();
   if (!workspace_reference.has_value()) {
     const auto head = head_oid();
     const git_oid base_tree = head.has_value()
                                   ? *git_commit_tree_id(commit(*head).get())
                                   : empty_tree();
-    const git_oid tree_oid = snapshot_tree(base_tree);
+    const git_oid tree_oid = snapshot(base_tree);
     if (tree_oid == base_tree) return false;
     const std::vector<git_oid> parents =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
@@ -516,7 +677,7 @@ bool Repository::sync_workspace() const {
     const git_oid base_tree = head.has_value()
                                   ? *git_commit_tree_id(commit(*head).get())
                                   : empty_tree();
-    const git_oid tree_oid = snapshot_tree(base_tree);
+    const git_oid tree_oid = snapshot(base_tree);
     const std::vector<git_oid> parent_oids =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
     const git_oid imported = create_commit(tree_oid, parent_oids, "");
@@ -526,7 +687,7 @@ bool Repository::sync_workspace() const {
   }
 
   const git_oid old_tree = *git_commit_tree_id(current.get());
-  const git_oid new_tree = snapshot_tree(old_tree);
+  const git_oid new_tree = snapshot(old_tree);
   if (old_tree == new_tree) {
     return false;
   }

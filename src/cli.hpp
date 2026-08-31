@@ -34,12 +34,13 @@ struct DiffFormatOptions {
 struct LogCommand {
   std::string revision;
   std::vector<std::string> paths;
-  std::uint64_t limit{std::numeric_limits<std::uint64_t>::max()};
+  std::uint64_t limit{256};
   DiffFormatOptions format;
   bool reversed{false};
   bool no_graph{false};
   bool patch{false};
   bool count{false};
+  bool all{false};
 };
 struct NewCommand {
   std::string message;
@@ -85,6 +86,7 @@ struct ReorderCommand {
   std::string source;
   std::string target;
   ReorderPlacement placement{ReorderPlacement::before};
+  bool copy{false};
 };
 struct SplitCommand {
   std::string revision;
@@ -257,6 +259,7 @@ struct UtilExecCommand {
 struct UtilGcCommand {
   std::string expire;
 };
+struct UtilOptimizeCommand {};
 struct UtilSnapshotCommand {};
 struct UtilInstallGitHooksCommand {};
 struct UtilCheckPushConflictsCommand {};
@@ -305,7 +308,7 @@ using RepositoryCommand =
                  BookmarkCommand, TagCommand,
                  GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
-                 UtilGcCommand, UtilSnapshotCommand,
+                 UtilGcCommand, UtilOptimizeCommand, UtilSnapshotCommand,
                  UtilInstallGitHooksCommand, UtilCheckPushConflictsCommand,
                  WorkspaceCommand,
                  SparseCommand,

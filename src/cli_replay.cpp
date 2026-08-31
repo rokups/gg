@@ -65,6 +65,7 @@ std::vector<std::string> repository_replay_arguments(
             if (value.no_graph) result.emplace_back("--no-graph");
             if (value.patch) result.emplace_back("--patch");
             if (value.count) result.emplace_back("--count");
+            if (value.all) result.emplace_back("--all");
             add_diff_format(result, value.format);
             return result;
           },
@@ -441,6 +442,9 @@ std::vector<std::string> repository_replay_arguments(
             std::vector<std::string> result{"util", "gc"};
             add_option(result, "--expire", value.expire);
             return result;
+          },
+          [](const UtilOptimizeCommand&) {
+            return std::vector<std::string>{"util", "optimize"};
           },
           [](const UtilSnapshotCommand&) {
             return std::vector<std::string>{"util", "snapshot"};

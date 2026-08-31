@@ -222,10 +222,11 @@ typedef struct gg_reorder_options {
   const char *source;
   const char *target;
   gg_reorder_placement placement;
+  int copy;
 } gg_reorder_options;
 
 #define GG_REORDER_OPTIONS_INIT \
-  { GG_OPTIONS_VERSION, NULL, NULL, GG_REORDER_BEFORE }
+  { GG_OPTIONS_VERSION, NULL, NULL, GG_REORDER_BEFORE, 0 }
 
 typedef struct gg_split_options {
   unsigned int version;
@@ -438,6 +439,7 @@ typedef struct gg_revision {
   git_signature *author;
   git_signature *committer;
   int has_conflicts;
+  int empty;
 } gg_revision;
 
 typedef struct gg_revision_array {
@@ -571,6 +573,9 @@ GG_EXTERN int gg_repository_adopt_git_history_ex(
 GG_EXTERN int gg_repository_snapshot_working_copy(
     int *changed, gg_repository *repository,
     const gg_operation_options *options);
+GG_EXTERN int gg_repository_snapshot_working_copy_paths(
+    int *changed, gg_repository *repository, gg_string_array paths,
+    const gg_operation_options *options);
 
 GG_EXTERN int gg_repository_resolve(git_oid *out,
                                     gg_repository *repository,
@@ -593,6 +598,10 @@ GG_EXTERN int gg_repository_conflicts(gg_conflict_array *out,
 GG_EXTERN int gg_repository_revisions(
     gg_revision_array *out, gg_repository *repository,
     const gg_revision_query_options *options);
+/* Hydrate an explicitly bounded set of commits without evaluating a revision
+ * expression or walking ancestry. Output order matches the input order. */
+GG_EXTERN int gg_repository_lookup_revisions(
+    gg_revision_array *out, gg_repository *repository, gg_oid_array revisions);
 GG_EXTERN int gg_repository_status(gg_status *out,
                                     gg_repository *repository,
                                     const gg_status_options *options);

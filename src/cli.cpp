@@ -246,8 +246,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   log->add_option("filesets", log_value.paths, "Repository-relative paths");
   log->add_option("-r,--revision,--revisions", log_value.revision,
                   "Starting revision");
-  log->add_option("-n,--limit", log_value.limit, "Maximum number of revisions")
-      ->check(CLI::NonNegativeNumber);
+  auto* log_limit =
+      log->add_option("-n,--limit", log_value.limit, "Maximum number of revisions");
+  log_limit->check(CLI::NonNegativeNumber);
+  log->add_flag("--all", log_value.all, "Show unbounded history");
   log->add_flag("--reversed", log_value.reversed,
                 "Show older revisions first");
   log->add_flag("-G,--no-graph", log_value.no_graph,
@@ -802,6 +804,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   auto* util_gc = util->add_subcommand("gc", "Run garbage collection");
   util_gc->add_option("--expire", util_gc_value.expire, "Expiration threshold")
       ->check(CLI::IsMember({"now"}));
+  auto* util_optimize =
+      util->add_subcommand("optimize", "Compact aliases and write a commit graph");
   std::string util_completion_shell;
   auto* util_completion =
       util->add_subcommand("completion", "Print a shell completion script");
@@ -980,7 +984,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "SEE ALSO: `gg diff`, `gg log`.");
   log->footer(
       "DEFAULTS:\n"
-      "  Shows reachable history from @ and local bookmarks, newest first, with a graph.\n"
+      "  Shows 256 reachable revisions from @ and local bookmarks, newest first, with a graph.\n"
+      "  --limit overrides the default; --all explicitly requests unbounded history.\n"
       "  -r accepts a revision-set expression; filesets keep revisions touching a match.\n"
       "SEE ALSO: `gg show`, `gg operation log`.");
   make_new->footer(
@@ -1201,6 +1206,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "DETAILS:\n"
       "  Snapshots @, collects expired commit aliases, then runs native `git gc`.\n"
       "  --expire now passes --prune=now and may immediately remove unreachable objects.");
+  util_optimize->footer(
+      "DETAILS:\n"
+      "  Compacts layered and legacy commit aliases, drops identity aliases, and writes\n"
+      "  Git's standard reachable commit graph. History remains usable if it is absent or stale.");
   util_completion->footer(
       "DETAILS:\n"
       "  Prints a completion script generated from all command, alias, and option names.");
@@ -1344,6 +1353,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   if (status->parsed()) {
     command = RepositoryCommand{status_value};
   } else if (log->parsed()) {
+    if (log_value.all || (log_value.count && log_limit->count() == 0)) {
+      log_value.limit = std::numeric_limits<std::uint64_t>::max();
+    }
     command = RepositoryCommand{std::move(log_value)};
   } else if (make_new->parsed()) {
     command = RepositoryCommand{std::move(new_value)};
@@ -1446,6 +1458,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = std::move(util_exec_value);
   } else if (util_gc->parsed()) {
     command = RepositoryCommand{std::move(util_gc_value)};
+  } else if (util_optimize->parsed()) {
+    command = RepositoryCommand{UtilOptimizeCommand{}};
   } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
     command = RepositoryCommand{UtilSnapshotCommand{}};
   } else if (util_install_git_hooks->parsed()) {

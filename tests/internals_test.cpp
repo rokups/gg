@@ -57,8 +57,12 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   const std::string other_text = detail::oid_string(other);
   std::size_t common = 0;
   while (base_text[common] == other_text[common]) ++common;
-  EXPECT_EQ(short_commit.prefix_length, common + 1);
-  EXPECT_EQ(short_commit.value.size(), 8U);
+  // Unscoped display IDs use conservative ODB uniqueness so formatting them
+  // never requires a full history walk. Collisions with blobs or trees may
+  // make the prefix longer than commit-only uniqueness requires.
+  EXPECT_GE(short_commit.prefix_length, common + 1);
+  EXPECT_EQ(short_commit.value.size(),
+            std::max<std::size_t>(8, short_commit.prefix_length));
 
   repo.apply_refs({}, {}, "no changes");
 
@@ -129,7 +133,7 @@ TEST_F(RepositoryTest, RecordsCommitAliasesAndDropsLegacyIds) {
   EXPECT_FALSE(detail::Repository(path_).ref_target(legacy).has_value());
 }
 
-TEST_F(RepositoryTest, CollectsCommitAliasesAfterAWeekOfDisuse) {
+TEST_F(RepositoryTest, OptimizeCollectsLayeredAliasesAfterAWeekOfDisuse) {
   constexpr std::int64_t start = 1'000'000;
   constexpr std::int64_t week = 7 * 24 * 60 * 60;
   ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME", std::to_string(start).c_str(), 1), 0);
@@ -153,18 +157,20 @@ TEST_F(RepositoryTest, CollectsCommitAliasesAfterAWeekOfDisuse) {
   ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
                    std::to_string(start + 2 * week - 1).c_str(), 1),
             0);
-  ASSERT_EQ(invoke({"bookmark", "create", "collected"}).code, 0);
+  ASSERT_EQ(invoke({"util", "optimize"}).code, 0);
   EXPECT_FALSE(repo.aliases().contains(alias));
   ASSERT_EQ(invoke({"undo"}).code, 0);
-  EXPECT_TRUE(repo.aliases().contains(alias));
+  EXPECT_FALSE(repo.aliases().contains(alias));
 
-  ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
-                   std::to_string(start + 3 * week - 1).c_str(), 1),
-            0);
+  const git_oid second_original = repo.resolve("@");
+  const std::string second_alias = detail::oid_string(second_original);
+  ASSERT_EQ(invoke({"describe", "-m", "rewritten again"}).code, 0);
+  EXPECT_TRUE(repo.aliases().contains(second_alias));
+  ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME", std::to_string(start + 3 * week).c_str(), 1), 0);
   ASSERT_EQ(invoke({"util", "gc"}).code, 0);
-  EXPECT_FALSE(repo.aliases().contains(alias));
+  EXPECT_FALSE(repo.aliases().contains(second_alias));
   ASSERT_EQ(invoke({"undo"}).code, 0);
-  EXPECT_TRUE(repo.aliases().contains(alias));
+  EXPECT_FALSE(repo.aliases().contains(second_alias));
   ASSERT_EQ(unsetenv("GG_TEST_ALIAS_TIME"), 0);
 }
 
@@ -367,7 +373,7 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
       repo.create_operation(state, first_operation, "second operation");
   detail::CommitPtr operation = repo.commit(second_operation);
   EXPECT_TRUE(std::string_view(git_commit_message(operation.get()))
-                  .starts_with("gg-operation-v3\n"));
+                  .starts_with("gg-operation-v4\n"));
   EXPECT_EQ(git_commit_parentcount(operation.get()), 2U);
   const auto previous = repo.operation_previous(operation.get());
   ASSERT_TRUE(previous.has_value());
@@ -382,7 +388,7 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
   EXPECT_THROW(repo.create_operation(state, std::nullopt, ""), detail::GitError);
 }
 
-TEST_F(RepositoryTest, MigratesOperationsWithTooManyParents) {
+TEST_F(RepositoryTest, TransitionsLegacyOperationsDirectlyToV4) {
   detail::Repository repo(path_);
   detail::OperationState state = repo.state();
   std::vector<git_oid> targets;
@@ -402,33 +408,22 @@ TEST_F(RepositoryTest, MigratesOperationsWithTooManyParents) {
   set_ref(detail::kOperationRef, undo);
 
   ASSERT_NO_THROW(repo.import_git_history());
-  const auto migrated = repo.operation();
-  ASSERT_TRUE(migrated.has_value());
-  EXPECT_EQ(git_oid_equal(&*migrated, &undo), 0);
-  const auto migrated_previous = repo.operation_previous(*migrated);
-  ASSERT_TRUE(migrated_previous.has_value());
-  const auto undo_target = repo.operation_target(*migrated, undo_prefix);
+  const auto current = repo.operation();
+  ASSERT_TRUE(current.has_value());
+  EXPECT_EQ(git_oid_equal(&*current, &undo), 0);
+  detail::CommitPtr current_commit = repo.commit(*current);
+  EXPECT_TRUE(std::string_view(git_commit_message(current_commit.get()))
+                  .starts_with("gg-operation-v4\n"));
+  const auto current_previous = repo.operation_previous(*current);
+  ASSERT_TRUE(current_previous.has_value());
+  EXPECT_NE(git_oid_equal(&*current_previous, &undo), 0);
+  const auto undo_target = repo.operation_target(undo, undo_prefix);
   ASSERT_TRUE(undo_target.has_value());
-  EXPECT_NE(git_oid_equal(&*undo_target, &*migrated_previous), 0);
-  EXPECT_EQ(repo.parse_operation(*migrated).refs.size(), state.refs.size());
-
-  git_revwalk* raw_walk = nullptr;
-  ASSERT_EQ(git_revwalk_new(&raw_walk, repository_.get()), 0);
-  detail::RevwalkPtr walk(raw_walk);
-  ASSERT_EQ(git_revwalk_push(walk.get(), &*migrated), 0);
-  git_oid oid{};
-  while (git_revwalk_next(&oid, walk.get()) == 0) {
-    detail::CommitPtr value = repo.commit(oid);
-    EXPECT_LE(git_commit_parentcount(value.get()), 128U);
-  }
-
-  git_reflog* raw_reflog = nullptr;
-  ASSERT_EQ(git_reflog_read(&raw_reflog, repository_.get(),
-                            detail::kOperationRef.data()),
-            0);
-  ASSERT_NE(raw_reflog, nullptr);
-  EXPECT_EQ(git_reflog_entrycount(raw_reflog), 0U);
-  git_reflog_free(raw_reflog);
+  EXPECT_NE(git_oid_equal(&*undo_target, &oversized), 0);
+  EXPECT_EQ(repo.parse_operation(*current).refs.size(), repo.state().refs.size());
+  EXPECT_LE(git_commit_parentcount(current_commit.get()), 128U);
+  detail::CommitPtr legacy = repo.commit(oversized);
+  EXPECT_EQ(git_commit_parentcount(legacy.get()), targets.size());
 }
 
 TEST_F(RepositoryTest, RendersAWorkspaceWithItsCommitId) {

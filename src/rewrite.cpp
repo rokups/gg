@@ -193,7 +193,9 @@ void set_index_value(git_index* index, const std::string& path,
 
 git_oid Repository::merge_trees(const git_oid& ancestor_oid,
                     const git_oid& ours_oid,
-                    const git_oid& theirs_oid) const {
+                    const git_oid& theirs_oid,
+                    bool preserve_ours_conflicts,
+                    bool preserve_theirs_conflicts) const {
   TreePtr ancestor = tree(ancestor_oid);
   TreePtr ours = tree(ours_oid);
   TreePtr theirs = tree(theirs_oid);
@@ -259,6 +261,29 @@ git_oid Repository::merge_trees(const git_oid& ancestor_oid,
     combined.adds.insert(combined.adds.end(), base.removes.begin(),
                          base.removes.end());
     simplify(combined);
+    const auto preserved_conflict = [&](const TreeConflicts& conflicts,
+                                        const TreeConflicts& other) {
+      const auto value = conflicts.find(path);
+      if (value == conflicts.end()) return static_cast<const ConflictValue*>(nullptr);
+      // A clean replacement parent proves that the user resolved an inherited conflict.
+      const bool user_resolved_ancestor =
+          ancestor_conflicts.contains(path) && !other.contains(path);
+      return user_resolved_ancestor ? nullptr : &value->second;
+    };
+    const ConflictValue* preserved = preserve_theirs_conflicts
+        ? preserved_conflict(theirs_conflicts, ours_conflicts)
+        : nullptr;
+    if (preserved == nullptr && preserve_ours_conflicts) {
+      preserved = preserved_conflict(ours_conflicts, theirs_conflicts);
+    }
+    if (preserved != nullptr) {
+      if (combined.adds.empty() ||
+          (combined.removes.empty() && combined.adds.size() == 1)) {
+        combined = *preserved;
+      }
+      result_conflicts[path] = std::move(combined);
+      continue;
+    }
     const std::optional<FileValue> merged =
         combined.removes.empty() && combined.adds.size() == 1  // GG_COV_EXCL_BRANCH
             ? std::optional<FileValue>{combined.adds.front()}  // GG_COV_EXCL_BRANCH
@@ -283,11 +308,13 @@ git_oid Repository::merge_trees(const git_oid& ancestor_oid,
 
 git_oid Repository::replay(const git_oid& old_parent,
                const git_oid& new_parent,
-               const git_oid& old_tree) const {
+               const git_oid& old_tree,
+               bool preserve_new_parent_conflicts) const {
   CommitPtr old_parent_commit = commit(old_parent);
   CommitPtr new_parent_commit = commit(new_parent);
   return merge_trees(*git_commit_tree_id(old_parent_commit.get()),
-                     *git_commit_tree_id(new_parent_commit.get()), old_tree);
+                     *git_commit_tree_id(new_parent_commit.get()), old_tree,
+                     preserve_new_parent_conflicts, true);
 }
 
 git_oid Repository::rewrite_commit(const git_oid& old_oid,
@@ -335,8 +362,34 @@ RewritePlan Repository::descendants(
   check(git_revwalk_new(&raw_walk, repo_.get()), "walk revisions");
   RevwalkPtr walk(raw_walk);
   git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+  // The roots are already present in the plan. Exclude them (and therefore
+  // their potentially enormous ancestry) from the descendant walk. Without
+  // this boundary, reverse-topological preparation reads the repository's
+  // entire history even when rewriting a leaf working-copy commit.
+  for (const auto& [root, replacement] : plan.commits) {
+    (void)replacement;
+    check(git_revwalk_hide(walk.get(), &root), "bound rewrite descendants");
+  }
   for (const auto& [name, oid] : refs) {
     (void)name;
+    git_commit* direct_commit = nullptr;
+    if (git_commit_lookup(&direct_commit, repo_.get(), &oid) < 0) {
+      git_error_clear();
+      continue;
+    }
+    git_commit_free(direct_commit);
+    // Equal roots need no walk: they are already rewritten and hiding them is
+    // what keeps their ancestors outside this descendant-only traversal.
+    bool relevant = false;
+    if (plan.commits.contains(oid)) continue;
+    for (const auto& [root, replacement] : plan.commits) {
+      (void)replacement;
+      if (relevant) break;
+      const int descendant = git_graph_descendant_of(repo_.get(), &oid, &root);
+      if (descendant < 0) check(descendant, "inspect rewrite descendants");
+      relevant = descendant != 0;
+    }
+    if (!relevant) continue;
     const int pushed = git_revwalk_push(walk.get(), &oid);
     if (pushed != GIT_EINVALIDSPEC) {
       check(pushed, "walk revisions");
@@ -427,7 +480,9 @@ RewritePlan Repository::move_files(const git_oid& source,
       tree = selected_tree(tree, parent_tree, paths);
     }
     if (oid == destination) {
-      tree = merge_trees(base_tree, tree, selected_change);
+      tree = merge_trees(base_tree, tree, selected_change,
+                         /*preserve_ours_conflicts=*/true,
+                         /*preserve_theirs_conflicts=*/true);
     }
     plan.commits.emplace(oid, rewrite_commit(oid, new_parents, tree));
   }

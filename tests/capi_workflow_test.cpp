@@ -283,6 +283,132 @@ TEST_F(RepositoryTest, RefreshesCachedReferencesAfterAdoptingGitChanges) {
   gg_repository_free(repository);
 }
 
+TEST_F(RepositoryTest, NamedRefsIgnoreTargetsThatAreNotCommits) {
+  const git_oid head = ref("HEAD");
+  git_commit* commit = nullptr;
+  ASSERT_EQ(git_commit_lookup(&commit, repository_.get(), &head), GIT_OK);
+  const git_oid tree = *git_commit_tree_id(commit);
+  git_commit_free(commit);
+  ASSERT_EQ(invoke_git({"tag", "-a", "tree-only", "-m", "tree-only",
+                        git_oid_tostr_s(&tree)})
+                .code,
+            0);
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  gg_named_ref_array refs{};
+  ASSERT_EQ(gg_repository_named_refs(&refs, repository), GIT_OK);
+  for (size_t index = 0; index < refs.count; ++index) {
+    EXPECT_STRNE(refs.items[index].name, "tree-only");
+  }
+  gg_named_ref_array_dispose(&refs);
+
+  gg_new_options create = GG_NEW_OPTIONS_INIT;
+  create.message = "work";
+  gg_mutation_result mutation{};
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, LookupRevisionsHydratesOnlyRequestedCommitsInOrder) {
+  const git_oid base = ref("HEAD");
+  write("tracked.txt", "second\n");
+  ASSERT_EQ(invoke_git({"add", "tracked.txt"}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-m", "second"}).code, 0);
+  const git_oid tip = ref("HEAD");
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  git_oid requested[] = {tip, base};
+  gg_revision_array revisions{};
+  ASSERT_EQ(gg_repository_lookup_revisions(
+                &revisions, repository, {requested, 2}), GIT_OK);
+  ASSERT_EQ(revisions.count, 2U);
+  EXPECT_TRUE(git_oid_equal(&revisions.items[0].oid, &tip));
+  EXPECT_TRUE(git_oid_equal(&revisions.items[1].oid, &base));
+  EXPECT_STREQ(revisions.items[0].description, "second\n");
+  ASSERT_EQ(revisions.items[0].parents.count, 1U);
+  EXPECT_TRUE(git_oid_equal(&revisions.items[0].parents.ids[0], &base));
+  gg_revision_array_dispose(&revisions);
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, SnapshotPreservesSparseCheckoutEntries) {
+  write("included/visible.txt", "visible\n");
+  write("excluded/hidden.txt", "hidden\n");
+  ASSERT_EQ(invoke_git({"add", "."}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-m", "add sparse paths"}).code, 0);
+  ASSERT_EQ(invoke_git({"sparse-checkout", "init", "--cone"}).code, 0);
+  ASSERT_EQ(invoke_git({"sparse-checkout", "set", "included"}).code, 0);
+  ASSERT_TRUE(std::filesystem::exists(path_ / "included/visible.txt"));
+  ASSERT_FALSE(std::filesystem::exists(path_ / "excluded/hidden.txt"));
+  git_index* raw_index = nullptr;
+  ASSERT_EQ(git_repository_index(&raw_index, repository_.get()), GIT_OK);
+  std::unique_ptr<git_index, decltype(&git_index_free)> index(raw_index,
+                                                               git_index_free);
+  ASSERT_EQ(git_index_read(index.get(), true), GIT_OK);
+  const git_index_entry* hidden =
+      git_index_get_bypath(index.get(), "excluded/hidden.txt", 0);
+  ASSERT_NE(hidden, nullptr);
+  ASSERT_NE(hidden->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE, 0);
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+  int changed = 0;
+  ASSERT_EQ(gg_repository_snapshot_working_copy(&changed, repository, nullptr),
+            GIT_OK);
+
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  ASSERT_EQ(gg_repository_status(&status, repository, &options), GIT_OK);
+  ASSERT_EQ(status.entry_count, 0U)
+      << (status.entry_count == 0 ? "" : status.entries[0].new_path);
+  gg_status_dispose(&status);
+
+  write("included/visible.txt", "changed\n");
+  const char* visible_path = "included/visible.txt";
+  ASSERT_EQ(gg_repository_snapshot_working_copy_paths(
+                &changed, repository, {&visible_path, 1}, nullptr),
+            GIT_OK);
+  ASSERT_EQ(gg_repository_status(&status, repository, &options), GIT_OK);
+  ASSERT_EQ(status.entry_count, 1U)
+      << (status.entry_count == 0 ? "" : status.entries[0].new_path);
+  EXPECT_STREQ(status.entries[0].new_path, "included/visible.txt");
+  EXPECT_EQ(status.entries[0].status, GIT_DELTA_MODIFIED);
+  gg_status_dispose(&status);
+
+  std::filesystem::remove(path_ / "included/visible.txt");
+  write("included/new.txt", "new\n");
+  const char* changed_paths[]{"included/visible.txt", "included/new.txt"};
+  ASSERT_EQ(gg_repository_snapshot_working_copy_paths(
+                &changed, repository, {changed_paths, 2}, nullptr),
+            GIT_OK);
+  ASSERT_EQ(gg_repository_status(&status, repository, &options), GIT_OK);
+  ASSERT_EQ(status.entry_count, 2U);
+  bool added = false;
+  bool deleted = false;
+  for (std::size_t entry = 0; entry < status.entry_count; ++entry) {
+    const std::string path = status.entries[entry].new_path == nullptr
+                                 ? ""
+                                 : status.entries[entry].new_path;
+    added |= path == "included/new.txt" &&
+             status.entries[entry].status == GIT_DELTA_ADDED;
+    deleted |= path == "included/visible.txt" &&
+               status.entries[entry].status == GIT_DELTA_DELETED;
+    EXPECT_NE(path, "excluded/hidden.txt");
+  }
+  EXPECT_TRUE(added);
+  EXPECT_TRUE(deleted);
+  gg_status_dispose(&status);
+  gg_repository_free(repository);
+}
+
 TEST_F(RepositoryTest, MovesFilesBetweenChangesAtomically) {
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
@@ -467,6 +593,56 @@ TEST_F(RepositoryTest, ReordersARootChangeUsingAfterPlacement) {
   EXPECT_STREQ(revisions.items[revisions.count - 3].description, "first");
   EXPECT_STREQ(revisions.items[revisions.count - 2].description, "base");
   EXPECT_STREQ(revisions.items[revisions.count - 1].description, "second");
+  gg_revision_array_dispose(&revisions);
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, CopiesAChangeAtAReorderPosition) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  gg_mutation_result mutation{};
+  gg_new_options create = GG_NEW_OPTIONS_INIT;
+  create.message = "first";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  const git_oid first = mutation.working_copy;
+  gg_mutation_result_dispose(&mutation);
+  create.message = "second";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  const git_oid second = mutation.working_copy;
+  gg_mutation_result_dispose(&mutation);
+  create.message = "third";
+  ASSERT_EQ(gg_repository_new_change(&mutation, repository, &create, nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&mutation);
+
+  const std::string first_text = git_oid_tostr_s(&first);
+  const std::string second_text = git_oid_tostr_s(&second);
+  gg_reorder_options reorder = GG_REORDER_OPTIONS_INIT;
+  reorder.source = first_text.c_str();
+  reorder.target = second_text.c_str();
+  reorder.placement = GG_REORDER_AFTER;
+  reorder.copy = 1;
+  ASSERT_EQ(gg_repository_reorder(&mutation, repository, &reorder, nullptr),
+            GIT_OK)
+      << git_error_last()->message;
+  EXPECT_TRUE(mutation.changed);
+  EXPECT_TRUE(mutation.has_operation);
+  gg_mutation_result_dispose(&mutation);
+
+  gg_revision_query_options query = GG_REVISION_QUERY_OPTIONS_INIT;
+  query.revisions = "ancestors(@)";
+  query.reversed = 1;
+  gg_revision_array revisions{};
+  ASSERT_EQ(gg_repository_revisions(&revisions, repository, &query), GIT_OK);
+  ASSERT_GE(revisions.count, 4U);
+  EXPECT_STREQ(revisions.items[revisions.count - 4].description, "first");
+  EXPECT_STREQ(revisions.items[revisions.count - 3].description, "second");
+  EXPECT_STREQ(revisions.items[revisions.count - 2].description, "first");
+  EXPECT_STREQ(revisions.items[revisions.count - 1].description, "third");
   gg_revision_array_dispose(&revisions);
   gg_repository_free(repository);
 }

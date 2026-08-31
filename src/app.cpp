@@ -200,6 +200,9 @@ int execute(Repository& repository,
             [&](const UtilGcCommand& value) {
               command_util_gc(repository, value, output);
             },
+            [&](const UtilOptimizeCommand&) {
+              command_util_optimize(repository, output);
+            },
             [&](const UtilSnapshotCommand&) {
               command_util_snapshot(repository, output);
             },

@@ -204,6 +204,8 @@ class Repository {
   git_oid empty_tree() const;
 
   git_oid snapshot_tree(const git_oid& baseline_tree) const;
+  git_oid snapshot_tree(const git_oid& baseline_tree,
+                        const std::vector<std::string>& paths) const;
 
   std::vector<std::string> untracked_paths() const;
 
@@ -213,7 +215,9 @@ class Repository {
 
   git_oid merge_trees(const git_oid& ancestor_oid,
                         const git_oid& ours_oid,
-                        const git_oid& theirs_oid) const;
+                        const git_oid& theirs_oid,
+                        bool preserve_ours_conflicts = false,
+                        bool preserve_theirs_conflicts = false) const;
 
   TreeConflicts tree_conflicts(const git_oid& tree_oid) const;
 
@@ -233,7 +237,8 @@ class Repository {
 
   git_oid replay(const git_oid& old_parent,
                    const git_oid& new_parent,
-                   const git_oid& old_tree) const;
+                   const git_oid& old_tree,
+                   bool preserve_new_parent_conflicts = false) const;
 
   git_oid rewrite_commit(const git_oid& old_oid,
                            const std::vector<git_oid>& new_parents,
@@ -332,6 +337,7 @@ class Repository {
   std::vector<git_oid> resolve_set(std::string_view revisions) const;
 
   bool sync_workspace() const;
+  bool sync_workspace(const std::vector<std::string>& paths) const;
 
   void add_remote_bookmark_updates(
       std::map<std::string, git_oid>& updates,
