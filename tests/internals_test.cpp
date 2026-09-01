@@ -438,7 +438,8 @@ TEST_F(RepositoryTest, RendersAWorkspaceWithItsCommitId) {
             std::string::npos);
   const Result log = invoke({"log"});
   EXPECT_EQ(log.code, 0) << log.error;
-  EXPECT_NE(log.output.find("@"), std::string::npos);
+  EXPECT_NE(log.output.find(detail::oid_string(ref(detail::kWorkspaceRef), 8)),
+            std::string::npos);
 }
 
 TEST_F(RepositoryTest, ImportsAWorkspaceWhenHeadIsUnborn) {

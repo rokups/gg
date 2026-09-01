@@ -184,6 +184,20 @@ bool same_signature(const git_signature* left, const git_signature* right) {
   return left->when.offset == right->when.offset;
 }
 
+struct LogReference {
+  git_oid oid;
+  std::string name;
+};
+
+std::vector<LogReference> log_references(Repository& repo,
+                                         std::string_view prefix) {
+  std::vector<LogReference> result;
+  for (const auto& [name, oid] : repo.refs_with_prefix(prefix)) {
+    result.push_back({oid, name.substr(prefix.size())});
+  }
+  return result;
+}
+
 }  // namespace
 
 void command_new(Repository& repo,
@@ -479,13 +493,10 @@ void command_log(Repository& repo,
                  const LogCommand& options,
                  std::ostream& output) {
   repo.sync_for_command();
-  git_revwalk* raw_walk = nullptr;
-  check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
-  RevwalkPtr walk(raw_walk);
-  // Explicit revsets retain full topological ordering. The bounded default
-  // path below uses its own streaming frontier and does not consume this walk.
-  git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME);
-  std::optional<std::set<git_oid, OidLess>> selected_revisions;
+  if (options.limit == 0) {
+    if (options.count) output << "0\n";
+    return;
+  }
   struct Candidate {
     std::int64_t time;
     std::uint64_t order;
@@ -494,73 +505,65 @@ void command_log(Repository& repo,
       return time != other.time ? time < other.time : order < other.order;
     }
   };
-  std::priority_queue<Candidate> frontier;
-  std::set<git_oid, OidLess> queued;
-  std::uint64_t queue_order = 0;
-  const auto queue = [&](const git_oid& oid) {
-    if (!queued.insert(oid).second) return;
-    CommitPtr value = repo.commit(oid);
-    frontier.push({git_commit_committer(value.get())->when.time,
-                   ++queue_order, oid});
+  std::vector<git_oid> revisions;
+  const auto matches_paths = [&](const git_oid& oid) {
+    return options.paths.empty()
+        || revision_matches_paths(repo, oid, options.paths, options.format);
   };
+  std::vector<LogReference> local_bookmarks;
   if (!options.revision.empty()) {
     const std::vector<git_oid> selected = repo.resolve_set(options.revision);
-    selected_revisions.emplace(selected.begin(), selected.end());
+    const std::set<git_oid, OidLess> selected_revisions(selected.begin(),
+                                                         selected.end());
+    git_revwalk* raw_walk = nullptr;
+    check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
+    RevwalkPtr walk(raw_walk);
+    git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME);
     for (const git_oid& oid : selected) {
       check(git_revwalk_push(walk.get(), &oid), "walk revisions");
     }
+    git_oid oid{};
+    while (revisions.size() < options.limit
+           && git_revwalk_next(&oid, walk.get()) == 0) {
+      if (selected_revisions.contains(oid) && matches_paths(oid)) {
+        revisions.push_back(oid);
+      }
+    }
   } else {
-    for (const auto& [name, oid] : repo.data_refs()) {
-      if (starts_with(name, "refs/heads/")) queue(oid);
+    local_bookmarks = log_references(repo, "refs/heads/");
+    std::priority_queue<Candidate> frontier;
+    std::set<git_oid, OidLess> queued;
+    std::uint64_t queue_order = 0;
+    const auto queue = [&](const git_oid& oid) {
+      if (!queued.insert(oid).second) return;
+      CommitPtr value = repo.commit(oid);
+      frontier.push({git_commit_committer(value.get())->when.time,
+                     ++queue_order, oid});
+    };
+    for (const LogReference& bookmark : local_bookmarks) {
+      queue(bookmark.oid);
     }
     const auto workspace = repo.workspace();
     if (workspace.has_value()) queue(*workspace);
-  }
-  const auto workspace = repo.workspace();
-  std::vector<git_oid> revisions;
-  while (revisions.size() < options.limit) {
-    git_oid oid{};
-    if (selected_revisions.has_value()) {
-      if (git_revwalk_next(&oid, walk.get()) != 0) break;
-    } else {
-      if (frontier.empty()) break;
-      oid = frontier.top().oid;
+    while (revisions.size() < options.limit && !frontier.empty()) {
+      const git_oid oid = frontier.top().oid;
       frontier.pop();
       for (const git_oid& parent : repo.parents(oid)) queue(parent);
+      if (matches_paths(oid)) revisions.push_back(oid);
     }
-    if (selected_revisions.has_value() &&
-        !selected_revisions->contains(oid)) {
-      continue;
-    }
-    if (!options.paths.empty() &&
-        !revision_matches_paths(repo, oid, options.paths, options.format)) {
-      continue;
-    }
-    revisions.push_back(oid);
   }
   if (options.count) {
     output << revisions.size() << '\n';
     return;
   }
+  if (revisions.empty()) return;
+  if (!options.revision.empty()) {
+    local_bookmarks = log_references(repo, "refs/heads/");
+  }
   if (options.reversed) {
     std::reverse(revisions.begin(), revisions.end());
   }
   repo.set_short_id_scope(revisions);
-  std::map<git_oid, std::vector<git_oid>, OidLess> graph_successors;
-  if (options.reversed) {
-    const std::set<git_oid, OidLess> visible(revisions.begin(), revisions.end());
-    for (const git_oid& child : revisions) {
-      for (const git_oid& parent : repo.parents(child)) {
-        if (visible.contains(parent)) {
-          graph_successors[parent].push_back(child);
-        }
-      }
-    }
-  } else {
-    for (const git_oid& revision : revisions) {
-      graph_successors.emplace(revision, repo.parents(revision));
-    }
-  }
   bool show_diff = options.patch;
   show_diff |= options.format.summary;
   show_diff |= options.format.stat;
@@ -575,25 +578,29 @@ void command_log(Repository& repo,
   std::map<git_oid, std::vector<std::string>, OidLess> tags;
   constexpr std::string_view tag_prefix = "refs/tags/";
   const std::set<git_oid, OidLess> loaded(revisions.begin(), revisions.end());
-  for (const auto& [reference, target] : repo.data_refs()) {
-    if (starts_with(reference, tag_prefix) && loaded.contains(target)) {
-      tags[target].push_back(reference.substr(tag_prefix.size()));
+  std::map<git_oid, std::vector<std::string>, OidLess> bookmarks;
+  for (const LogReference& reference : local_bookmarks) {
+    if (loaded.contains(reference.oid)) {
+      bookmarks[reference.oid].push_back(reference.name);
     }
   }
-  GraphRenderer graph;
+  for (const LogReference& reference : log_references(repo, tag_prefix)) {
+    if (loaded.contains(reference.oid)) {
+      tags[reference.oid].push_back(reference.name);
+    }
+  }
+  const auto workspace = repo.workspace();
   for (const git_oid& revision : revisions) {
     const git_oid oid = revision;
     CommitPtr value = repo.commit(oid);
-    const auto bookmarks = repo.bookmarks(oid);
     std::ostringstream content;
     set_output_color_mode(content, output_color_mode(output));
     const bool working = workspace.has_value() && *workspace == oid;
-    const std::string marker =
-        styled(output, working ? "@" : "○",
-               working ? OutputStyle::working_copy : OutputStyle::commit_id);
     content << styled_short_commit_id(repo, content, oid, working);
-    for (const std::string& bookmark : bookmarks) {
-      content << " " << styled(content, bookmark, OutputStyle::bookmark);
+    if (const auto named = bookmarks.find(oid); named != bookmarks.end()) {
+      for (const std::string& bookmark : named->second) {
+        content << " " << styled(content, bookmark, OutputStyle::bookmark);
+      }
     }
     if (const auto tagged = tags.find(oid); tagged != tags.end()) {
       for (const std::string& tag : tagged->second) {
@@ -602,17 +609,13 @@ void command_log(Repository& repo,
     }
     const std::string description = first_line(git_commit_message(value.get()));
     if (repo.commit_has_conflicts(oid)) content << " conflict";
-    content << (options.no_graph ? " " : "\n")
+    content << " "
             << (description.empty() ? "(no description set)" : description)
             << '\n';
     if (show_diff) {
       render_revision_diff(repo, oid, options.paths, options.format, content);
     }
-    if (options.no_graph) {
-      output << content.str();
-    } else {
-      graph.add(output, oid, graph_successors[oid], marker, content.str());
-    }
+    output << content.str();
   }
 }
 

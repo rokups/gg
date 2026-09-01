@@ -98,6 +98,7 @@ struct SquashCommand {
   std::string source;
   std::string destination;
   std::string message;
+  bool message_provided{false};
   bool entire_branch{false};
 };
 struct AbandonCommand {

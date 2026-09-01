@@ -171,6 +171,9 @@ class Repository {
 
   std::map<std::string, git_oid> data_refs() const;
 
+  std::map<std::string, git_oid> refs_with_prefix(
+      std::string_view prefix) const;
+
   void enable_ref_cache();
 
   void invalidate_ref_cache() const;

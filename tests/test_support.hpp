@@ -274,7 +274,7 @@ class RepositoryTest : public testing::Test {
     if (log.code != 0 || log.output.size() < 10) {
       throw std::runtime_error(log.error);
     }
-    return log.output.substr(3, 8);
+    return log.output.substr(0, 8);
   }
 
   std::string file() {

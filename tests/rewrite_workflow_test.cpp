@@ -202,6 +202,44 @@ TEST_F(RepositoryTest, SquashesAndAbandonsCurrentChanges) {
   expect_workspace_coherent();
 }
 
+TEST_F(RepositoryTest, SquashHonorsAnExplicitlyEmptyDescription) {
+  ASSERT_EQ(invoke({"new", "-m", "destination", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "source"}).code, 0);
+  const Result squash = invoke({"squash", "-m", ""});
+  ASSERT_EQ(squash.code, 0) << squash.error;
+
+  detail::Repository repo(path_);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  const std::vector<git_oid> parents = repo.parents(workspace);
+  ASSERT_EQ(parents.size(), 1U);
+  const char* message = git_commit_message(repo.commit(parents.front()).get());
+  EXPECT_TRUE(message == nullptr || std::string_view(message).empty());
+}
+
+TEST_F(RepositoryTest, AbandonDoesNotReuseAnAbandonedCommitObject) {
+  const Result first = invoke({"new", "main"});
+  ASSERT_EQ(first.code, 0) << first.error;
+  const std::string first_id =
+      token_after(first.output, "Working copy now at: ");
+  detail::Repository before(path_);
+  const git_oid first_oid = before.resolve(first_id);
+  const std::vector<git_oid> original_parents = before.parents(first_oid);
+
+  const Result child = invoke({"new"});
+  ASSERT_EQ(child.code, 0) << child.error;
+  ASSERT_EQ(invoke({"abandon", first_id}).code, 0);
+
+  detail::Repository after(path_);
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  EXPECT_EQ(git_oid_equal(&workspace, &first_oid), 0);
+  const std::vector<git_oid> replacement_parents = after.parents(workspace);
+  ASSERT_EQ(replacement_parents.size(), original_parents.size());
+  for (std::size_t index = 0; index < replacement_parents.size(); ++index)
+    EXPECT_NE(git_oid_equal(&replacement_parents[index], &original_parents[index]),
+              0);
+  expect_workspace_coherent();
+}
+
 TEST_F(RepositoryTest, RejectsInvalidRewriteShapes) {
   const git_oid base = ref("HEAD");
   ASSERT_EQ(git_reference_remove(repository_.get(), "refs/heads/main"), 0);

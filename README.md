@@ -46,7 +46,7 @@ cd project
 gg new -m "Add the parser"
 gg bookmark create topic
 # edit files
-gg log                    # displays up to 256 changes without scanning files
+gg log                    # displays up to 256 changes without scanning files or rendering a graph
 gg util snapshot          # explicitly synchronize filesystem edits into @
 
 gg new -m "Add parser tests"

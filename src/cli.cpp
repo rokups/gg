@@ -253,7 +253,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   log->add_flag("--reversed", log_value.reversed,
                 "Show older revisions first");
   log->add_flag("-G,--no-graph", log_value.no_graph,
-                "Do not show graph markers");
+                "Revision logs are always flat");
   log->add_flag("-p,--patch", log_value.patch, "Show patches");
   log->add_flag("--count", log_value.count, "Print only the revision count");
   log->add_flag("-s,--summary", log_value.format.summary,
@@ -370,7 +370,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   CLI::Option* squash_destination = squash->add_option(
       "-t,--into", squash_value.destination, "Destination revision");
   squash_revision->excludes(squash_source)->excludes(squash_destination);
-  squash->add_option("-m,--message", squash_value.message, "Description");
+  CLI::Option* squash_message =
+      squash->add_option("-m,--message", squash_value.message, "Description");
   squash->add_flag("--entire-branch", squash_value.entire_branch,
                    "Also squash ancestors back to the branch divergence");
 
@@ -984,7 +985,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "SEE ALSO: `gg diff`, `gg log`.");
   log->footer(
       "DEFAULTS:\n"
-      "  Shows 256 reachable revisions from @ and local bookmarks, newest first, with a graph.\n"
+      "  Shows 256 reachable revisions from @ and local bookmarks, newest first.\n"
       "  --limit overrides the default; --all explicitly requests unbounded history.\n"
       "  -r accepts a revision-set expression; filesets keep revisions touching a match.\n"
       "SEE ALSO: `gg show`, `gg operation log`.");
@@ -1379,6 +1380,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   } else if (split->parsed()) {
     command = RepositoryCommand{std::move(split_value)};
   } else if (squash->parsed()) {
+    squash_value.message_provided = squash_message->count() != 0;
     command = RepositoryCommand{std::move(squash_value)};
   } else if (abandon->parsed()) {
     command = RepositoryCommand{std::move(abandon_value)};

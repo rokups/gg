@@ -364,12 +364,26 @@ ShortId Repository::short_commit_id(const git_oid& oid) const {
 }
 
 void Repository::set_short_id_scope(std::span<const git_oid> revisions) {
+  const auto& alias_values = aliases();
+  const std::set<git_oid, OidLess> displayed(revisions.begin(),
+                                              revisions.end());
+  std::map<git_oid, std::vector<std::string>, OidLess> aliases_by_target;
+  for (const auto& [alias, target] : alias_values) {
+    if (!displayed.contains(target) || alias == oid_string(target)) continue;
+    git_oid parsed{};
+    check(git_oid_fromstr(&parsed, alias.c_str(),
+                          git_repository_oid_type(repo_.get())),
+          "parse commit alias");
+    aliases_by_target[target].push_back(oid_string(parsed));
+  }
   scoped_commit_ids_.emplace();
-  scoped_commit_ids_->reserve(revisions.size() + aliases().size());
+  scoped_commit_ids_->reserve(revisions.size() + alias_values.size());
   for (const git_oid& revision : revisions) {
     scoped_commit_ids_->push_back(oid_string(revision));
-    for (const git_oid& alias : commit_aliases(revision)) {
-      scoped_commit_ids_->push_back(oid_string(alias));
+    if (const auto aliases = aliases_by_target.find(revision);
+        aliases != aliases_by_target.end()) {
+      scoped_commit_ids_->insert(scoped_commit_ids_->end(),
+                                 aliases->second.begin(), aliases->second.end());
     }
   }
 }

@@ -351,7 +351,7 @@ void command_squash(Repository& repo,
   CommitPtr source_commit = repo.commit(source_oid);
   CommitPtr destination_commit = repo.commit(destination_oid);
   std::string combined_message = options.message;
-  if (combined_message.empty()) {
+  if (!options.message_provided) {
     combined_message = first_line(git_commit_message(destination_commit.get()));
     if (combined_message.empty()) {
       combined_message = first_line(git_commit_message(source_commit.get()));
@@ -426,6 +426,18 @@ void command_abandon(Repository& repo,
   }
 
   RewritePlan plan;
+  const auto rewrite_non_abandoned = [&](const git_oid& old_oid,
+                                         const std::vector<git_oid>& parents,
+                                         const std::optional<git_oid>& tree) {
+    SignaturePtr committer = repo.signature();
+    git_oid rewritten{};
+    do {
+      rewritten = repo.rewrite_commit(old_oid, parents, tree, std::nullopt,
+                                      nullptr, committer.get());
+      ++committer->when.time;
+    } while (selected.contains(rewritten));
+    return rewritten;
+  };
   std::map<git_oid, std::vector<git_oid>, OidLess> replacements;
   git_oid oid{};
   while (git_revwalk_next(&oid, walk.get()) == 0) {
@@ -459,7 +471,7 @@ void command_abandon(Repository& repo,
               ? std::optional(*git_commit_tree_id(repo.commit(oid).get()))
               : std::nullopt;
       plan.commits.emplace(
-          oid, repo.rewrite_commit(oid, new_parents, tree_override));
+          oid, rewrite_non_abandoned(oid, new_parents, tree_override));
     }
   }
 
@@ -486,7 +498,12 @@ void command_abandon(Repository& repo,
     git_oid new_workspace = *workspace;
     if (selected.contains(*workspace)) {
       const std::vector<git_oid>& parents = replacements.at(*workspace);
-      new_workspace = repo.create_commit(combined_tree(repo, parents), parents, "");
+      SignaturePtr signature = repo.signature();
+      do {
+        new_workspace = repo.create_commit(combined_tree(repo, parents), parents,
+                                           "", signature.get(), signature.get());
+        ++signature->when.time;
+      } while (selected.contains(new_workspace));
     } else if (plan.commits.contains(*workspace)) {
       new_workspace = plan.commits.at(*workspace);
     }

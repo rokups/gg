@@ -288,6 +288,42 @@ std::map<std::string, git_oid> Repository::data_refs() const {
   return refs;
 }
 
+std::map<std::string, git_oid> Repository::refs_with_prefix(
+    std::string_view prefix) const {
+  if (operation_view_.has_value()) {
+    std::map<std::string, git_oid> result;
+    for (const auto& [name, target] : operation_view_->refs) {
+      if (starts_with(name, prefix)) result.emplace(name, target);
+    }
+    return result;
+  }
+
+  const std::string pattern = std::string(prefix) + "*";
+  git_reference_iterator* raw_iterator = nullptr;
+  check(git_reference_iterator_glob_new(&raw_iterator, repo_.get(),
+                                        pattern.c_str()),
+        "list references");
+  ReferenceIteratorPtr iterator(raw_iterator);
+  std::map<std::string, git_oid> result;
+  while (true) {
+    git_reference* raw_reference = nullptr;
+    const int next = git_reference_next(&raw_reference, iterator.get());
+    if (next == GIT_ITEROVER) break;
+    check(next, "list references");
+    ReferencePtr reference(raw_reference);
+    git_reference* raw_resolved = nullptr;
+    const int resolution = git_reference_resolve(&raw_resolved, reference.get());
+    if (resolution == GIT_ENOTFOUND) continue;
+    check(resolution, "resolve reference");
+    ReferencePtr resolved(raw_resolved);
+    const git_oid* target = git_reference_target(resolved.get());
+    if (target != nullptr) {
+      result.emplace(git_reference_name(reference.get()), *target);
+    }
+  }
+  return result;
+}
+
 void Repository::enable_ref_cache() { ref_cache_enabled_ = true; }
 
 void Repository::invalidate_ref_cache() const {

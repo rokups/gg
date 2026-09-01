@@ -1319,6 +1319,7 @@ int gg_repository_squash_ex(gg_mutation_result* out,
     command_squash(repo,
                    SquashCommand{string(value.revision), string(value.source),
                                  string(value.destination), string(value.message),
+                                 value.message != nullptr,
                                  entire_branch != 0},
                    output);
   });

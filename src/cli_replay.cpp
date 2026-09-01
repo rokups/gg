@@ -147,7 +147,10 @@ std::vector<std::string> repository_replay_arguments(
             add_option(result, "-r", value.revision);
             add_option(result, "--from", value.source);
             add_option(result, "--into", value.destination);
-            add_option(result, "-m", value.message);
+            if (value.message_provided) {
+              result.emplace_back("-m");
+              result.push_back(value.message);
+            }
             if (value.entire_branch) result.emplace_back("--entire-branch");
             return result;
           },
