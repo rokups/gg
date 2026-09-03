@@ -239,7 +239,7 @@ void chmod_files(Repository& repo,
     if (!is_regular_file(entry->mode)) {
       throw UserError("path is not a regular file: " + entry->path);
     }
-    if (entry->mode == mode) {
+    if (static_cast<std::uint32_t>(entry->mode) == mode) {
       continue;
     }
     const git_index_entry* original =

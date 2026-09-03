@@ -213,13 +213,16 @@ git_oid Repository::merge_trees(const git_oid& ancestor_oid,
           "inspect rewrite conflicts");
     ConflictIteratorPtr iterator(raw_iterator);
     const git_index_entry* base = nullptr;
-    const git_index_entry* ours = nullptr;
-    const git_index_entry* theirs = nullptr;
-    while (git_index_conflict_next(&base, &ours, &theirs, iterator.get()) == 0) {
-      const git_index_entry* entry = ours != nullptr ? ours :  // GG_COV_EXCL_BRANCH
-                                     theirs != nullptr ? theirs : base;  // GG_COV_EXCL_BRANCH
+    const git_index_entry* ours_entry = nullptr;
+    const git_index_entry* theirs_entry = nullptr;
+    while (git_index_conflict_next(&base, &ours_entry, &theirs_entry,
+                                   iterator.get()) == 0) {
+      const git_index_entry* entry =
+          ours_entry != nullptr ? ours_entry :  // GG_COV_EXCL_BRANCH
+          theirs_entry != nullptr ? theirs_entry : base;  // GG_COV_EXCL_BRANCH
       result_conflicts[entry->path] =
-          {{index_value(base)}, {index_value(ours), index_value(theirs)}};
+          {{index_value(base)},
+           {index_value(ours_entry), index_value(theirs_entry)}};
     }
   }
 

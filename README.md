@@ -338,12 +338,20 @@ ctest --test-dir build --output-on-failure
 To cross-build a standalone Windows executable with MinGW-w64:
 
 ```sh
-cmake --preset windows-x64-static
-cmake --build --preset windows-x64-static
+cmake --preset mingw-x64-static
+cmake --build --preset mingw-x64-static
 ```
 
-The resulting `build/windows-x64-static/gg.exe` statically links libgit2 and
+The resulting `build/mingw-x64-static/gg.exe` statically links libgit2 and
 the GCC runtimes. HTTPS uses Windows Schannel, so no OpenSSL DLLs are needed.
+
+For a native Visual Studio 2022 x64 release build:
+
+```sh
+cmake --preset msvc-x64
+cmake --build --preset msvc-x64-debug
+cmake --build --preset msvc-x64-release
+```
 
 The coverage build gates project source lines and reachable, non-exception
 branches at 100%. Compiler-generated exception and unreachable cleanup edges

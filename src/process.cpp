@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #include <string_view>
 #else
 #include <fcntl.h>
@@ -25,12 +26,17 @@ namespace {
 #ifdef _WIN32
 std::wstring wide(std::string_view value) {
   if (value.empty()) return {};
+  if (value.size() >
+      static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    return {};
+  }
+  const int value_size = static_cast<int>(value.size());
   const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                       value.data(), value.size(), nullptr, 0);
+                                       value.data(), value_size, nullptr, 0);
   if (size == 0) return {};
   std::wstring result(static_cast<std::size_t>(size), L'\0');
   if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                          value.size(), result.data(), size) == 0) {
+                          value_size, result.data(), size) == 0) {
     return {};
   }
   return result;

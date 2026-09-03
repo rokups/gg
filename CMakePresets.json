@@ -7,8 +7,8 @@
   },
   "configurePresets": [
     {
-      "name": "windows-x64-static",
-      "displayName": "Windows x64 static",
+      "name": "mingw-x64-static",
+      "displayName": "MinGW x64 static",
       "description": "Standalone Windows x64 executable built with MinGW-w64.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
@@ -17,12 +17,40 @@
         "CMAKE_BUILD_TYPE": "Release",
         "GG_BUILD_TESTS": "OFF"
       }
+    },
+    {
+      "name": "msvc-x64",
+      "displayName": "Visual Studio 2022 x64",
+      "description": "Native Windows x64 build using the Visual Studio compiler.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "OFF",
+        "GG_BUILD_TESTS": "OFF"
+      }
     }
   ],
   "buildPresets": [
     {
-      "name": "windows-x64-static",
-      "configurePreset": "windows-x64-static",
+      "name": "mingw-x64-static",
+      "configurePreset": "mingw-x64-static",
+      "targets": [
+        "gg_cli"
+      ]
+    },
+    {
+      "name": "msvc-x64-debug",
+      "configurePreset": "msvc-x64",
+      "configuration": "Debug",
+      "targets": [
+        "gg_cli"
+      ]
+    },
+    {
+      "name": "msvc-x64-release",
+      "configurePreset": "msvc-x64",
+      "configuration": "Release",
       "targets": [
         "gg_cli"
       ]

@@ -13,7 +13,11 @@
 #include <utility>
 #include <vector>
 
+#ifdef _MSC_VER
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace gg::detail {
 namespace {
@@ -29,7 +33,11 @@ OutputColorMode output_color_mode(std::string_view requested,
   if (requested == "debug") return OutputColorMode::debug;
   if (requested == "auto") {
     const bool terminal_stream = &output == &std::cout;
+#ifdef _MSC_VER
+    const bool terminal = _isatty(_fileno(stdout)) != 0;
+#else
     const bool terminal = isatty(STDOUT_FILENO) != 0;
+#endif
     const bool color = terminal_stream && terminal;  // GG_COV_EXCL_BRANCH
     return color ? OutputColorMode::ansi  // GG_COV_EXCL_BRANCH
                  : OutputColorMode::plain;  // GG_COV_EXCL_BRANCH

@@ -993,12 +993,12 @@ void command_fetch(Repository& repo,
       }
     }
     for (const std::string& tag : tags) {
-      const git_oid advertised = remote_tags.at(tag);
+      const git_oid advertised_tag = remote_tags.at(tag);
       const auto local = repo.ref_target("refs/tags/" + tag);
       if (!local.has_value()) continue;
-      if (!(*local == advertised)) continue;
-      tracking_updates[remote_tag_prefix + tag] = advertised;
-      tracking_updates[tag_tracking_prefix + tag] = advertised;
+      if (!(*local == advertised_tag)) continue;
+      tracking_updates[remote_tag_prefix + tag] = advertised_tag;
+      tracking_updates[tag_tracking_prefix + tag] = advertised_tag;
     }
     if (!options.tracked) {
       std::vector<std::string> fetched_branches = branches;

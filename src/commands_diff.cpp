@@ -5,7 +5,11 @@
 #include "commands.hpp"
 #include "process.hpp"
 
+#ifdef _MSC_VER
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -23,9 +27,17 @@ class TemporaryDirectory {
   TemporaryDirectory() {
     std::string pattern =
         (std::filesystem::temp_directory_path() / "gg-diff-XXXXXX").string();
+#ifdef _MSC_VER
+    if (_mktemp_s(pattern.data(), pattern.size() + 1) != 0 ||
+        !std::filesystem::create_directory(pattern)) {
+      throw UserError("cannot create diff directory");
+    }
+    path_ = pattern;
+#else
     const char* created = mkdtemp(pattern.data());
     if (created == nullptr) throw UserError("cannot create diff directory");  // GG_COV_EXCL_BRANCH
     path_ = created;
+#endif
   }
 
   ~TemporaryDirectory() {

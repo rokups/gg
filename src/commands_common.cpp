@@ -11,8 +11,12 @@
 #ifndef _WIN32
 #include <sys/file.h>
 #endif
+#ifdef _MSC_VER
+#include <io.h>
+#include <sys/stat.h>
+#else
 #include <unistd.h>
-
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -35,6 +39,18 @@
 
 namespace gg::detail {
 namespace {
+
+#ifdef _MSC_VER
+int create_temporary_file(char* pattern) {
+  if (_mktemp_s(pattern, std::char_traits<char>::length(pattern) + 1) != 0) {
+    return -1;
+  }
+  return _open(pattern, _O_CREAT | _O_EXCL | _O_RDWR,
+               _S_IREAD | _S_IWRITE);
+}
+#else
+int create_temporary_file(char* pattern) { return mkstemp(pattern); }
+#endif
 
 std::vector<std::string> split_command(std::string_view command) {
   std::vector<std::string> result;
@@ -700,9 +716,13 @@ void edit_file_with_editor(Repository& repo,
 std::string edit_text(Repository& repo, std::string_view initial) {
   std::string pattern =
       (std::filesystem::temp_directory_path() / "gg-edit-XXXXXX").string();
-  const int descriptor = mkstemp(pattern.data());
+  const int descriptor = create_temporary_file(pattern.data());
   if (descriptor < 0) throw UserError("cannot create editor file");  // GG_COV_EXCL_BRANCH
+#ifdef _MSC_VER
+  _close(descriptor);
+#else
   close(descriptor);
+#endif
   std::ofstream(pattern) << initial;
   try {
     edit_file_with_editor(repo, pattern);
@@ -879,9 +899,13 @@ void command_util_install_git_hooks(Repository& repo, std::ostream& output) {
   }
   std::string temporary_template =
       (directory / "pre-push.gg-new-XXXXXX").string();
-  const int descriptor = mkstemp(temporary_template.data());
+  const int descriptor = create_temporary_file(temporary_template.data());
   if (descriptor < 0) throw UserError("cannot create Git pre-push hook");  // GG_COV_EXCL_BRANCH
+#ifdef _MSC_VER
+  _close(descriptor);
+#else
   close(descriptor);
+#endif
   const std::filesystem::path temporary(temporary_template);
   {
     std::ofstream file(temporary, std::ios::trunc);

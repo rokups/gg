@@ -9,6 +9,13 @@ option(GG_BUILD_TESTS "Build gg tests" ON)
 option(GG_COVERAGE "Instrument gg for line and branch coverage" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
 
+if(MSVC)
+  set(GG_WARNING_OPTIONS /W4)
+else()
+  set(GG_WARNING_OPTIONS -Wall -Wextra -Wpedantic -Werror
+                         -Wno-missing-field-initializers)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -17,7 +24,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(cmake/CPM.cmake)
 
 set(GG_LIBGIT2_HTTPS_BACKEND OpenSSL-Dynamic)
-if(MINGW)
+if(WIN32)
   set(GG_LIBGIT2_HTTPS_BACKEND Schannel)
 endif()
 
@@ -75,8 +82,10 @@ target_include_directories(
     src
 )
 target_compile_definitions(gg_impl PRIVATE GIT_EXPERIMENTAL_SHA256)
-target_compile_options(gg_impl PRIVATE -Wall -Wextra -Wpedantic -Werror
-                                       -Wno-missing-field-initializers)
+if(MSVC)
+  target_compile_definitions(gg_impl PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+target_compile_options(gg_impl PRIVATE ${GG_WARNING_OPTIONS})
 
 add_library(gg_lib src/capi.cpp $<TARGET_OBJECTS:gg_impl>)
 add_library(gg::gg ALIAS gg_lib)
@@ -114,8 +123,7 @@ target_compile_definitions(gg_lib PUBLIC GIT_EXPERIMENTAL_SHA256)
 if(BUILD_SHARED_LIBS)
   target_compile_definitions(gg_lib PUBLIC GG_SHARED PRIVATE GG_BUILDING_LIBRARY)
 endif()
-target_compile_options(gg_lib PRIVATE -Wall -Wextra -Wpedantic -Werror
-                                      -Wno-missing-field-initializers)
+target_compile_options(gg_lib PRIVATE ${GG_WARNING_OPTIONS})
 
 add_library(
   gg_cli_lib STATIC
@@ -126,12 +134,12 @@ add_library(
 )
 target_include_directories(gg_cli_lib PUBLIC src)
 target_link_libraries(gg_cli_lib PUBLIC gg_lib PRIVATE CLI11::CLI11)
-target_compile_options(gg_cli_lib PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(gg_cli_lib PRIVATE ${GG_WARNING_OPTIONS})
 
 add_executable(gg_cli src/main.cpp $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/icon.rc>)
-set_target_properties(gg_cli PROPERTIES OUTPUT_NAME gg)
+set_target_properties(gg_cli PROPERTIES OUTPUT_NAME gg ARCHIVE_OUTPUT_NAME gg_cli)
 target_link_libraries(gg_cli PRIVATE gg_cli_lib)
-target_compile_options(gg_cli PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(gg_cli PRIVATE ${GG_WARNING_OPTIONS})
 
 install(
   TARGETS gg_lib gg_cli
@@ -203,12 +211,12 @@ if(GG_BUILD_TESTS)
   )
   target_include_directories(gg_tests PRIVATE src)
   target_link_libraries(gg_tests PRIVATE gg_cli_lib GTest::gtest_main)
-  target_compile_options(gg_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(gg_tests PRIVATE ${GG_WARNING_OPTIONS})
 
   add_executable(gg_capi_test tests/capi_test.c)
   set_target_properties(gg_capi_test PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
   target_link_libraries(gg_capi_test PRIVATE gg_lib)
-  target_compile_options(gg_capi_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(gg_capi_test PRIVATE ${GG_WARNING_OPTIONS})
 
   include(GoogleTest)
   set(GG_TEST_CONFIG_HOME "${CMAKE_CURRENT_BINARY_DIR}/test-config")
