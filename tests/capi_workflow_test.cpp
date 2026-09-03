@@ -35,6 +35,8 @@ TEST_F(RepositoryTest, ListsExistingGitWorktreesBeforeTheyAreManaged) {
   EXPECT_TRUE(existing->has_working_copy);
   EXPECT_FALSE(existing->stale);
   EXPECT_FALSE(existing->managed);
+  EXPECT_FALSE(existing->current);
+  EXPECT_FALSE(existing->primary);
   const git_oid head = ref("HEAD");
   EXPECT_NE(git_oid_equal(&existing->working_copy, &head), 0);
 
@@ -151,6 +153,8 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   EXPECT_TRUE(workspaces.items[0].has_working_copy);
   EXPECT_FALSE(workspaces.items[0].stale);
   EXPECT_TRUE(workspaces.items[0].managed);
+  EXPECT_TRUE(workspaces.items[0].current);
+  EXPECT_TRUE(workspaces.items[0].primary);
   gg_workspace_array_dispose(&workspaces);
 
   write("tracked.txt", "changed\n");
@@ -441,6 +445,148 @@ TEST_F(RepositoryTest, SnapshotPreservesSparseCheckoutEntries) {
   }
   EXPECT_TRUE(added);
   EXPECT_TRUE(deleted);
+  gg_status_dispose(&status);
+  gg_repository_free(repository);
+}
+
+struct LineEndingSnapshotCase {
+  const char* name;
+  const char* auto_crlf;
+  const char* attributes;
+  std::string_view worktree_base;
+  bool base_changes;
+  std::string_view stored_base;
+  std::string_view worktree_edit;
+  std::string_view stored_edit;
+};
+
+class LineEndingSnapshotTest
+    : public RepositoryTest,
+      public testing::WithParamInterface<LineEndingSnapshotCase> {};
+
+TEST_P(LineEndingSnapshotTest, PathSnapshotUsesGitCleanLineEndingRules) {
+  const LineEndingSnapshotCase& test = GetParam();
+  git_config* config = nullptr;
+  ASSERT_EQ(git_repository_config(&config, repository_.get()), GIT_OK);
+  ASSERT_EQ(git_config_set_string(config, "core.autocrlf", test.auto_crlf),
+            GIT_OK);
+  git_config_free(config);
+  if (test.attributes[0] != '\0') {
+    write(".gitattributes", test.attributes);
+    ASSERT_EQ(invoke_git({"add", ".gitattributes"}).code, 0);
+    ASSERT_EQ(invoke_git({"commit", "-m", "add attributes"}).code, 0);
+  }
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  write("tracked.txt", test.worktree_base);
+  const char* path = "tracked.txt";
+  int changed = 0;
+  ASSERT_EQ(gg_repository_snapshot_working_copy_paths(
+                &changed, repository, {&path, 1}, nullptr),
+            GIT_OK);
+  EXPECT_EQ(changed != 0, test.base_changes);
+  const std::string base_revision = test.base_changes
+                                        ? "refs/gg/workspaces/default"
+                                        : "HEAD";
+  Result stored = invoke_git({"show", base_revision + ":tracked.txt"});
+  ASSERT_EQ(stored.code, 0) << stored.error;
+  EXPECT_EQ(stored.output, test.stored_base);
+
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  ASSERT_EQ(gg_repository_status(&status, repository, &options), GIT_OK);
+  EXPECT_EQ(status.entry_count, test.base_changes ? 1U : 0U);
+  gg_status_dispose(&status);
+
+  write("tracked.txt", test.worktree_edit);
+  ASSERT_EQ(gg_repository_snapshot_working_copy_paths(
+                &changed, repository, {&path, 1}, nullptr),
+            GIT_OK);
+  EXPECT_TRUE(changed);
+  stored = invoke_git({"show", "refs/gg/workspaces/default:tracked.txt"});
+  ASSERT_EQ(stored.code, 0) << stored.error;
+  EXPECT_EQ(stored.output, test.stored_edit);
+  gg_repository_free(repository);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    LineEndings, LineEndingSnapshotTest,
+    testing::Values(
+        LineEndingSnapshotCase{"AutoCrlfFalse", "false", "", "base\r\n",
+                               true, "base\r\n", "edited\r\n",
+                               "edited\r\n"},
+        LineEndingSnapshotCase{"AutoCrlfInput", "input", "", "base\r\n",
+                               false, "base\n", "edited\r\n", "edited\n"},
+        LineEndingSnapshotCase{"AutoCrlfTrue", "true", "", "base\r\n",
+                               false, "base\n", "edited\r\n", "edited\n"},
+        LineEndingSnapshotCase{"TextOverridesAutoCrlfFalse", "false",
+                               "tracked.txt text\n", "base\r\n", false,
+                               "base\n", "edited\r\n", "edited\n"},
+        LineEndingSnapshotCase{"AutoTextNormalizesText", "false",
+                               "tracked.txt text=auto\n", "base\r\n", false,
+                               "base\n", "edited\r\n", "edited\n"},
+        LineEndingSnapshotCase{
+            "AutoTextPreservesBinary", "true", "tracked.txt text=auto\n",
+            std::string_view{"base\0\r\n", 7}, true,
+            std::string_view{"base\0\r\n", 7},
+            std::string_view{"edited\0\r\n", 9},
+            std::string_view{"edited\0\r\n", 9}},
+        LineEndingSnapshotCase{"EolLf", "false",
+                               "tracked.txt text eol=lf\n", "base\r\n",
+                               false, "base\n", "edited\r\n", "edited\n"},
+        LineEndingSnapshotCase{"EolCrlf", "false",
+                               "tracked.txt text eol=crlf\n", "base\r\n",
+                               false, "base\n", "edited\r\n", "edited\n"},
+        LineEndingSnapshotCase{"EolImpliesText", "false",
+                               "tracked.txt eol=lf\n", "base\r\n", false,
+                               "base\n", "edited\r\n", "edited\n"},
+        LineEndingSnapshotCase{"NonTextOverridesAutoCrlfTrue", "true",
+                               "tracked.txt -text\n", "base\r\n", true,
+                               "base\r\n", "edited\r\n", "edited\r\n"},
+        LineEndingSnapshotCase{"BinaryOverridesAutoCrlfInput", "input",
+                               "tracked.txt binary\n", "base\r\n", true,
+                               "base\r\n", "edited\r\n", "edited\r\n"},
+        LineEndingSnapshotCase{"AutoCrlfTreatsBareCarriageReturnAsBinary",
+                               "input", "", "base\r\n", false, "base\n",
+                               "edited\rbare\r\n", "edited\rbare\r\n"},
+        LineEndingSnapshotCase{"ForcedTextNormalizesOnlyCrlf", "false",
+                               "tracked.txt text\n", "base\r\n", false,
+                               "base\n", "edited\rbare\r\n",
+                               "edited\rbare\n"}),
+    [](const testing::TestParamInfo<LineEndingSnapshotCase>& info) {
+      return info.param.name;
+    });
+
+TEST_F(RepositoryTest, PathSnapshotHonorsDisabledFileModeTracking) {
+  git_config* config = nullptr;
+  ASSERT_EQ(git_repository_config(&config, repository_.get()), GIT_OK);
+  ASSERT_EQ(git_config_set_bool(config, "core.filemode", false), GIT_OK);
+  git_config_free(config);
+  repository_.reset();
+  git_repository* reopened = nullptr;
+  ASSERT_EQ(git_repository_open(&reopened, path_.string().c_str()), GIT_OK);
+  repository_.reset(reopened);
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+
+  std::filesystem::permissions(
+      path_ / "tracked.txt", std::filesystem::perms::owner_exec,
+      std::filesystem::perm_options::add);
+  const char* path = "tracked.txt";
+  int changed = 0;
+  ASSERT_EQ(gg_repository_snapshot_working_copy_paths(
+                &changed, repository, {&path, 1}, nullptr),
+            GIT_OK);
+  EXPECT_FALSE(changed);
+
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  ASSERT_EQ(gg_repository_status(&status, repository, &options), GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
   gg_status_dispose(&status);
   gg_repository_free(repository);
 }

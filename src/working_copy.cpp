@@ -233,6 +233,40 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
     git_error_clear();
     check(git_index_read_tree(index.get(), baseline.get()), "prepare snapshot");
   }
+  const FileTrackingState tracking = read_tracking(*this);
+  if (prepared && !sparse && tracking.tracked.empty() &&
+      tracking.untracked.empty() && tracking.forced.empty()) {
+    // The cached index already represents the working-copy change, so use it
+    // as the stat cache to discover the small set of paths which actually
+    // need snapshotting. add_all performs another full worktree traversal and
+    // is especially expensive on Windows. Explicit tracking selectors retain
+    // the full path because they can change membership even when file contents
+    // are unchanged, and inclusive selectors may select ignored files.
+    git_diff_options options = GIT_DIFF_OPTIONS_INIT;
+    options.flags = GIT_DIFF_INCLUDE_UNTRACKED |
+                    GIT_DIFF_RECURSE_UNTRACKED_DIRS;
+    git_diff* raw_diff = nullptr;
+    check(git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
+                                    &options),
+          "discover working-tree changes");
+    DiffPtr diff(raw_diff);
+    std::vector<std::string> changed_paths;
+    for (std::size_t position = 0; position < git_diff_num_deltas(diff.get());
+         ++position) {
+      const git_diff_delta* delta = git_diff_get_delta(diff.get(), position);
+      if (delta == nullptr) continue;  // GG_COV_EXCL_LINE
+      if (delta->old_file.path != nullptr)
+        changed_paths.emplace_back(delta->old_file.path);
+      if (delta->new_file.path != nullptr &&
+          (delta->old_file.path == nullptr ||
+           std::string_view(delta->new_file.path) != delta->old_file.path))
+        changed_paths.emplace_back(delta->new_file.path);
+    }
+    if (changed_paths.empty()) return baseline_tree;
+    diff.reset();
+    index.reset();
+    return snapshot_tree(baseline_tree, changed_paths);
+  }
   if (sparse) {
     // add_all treats absent skip-worktree entries as deletions and rebuilding
     // them makes a sparse checkout scale with the full repository. The status
@@ -272,7 +306,6 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
                             nullptr, nullptr),
           "snapshot working tree");
   }
-  const FileTrackingState tracking = read_tracking(*this);
   const std::uint64_t maximum_size = maximum_new_file_size(*this);
   if (maximum_size != 0) {
     std::vector<std::string> oversized;
@@ -335,6 +368,10 @@ git_oid Repository::snapshot_tree(
   const FileTrackingState tracking = read_tracking(*this);
   const std::uint64_t maximum_size = maximum_new_file_size(*this);
   const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo_.get()), "open index");
+  IndexPtr index(raw_index);
+  check(git_index_read(index.get(), true), "refresh index");
   std::vector<git_tree_update> updates;
   updates.reserve(paths.size());
   for (const std::string& path : paths) {
@@ -360,8 +397,9 @@ git_oid Repository::snapshot_tree(
 
     std::error_code error;
     const auto status = std::filesystem::symlink_status(workdir / path, error);
-    const bool missing = !error &&
-                         status.type() == std::filesystem::file_type::not_found;
+    const bool missing =
+        (!error && status.type() == std::filesystem::file_type::not_found) ||
+        error == std::errc::no_such_file_or_directory;
     if (error == std::errc::no_such_file_or_directory) {
       error.clear();
     } else if (error) {
@@ -374,6 +412,8 @@ git_oid Repository::snapshot_tree(
             {GIT_TREE_UPDATE_REMOVE, {}, GIT_FILEMODE_UNREADABLE,
              path.c_str()});
       }
+      git_index_remove_bypath(index.get(), path.c_str());
+      git_index_remove_directory(index.get(), path.c_str(), 0);
       continue;
     }
     if (status.type() == std::filesystem::file_type::directory) {
@@ -399,32 +439,36 @@ git_oid Repository::snapshot_tree(
       }
     }
 
-    git_oid blob{};
-    git_filemode_t mode = GIT_FILEMODE_BLOB;
-    if (status.type() == std::filesystem::file_type::symlink) {
-      const std::filesystem::path target =
-          std::filesystem::read_symlink(workdir / path, error);
-      if (error) {
-        throw GitError("read incremental symbolic link: " + error.message());
-      }
-      const std::string value = target.string();
-      check(git_blob_create_from_buffer(&blob, repo_.get(), value.data(),
-                                        value.size()),
-            "snapshot incremental symbolic link");
-      mode = GIT_FILEMODE_LINK;
-    } else if (status.type() == std::filesystem::file_type::regular) {
-      check(git_blob_create_fromworkdir(&blob, repo_.get(), path.c_str()),
-            "snapshot incremental file");
-      const auto executable = std::filesystem::perms::owner_exec |
-                              std::filesystem::perms::group_exec |
-                              std::filesystem::perms::others_exec;
-      if ((status.permissions() & executable) != std::filesystem::perms::none) {
-        mode = GIT_FILEMODE_BLOB_EXECUTABLE;
-      }
-    } else {
+    if (status.type() != std::filesystem::file_type::symlink &&
+        status.type() != std::filesystem::file_type::regular) {
       return snapshot_tree(baseline_tree);
     }
-    updates.push_back({GIT_TREE_UPDATE_UPSERT, blob, mode, path.c_str()});
+
+    // add_bypath applies Git's clean filters and platform configuration, but
+    // it also uses the current index entry to decide whether a mode change is
+    // significant. Seed it from the snapshot baseline so this path-scoped
+    // update has the same semantics as a full working-copy snapshot.
+    if (in_baseline) {
+      git_index_entry seeded{};
+      seeded.id = *git_tree_entry_id(baseline_entry.get());
+      seeded.mode = git_tree_entry_filemode(baseline_entry.get());
+      seeded.path = path.c_str();
+      check(git_index_add(index.get(), &seeded),
+            "prepare incremental working-copy file");
+    } else {
+      git_index_remove_bypath(index.get(), path.c_str());
+    }
+    check(git_index_add_bypath(index.get(), path.c_str()),
+          "snapshot incremental working-copy file");
+    const git_index_entry* indexed =
+        git_index_get_bypath(index.get(), path.c_str(), 0);
+    if (indexed == nullptr) {  // GG_COV_EXCL_BRANCH
+      throw GitError(
+          "snapshot incremental working-copy file: index entry missing");
+    }
+    updates.push_back(
+        {GIT_TREE_UPDATE_UPSERT, indexed->id,
+         static_cast<git_filemode_t>(indexed->mode), path.c_str()});
   }
   if (updates.empty()) return baseline_tree;
 
@@ -433,19 +477,6 @@ git_oid Repository::snapshot_tree(
                                 updates.size(), updates.data()),
         "write incremental working-copy tree");
 
-  git_index* raw_index = nullptr;
-  check(git_repository_index(&raw_index, repo_.get()), "open index");
-  IndexPtr index(raw_index);
-  check(git_index_read(index.get(), true), "refresh index");
-  for (const git_tree_update& update : updates) {
-    if (update.action == GIT_TREE_UPDATE_REMOVE) {
-      git_index_remove_bypath(index.get(), update.path);
-      git_index_remove_directory(index.get(), update.path, 0);
-    } else {
-      check(git_index_add_bypath(index.get(), update.path),
-            "cache incremental working-copy file");
-    }
-  }
   check(git_index_write(index.get()), "cache incremental working-copy snapshot");
   preserve_conflicts(baseline_tree, result);
   return result;

@@ -149,6 +149,17 @@ struct CommitAlias {
   std::int64_t last_used{};
 };
 
+struct WorkspaceRecord {
+  std::string name;
+  std::filesystem::path root;
+  std::string worktree_id;
+  std::optional<git_oid> working_copy;
+  bool managed{false};
+  bool stale{false};
+  bool current{false};
+  bool primary{false};
+};
+
 class Repository {
  public:
   explicit Repository(const std::filesystem::path& path,
@@ -189,6 +200,12 @@ class Repository {
   std::string rewrite_ref_name() const;
 
   std::map<std::string, std::filesystem::path> workspace_roots() const;
+
+  std::vector<WorkspaceRecord> workspaces() const;
+
+  void forget_workspace_root(std::string_view name) const;
+  void remember_workspace_root(std::string_view name,
+                               const std::filesystem::path& root) const;
 
   void set_workspace_name(std::string_view name) const;
 

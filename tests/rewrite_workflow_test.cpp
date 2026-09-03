@@ -331,7 +331,8 @@ TEST_F(RepositoryTest, SquashesIntoPushedHistoryWithoutAWorkspace) {
 
   const Result squashed = invoke({"squash", "-r", "side"});
   ASSERT_EQ(squashed.code, 0) << squashed.error;
-  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("(unmanaged)"),
+            std::string::npos);
   detail::Repository repo(path_);
   const git_oid rewritten = repo.resolve("side");
   const git_oid main = repo.resolve("main");

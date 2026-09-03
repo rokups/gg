@@ -510,6 +510,8 @@ typedef struct gg_workspace {
   int stale;
   int has_working_copy;
   int managed;
+  int current;
+  int primary;
 } gg_workspace;
 
 typedef struct gg_workspace_array {
@@ -696,6 +698,13 @@ GG_EXTERN int gg_repository_workspace_forget(
     gg_mutation_result *out, gg_repository *repository,
     gg_string_array names, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_workspace_rename(
+    gg_mutation_result *out, gg_repository *repository,
+    const char *name, const gg_operation_options *operation);
+GG_EXTERN int gg_repository_workspace_rename_named(
+    gg_mutation_result *out, gg_repository *repository,
+    const char *old_name, const char *new_name,
+    const gg_operation_options *operation);
+GG_EXTERN int gg_repository_workspace_remove(
     gg_mutation_result *out, gg_repository *repository,
     const char *name, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_sparse_reset(

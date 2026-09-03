@@ -731,7 +731,52 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
         if (!arguments.empty()) {
           throw UserError("visible_heads() takes no arguments");
         }
-        return evaluate("heads(all())");
+        // The heads of an ancestry closure are necessarily among its seed
+        // reference targets. Comparing those tips avoids materializing every
+        // commit reachable from local refs, which is prohibitively expensive
+        // in large repositories with long-lived tags.
+        Selection tips;
+        for (const auto& [reference, oid] : rewrite_refs()) {
+          const bool visible = starts_with(reference, "refs/heads/")
+              || starts_with(reference, kAliasPrefix)
+              || starts_with(reference, kWorkspacePrefix)
+              || starts_with(reference, kVisibleHeadPrefix);
+          // Tags name history but do not keep an unnamed line of work visible;
+          // callers select tagged history explicitly. Excluding them also
+          // prevents repositories with hundreds of release tags from turning
+          // this head query into hundreds of deep reachability checks.
+          if (!visible) continue;
+          git_object* raw_object = nullptr;
+          check(git_object_lookup(&raw_object, repo_.get(), &oid,
+                                  GIT_OBJECT_ANY),
+                "load visible-head reference");
+          ObjectPtr object(raw_object);
+          git_object* raw_commit = nullptr;
+          check(git_object_peel(&raw_commit, object.get(), GIT_OBJECT_COMMIT),
+                "peel visible-head reference");
+          ObjectPtr commit(raw_commit);
+          append_unique(tips, {*git_object_id(commit.get())});
+        }
+        Selection heads;
+        for (const git_oid& candidate : tips) {
+          const bool ancestor_of_head = std::ranges::any_of(
+              heads, [&](const git_oid& head) {
+                if (candidate == head) return true;
+                const int descendant =
+                    git_graph_descendant_of(repo_.get(), &head, &candidate);
+                check(descendant, "compare visible heads");
+                return descendant != 0;
+              });
+          if (ancestor_of_head) continue;
+          std::erase_if(heads, [&](const git_oid& head) {
+            const int descendant =
+                git_graph_descendant_of(repo_.get(), &candidate, &head);
+            check(descendant, "compare visible heads");
+            return descendant != 0;
+          });
+          heads.push_back(candidate);
+        }
+        return heads;
       }
       if (function == "parents" || function == "children") {
         Selection result;

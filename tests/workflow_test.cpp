@@ -23,7 +23,8 @@ TEST_F(RepositoryTest, CreatesChangesWithoutEditingThem) {
   const Result detached = invoke({"new", "--no-edit", "-m", "detached", "main"});
   ASSERT_EQ(detached.code, 0) << detached.error;
   EXPECT_NE(detached.output.find("Created change: "), std::string::npos);
-  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("(unmanaged)"),
+            std::string::npos);
 
   ASSERT_EQ(invoke({"new", "-m", "current", "main"}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
@@ -137,8 +138,10 @@ TEST_F(RepositoryTest, PreservesTheOriginalIdThroughAnInitialInsertion) {
 TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   const std::string root = std::filesystem::weakly_canonical(path_).string();
   EXPECT_EQ(invoke({"workspace", "root"}).output, root + "\n");
-  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
-  EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).code, 2);
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("default: "),
+            std::string::npos);
+  EXPECT_EQ(invoke({"workspace", "root", "--name", "default"}).output,
+            root + "\n");
   const auto unused = path_.parent_path() /
                       (path_.filename().string() + "-unused-workspace");
   std::ofstream(unused) << "occupied\n";
@@ -302,7 +305,8 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
             "No such workspace: missing\nNothing changed.\n");
   ASSERT_EQ(invoke({"workspace", "forget"}).code, 0);
   EXPECT_FALSE(has_ref("refs/gg/workspaces/topic"));
-  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("(unmanaged)"),
+            std::string::npos);
 
   ASSERT_EQ(invoke({"undo"}).code, 0);
   EXPECT_TRUE(has_ref("refs/gg/workspaces/topic"));
@@ -313,6 +317,71 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
   set_ref("refs/gg/workspaces/duplicate",
           ref("refs/gg/workspaces/topic"));
   EXPECT_NE(invoke({"workspace", "list"}).output.find("duplicate: "),
+            std::string::npos);
+}
+
+TEST_F(RepositoryTest, RenamesAndSafelyRemovesAnotherWorkspace) {
+  const std::filesystem::path linked = path_.string() + "-remove-workspace";
+  std::filesystem::remove_all(linked);
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "side"})
+                .code,
+            0);
+
+  std::ofstream(linked / "tracked.txt") << "preserved\n";
+  ASSERT_EQ(invoke({"workspace", "rename", "renamed", "--workspace", "side"})
+                .code,
+            0);
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/side"));
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/renamed"));
+
+  const Result removed = invoke({"workspace", "remove", "renamed"});
+  ASSERT_EQ(removed.code, 0) << removed.error;
+  EXPECT_FALSE(std::filesystem::exists(linked));
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/renamed"));
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/gg/workspaces/renamed"));
+}
+
+TEST_F(RepositoryTest, RefusesUnsafeAndLiveWorkspaceRemoval) {
+  const std::filesystem::path linked = path_.string() + "-unsafe-workspace";
+  std::filesystem::remove_all(linked);
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "unsafe"})
+                .code,
+            0);
+  std::ofstream(linked / "untracked.txt") << "keep\n";
+  ASSERT_EQ(run({"-R", linked.string(), "file", "untrack", "untracked.txt"}).code,
+            0);
+  EXPECT_EQ(invoke({"workspace", "remove", "unsafe"}).code, 2);
+  EXPECT_TRUE(std::filesystem::exists(linked / "untracked.txt"));
+  EXPECT_EQ(invoke({"workspace", "remove", "default"}).code, 2);
+  EXPECT_EQ(run({"-R", linked.string(), "workspace", "remove", "unsafe"}).code,
+            2);
+  ASSERT_EQ(invoke_git({"worktree", "remove", "--force", linked.string()}).code,
+            0);
+}
+
+TEST_F(RepositoryTest, RemovesStaleWorkspaceAdministrationAndMetadata) {
+  const std::filesystem::path linked = path_.string() + "-stale-workspace";
+  std::filesystem::remove_all(linked);
+  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "stale"})
+                .code,
+            0);
+  std::filesystem::remove_all(linked);
+  const Result listed = invoke({"workspace", "list"});
+  EXPECT_NE(listed.output.find(linked.string()), std::string::npos);
+  EXPECT_NE(listed.output.find("(stale)"), std::string::npos);
+  ASSERT_EQ(invoke({"workspace", "rename", "renamed-stale", "--workspace",
+                    "stale"})
+                .code,
+            0);
+  ASSERT_EQ(invoke({"workspace", "remove", "renamed-stale"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/stale"));
+  EXPECT_FALSE(has_ref("refs/gg/workspaces/renamed-stale"));
+  EXPECT_EQ(invoke_git({"worktree", "list", "--porcelain"})
+                .output.find(linked.string()),
             std::string::npos);
 }
 

@@ -97,7 +97,8 @@ TEST_F(RepositoryTest, EditsExternalCommitMetadataWithoutAWorkspace) {
   const git_oid resolved_old = repo.resolve(detail::oid_string(old, 8));
   const git_oid current = repo.resolve("main");
   EXPECT_NE(git_oid_equal(&resolved_old, &current), 0);
-  EXPECT_EQ(invoke({"workspace", "list"}).output, "No workspaces.\n");
+  EXPECT_NE(invoke({"workspace", "list"}).output.find("(unmanaged)"),
+            std::string::npos);
 }
 
 TEST_F(RepositoryTest, ValidatesMetadataValues) {

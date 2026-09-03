@@ -866,9 +866,18 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   WorkspaceCommand workspace_rename_value;
   workspace_rename_value.action = WorkspaceAction::rename;
   auto* workspace_rename =
-      workspace->add_subcommand("rename", "Rename the current workspace");
+      workspace->add_subcommand("rename", "Rename a workspace");
   workspace_rename
       ->add_option("name", workspace_rename_value.name, "New workspace name")
+      ->required();
+  workspace_rename->add_option("--workspace", workspace_rename_value.workspace,
+                               "Existing workspace name");
+  WorkspaceCommand workspace_remove_value;
+  workspace_remove_value.action = WorkspaceAction::remove;
+  auto* workspace_remove =
+      workspace->add_subcommand("remove", "Safely remove a linked workspace");
+  workspace_remove
+      ->add_option("name", workspace_remove_value.name, "Workspace name")
       ->required();
   auto* sparse = app.add_subcommand("sparse", "Manage sparse working copies");
   sparse->require_subcommand(1);
@@ -1253,7 +1262,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "  remove the Git worktree separately with `git worktree remove`.");
   workspace_rename->footer(
       "DETAILS:\n"
-      "  Renames the current workspace and its gg ref without moving the filesystem directory.");
+      "  Renames the current workspace by default, or --workspace NAME, without moving it.");
+  workspace_remove->footer(
+      "DETAILS:\n"
+      "  Snapshots recoverable changes, removes a linked worktree, and cleans stale gg state.\n"
+      "  Filesystem deletion is not undoable; run from another checkout to remove the current one.");
 
   sparse->footer(
       "DETAILS:\n"
@@ -1478,6 +1491,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(workspace_forget_value)};
   } else if (workspace_rename->parsed()) {
     command = RepositoryCommand{std::move(workspace_rename_value)};
+  } else if (workspace_remove->parsed()) {
+    command = RepositoryCommand{std::move(workspace_remove_value)};
   } else if (sparse_list->parsed()) {
     command = RepositoryCommand{sparse_list_value};
   } else if (sparse_reset->parsed()) {

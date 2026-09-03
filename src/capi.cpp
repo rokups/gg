@@ -1067,75 +1067,24 @@ int gg_repository_workspaces(gg_workspace_array* out,
     }
     *out = {};
     Repository& repo = repository->implementation;
-    const auto roots = repo.workspace_roots();
-    struct WorkspaceInfo {
-      std::filesystem::path root;
-      std::optional<git_oid> working_copy;
-      bool managed = false;
-      bool stale = false;
-    };
-    std::map<std::string, WorkspaceInfo> workspaces;
-    for (const auto& [name, root] : roots) {
-      std::error_code error;
-      const bool available = std::filesystem::is_directory(root, error);
-      workspaces.emplace(name, WorkspaceInfo{root, std::nullopt, false,
-                                             error || !available});
-    }
-    for (const auto& [reference, oid] : repo.data_refs()) {
-      if (reference.starts_with(gg::detail::kWorkspacePrefix)) {
-        const std::string name =
-            reference.substr(gg::detail::kWorkspacePrefix.size());
-        WorkspaceInfo& workspace = workspaces[name];
-        workspace.working_copy = oid;
-        workspace.managed = true;
-        if (workspace.root.empty()) workspace.stale = true;
-      }
-    }
-
-    // Plain Git worktrees are useful navigation targets even before gg has
-    // created an isolated working change in them. Resolve their local HEAD
-    // without mutating or adopting the worktree.
-    for (auto& [name, workspace] : workspaces) {
-      (void)name;
-      if (workspace.managed || workspace.stale) continue;
-      git_repository* raw_worktree = nullptr;
-      if (git_repository_open(&raw_worktree,
-                              workspace.root.string().c_str()) != GIT_OK) {
-        git_error_clear();
-        workspace.stale = true;
-        continue;
-      }
-      gg::detail::RepositoryPtr worktree(raw_worktree);
-      git_object* raw_head = nullptr;
-      const int result = git_revparse_single(&raw_head, worktree.get(), "HEAD");
-      if (result == GIT_OK) {
-        gg::detail::ObjectPtr head(raw_head);
-        git_object* raw_commit = nullptr;
-        if (git_object_peel(&raw_commit, head.get(), GIT_OBJECT_COMMIT) ==
-            GIT_OK) {
-          gg::detail::ObjectPtr commit(raw_commit);
-          workspace.working_copy = *git_object_id(commit.get());
-        } else {
-          git_error_clear();
-        }
-      } else {
-        git_error_clear();
-      }
-    }
+    const std::vector<gg::detail::WorkspaceRecord> workspaces =
+        repo.workspaces();
 
     out->items = static_cast<gg_workspace*>(
         std::calloc(workspaces.size(), sizeof(gg_workspace)));
     if (out->items == nullptr) throw std::bad_alloc();
-    for (const auto& [name, workspace] : workspaces) {
+    for (const auto& workspace : workspaces) {
       gg_workspace& item = out->items[out->count];
-      item.name = duplicate(name);
+      item.name = duplicate(workspace.name);
       if (workspace.working_copy.has_value()) {
         item.working_copy = *workspace.working_copy;
         item.has_working_copy = 1;
       }
       item.stale = workspace.stale;
       item.managed = workspace.managed;
-      item.root = duplicate(item.stale ? "" : workspace.root.string());
+      item.current = workspace.current;
+      item.primary = workspace.primary;
+      item.root = duplicate(workspace.root.string());
       ++out->count;
     }
     return GIT_OK;
@@ -1515,6 +1464,38 @@ int gg_repository_workspace_rename(gg_mutation_result* out,
     if (name == nullptr) throw gg::detail::UserError("workspace name must not be null");
     WorkspaceCommand command;
     command.action = WorkspaceAction::rename;
+    command.name = name;
+    command_workspace(repo, command, output);
+  });
+}
+
+int gg_repository_workspace_rename_named(
+    gg_mutation_result* out, gg_repository* repository, const char* old_name,
+    const char* new_name, const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "workspace_rename",
+                [&](Repository& repo, std::ostream& output) {
+    if (old_name == nullptr || new_name == nullptr) {
+      throw gg::detail::UserError("workspace names must not be null");
+    }
+    WorkspaceCommand command;
+    command.action = WorkspaceAction::rename;
+    command.workspace = old_name;
+    command.name = new_name;
+    command_workspace(repo, command, output);
+  });
+}
+
+int gg_repository_workspace_remove(gg_mutation_result* out,
+                                   gg_repository* repository,
+                                   const char* name,
+                                   const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "workspace_remove",
+                [&](Repository& repo, std::ostream& output) {
+    if (name == nullptr) {
+      throw gg::detail::UserError("workspace name must not be null");
+    }
+    WorkspaceCommand command;
+    command.action = WorkspaceAction::remove;
     command.name = name;
     command_workspace(repo, command, output);
   });

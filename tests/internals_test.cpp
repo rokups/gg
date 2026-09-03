@@ -320,6 +320,16 @@ TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   EXPECT_THROW(repo.resolve_set("(')"), detail::UserError);
 }
 
+TEST_F(RepositoryTest, VisibleHeadsExcludeTagOnlyHistory) {
+  const git_oid tagged_only = raw_commit("tagged-only");
+  set_ref("refs/tags/detached-release", tagged_only);
+  detail::Repository repo(path_);
+  const std::vector<git_oid> heads = repo.resolve_set("visible_heads()");
+  ASSERT_EQ(heads.size(), 1u);
+  const git_oid main = repo.resolve("main");
+  EXPECT_NE(git_oid_equal(&heads.front(), &main), 0);
+}
+
 TEST_F(RepositoryTest, EvaluatesFilesetExpressions) {
   EXPECT_TRUE(detail::fileset_matches("nested", "nested/file.txt"));
   EXPECT_TRUE(detail::fileset_matches("glob:*.txt", "nested/file.txt"));

@@ -136,7 +136,9 @@ change's parent so existing tooling continues to see normal working-tree
 changes.
 
 Use `gg workspace add` when creating another checkout so the Git worktree and
-its gg working change are created together:
+its gg working change are created together. Worktrees created with native Git
+are also listed as unmanaged navigation targets and are adopted automatically
+when opened by gg:
 
 ```sh
 gg workspace add ../project-review --name review -r main
@@ -150,8 +152,13 @@ isolate undo and conflict-recovery state, and prevent a rewrite in one checkout
 from silently moving another. A worktree created directly with `git worktree
 add` is adopted automatically on its first revision-facing gg command.
 
-Removing a checkout remains a Git operation: run `git worktree remove PATH`,
-then `gg workspace forget NAME` if its gg workspace ref is still listed.
+`gg workspace rename NEW --workspace OLD` renames any managed workspace.
+`gg workspace remove NAME` snapshots recoverable tracked changes before safely
+removing a linked worktree, or prunes stale worktree administration and gg
+metadata. It refuses files that cannot be preserved, locked worktrees, the
+primary checkout, and the checkout running the command. Operation history keeps
+the final working change for recovery, but deletion of the directory itself is
+not undoable.
 
 ## Command reference
 
@@ -210,7 +217,8 @@ gg util check-push-conflicts
 gg workspace add DESTINATION [--name NAME] [-r REVISION] [-m DESCRIPTION] [--sparse-patterns copy|full|empty]
 gg workspace forget [NAME...]
 gg workspace list
-gg workspace rename NAME
+gg workspace rename NEW [--workspace OLD]
+gg workspace remove NAME
 gg workspace root [--name default]
 gg next [--edit] [OFFSET]
 gg prev [--edit] [OFFSET]

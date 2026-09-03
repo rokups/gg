@@ -945,7 +945,11 @@ void command_workspace(Repository& repo,
   const auto workspace_reference = repo.workspace_ref();
   const auto workspace = repo.workspace();
   const std::string workspace_name = repo.workspace_name();
-  const auto roots = repo.workspace_roots();
+  const auto workspace_records = repo.workspaces();
+  std::map<std::string, std::filesystem::path> roots;
+  for (const WorkspaceRecord& record : workspace_records) {
+    if (!record.root.empty()) roots.emplace(record.name, record.root);
+  }
   if (options.action == WorkspaceAction::root) {
     if (options.name.empty()) {
       output << root.string() << '\n';
@@ -954,7 +958,7 @@ void command_workspace(Repository& repo,
     const std::string reference =
         std::string(kWorkspacePrefix) + options.name;
     const auto found = roots.find(options.name);
-    if (!repo.ref_target(reference).has_value() || found == roots.end()) {
+    if (found == roots.end()) {
       throw UserError("workspace not found: " + options.name);
     }
     output << std::filesystem::weakly_canonical(found->second).string() << '\n';
@@ -973,7 +977,10 @@ void command_workspace(Repository& repo,
         throw UserError("invalid workspace name: " + options.name);
       }
     }
-    if (!options.name.empty() && roots.contains(options.name)) {
+    if (!options.name.empty() &&
+        std::ranges::any_of(workspace_records, [&](const WorkspaceRecord& item) {
+          return item.name == options.name;
+        })) {
       throw UserError("workspace already exists: " + options.name);
     }
     if (!options.name.empty() &&
@@ -1034,10 +1041,14 @@ void command_workspace(Repository& repo,
     return;
   }
   if (options.action == WorkspaceAction::rename) {
-    if (!workspace_reference.has_value()) {
-      throw UserError("this command requires a working-copy change");
+    const std::string old_name =
+        options.workspace.empty() ? workspace_name : options.workspace;
+    const auto selected = std::ranges::find(workspace_records, old_name,
+                                            &WorkspaceRecord::name);
+    if (selected == workspace_records.end() || !selected->managed) {
+      throw UserError("workspace not found: " + old_name);
     }
-    if (options.name == workspace_name) {
+    if (options.name == old_name) {
       output << "Nothing changed.\n";
       return;
     }
@@ -1046,21 +1057,139 @@ void command_workspace(Repository& repo,
     check(git_reference_name_is_valid(&valid, renamed.c_str()),
           "validate workspace name");
     if (valid == 0) throw UserError("invalid workspace name: " + options.name);
-    if (roots.contains(options.name) || repo.ref_target(renamed).has_value()) {
+    if (std::ranges::any_of(workspace_records, [&](const WorkspaceRecord& item) {
+          return item.name == options.name;
+        }) ||
+        repo.ref_target(renamed).has_value()) {
       throw UserError("workspace already exists: " + options.name);
     }
-    (void)repo.ensure_operation();
-    repo.set_workspace_name(options.name);
+    Repository* controller = &repo;
+    std::unique_ptr<Repository> target;
+    if (!selected->current &&
+        (!selected->stale || !selected->worktree_id.empty())) {
+      const std::filesystem::path target_path = selected->stale
+          ? std::filesystem::path(git_repository_commondir(repo.raw())) /
+                "worktrees" / selected->worktree_id
+          : selected->root;
+      target = std::make_unique<Repository>(target_path, selected->stale);
+      controller = target.get();
+    }
+    const std::string old_reference = std::string(kWorkspacePrefix) + old_name;
+    const auto old_oid = repo.ref_target(old_reference);
+    if (!old_oid.has_value()) throw UserError("workspace not found: " + old_name);
+    if (target != nullptr || !selected->stale) {
+      (void)controller->ensure_operation();
+      controller->set_workspace_name(options.name);
+    }
     try {
-      repo.record({{renamed, *workspace}}, {*workspace_reference},
-                  repo.head_state(),
-                  "gg workspace rename " + workspace_name + " " +
-                      options.name,
-                  true);
+      controller->record({{renamed, *old_oid}}, {old_reference},
+                         controller->head_state(),
+                         "gg workspace rename " + old_name + " " +
+                             options.name,
+                         true);
     } catch (...) {
-      repo.set_workspace_name(workspace_name);
+      if (target != nullptr || !selected->stale) {
+        controller->set_workspace_name(old_name);
+      }
       throw;
     }
+    if (selected->stale) {
+      repo.remember_workspace_root(options.name, selected->root);
+    }
+    repo.forget_workspace_root(old_name);
+    return;
+  }
+  if (options.action == WorkspaceAction::remove) {
+    const auto selected = std::ranges::find(workspace_records, options.name,
+                                            &WorkspaceRecord::name);
+    if (selected == workspace_records.end()) {
+      throw UserError("workspace not found: " + options.name);
+    }
+    if (selected->primary) {
+      throw UserError("cannot remove the primary workspace");
+    }
+    if (selected->current) {
+      throw UserError("cannot remove the current workspace; run this command from another checkout");
+    }
+
+    WorkspaceLock lock(repo.raw());
+    if (!selected->worktree_id.empty()) {
+      git_worktree* raw_worktree = nullptr;
+      check(git_worktree_lookup(&raw_worktree, repo.raw(),
+                                selected->worktree_id.c_str()),
+            "read linked worktree");
+      WorktreePtr worktree(raw_worktree);
+      git_buf reason = GIT_BUF_INIT;
+      const int locked = git_worktree_is_locked(&reason, worktree.get());
+      git_buf_dispose(&reason);
+      check(locked, "inspect worktree lock");
+      if (locked != 0) throw UserError("workspace is locked: " + options.name);
+
+      if (selected->stale) {
+        check(git_worktree_prune(worktree.get(), nullptr),
+              "prune stale workspace");
+      } else {
+        if (selected->managed) {
+          Repository target(selected->root);
+          target.sync_workspace();
+          const auto target_workspace = target.workspace();
+          if (target_workspace.has_value() &&
+              target.commit_has_conflicts(*target_workspace)) {
+            throw UserError("workspace contains conflicts: " + options.name);
+          }
+
+          git_status_options status_options = GIT_STATUS_OPTIONS_INIT;
+          status_options.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+          status_options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
+                                 GIT_STATUS_OPT_INCLUDE_IGNORED |
+                                 GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS |
+                                 GIT_STATUS_OPT_RECURSE_IGNORED_DIRS;
+          git_status_list* raw_status = nullptr;
+          check(git_status_list_new(&raw_status, target.raw(), &status_options),
+                "verify workspace snapshot");
+          GitPtr<git_status_list, git_status_list_free> statuses(raw_status);
+          constexpr unsigned int unsafe =
+              GIT_STATUS_WT_NEW | GIT_STATUS_WT_MODIFIED |
+              GIT_STATUS_WT_DELETED | GIT_STATUS_WT_TYPECHANGE |
+              GIT_STATUS_WT_RENAMED | GIT_STATUS_IGNORED |
+              GIT_STATUS_CONFLICTED;
+          for (std::size_t index = 0;
+               index < git_status_list_entrycount(statuses.get()); ++index) {
+            const git_status_entry* entry =
+                git_status_byindex(statuses.get(), index);
+            if (entry != nullptr && (entry->status & unsafe) != 0) {
+              throw UserError(
+                  "workspace has files that would be lost: " + options.name);
+            }
+          }
+        }
+
+        UtilExecCommand remove{"git", {"--git-dir=" +
+                                           std::string(git_repository_commondir(repo.raw())),
+                                       "worktree", "remove"}};
+        if (selected->managed) remove.arguments.push_back("--force");
+        remove.arguments.push_back(selected->root.string());
+        if (command_util_exec(remove, git_repository_workdir(repo.raw())) != 0) {
+          throw UserError("cannot remove workspace: " + options.name);
+        }
+      }
+    }
+
+    std::set<std::string> deletes;
+    const std::string workspace_ref =
+        std::string(kWorkspacePrefix) + options.name;
+    if (repo.ref_target(workspace_ref).has_value()) deletes.insert(workspace_ref);
+    if (!selected->worktree_id.empty()) {
+      for (const std::string& reference : {
+               "refs/gg/operations/worktrees/" + selected->worktree_id,
+               "refs/gg/rewrites/" + selected->worktree_id}) {
+        if (repo.ref_target(reference).has_value()) deletes.insert(reference);
+      }
+    }
+    repo.record({}, std::move(deletes), repo.head_state(),
+                "gg workspace remove " + options.name, true);
+    repo.forget_workspace_root(options.name);
+    output << "Removed workspace " << options.name << ".\n";
     return;
   }
   if (options.action == WorkspaceAction::forget) {
@@ -1087,24 +1216,23 @@ void command_workspace(Repository& repo,
                 "gg workspace forget", true);
     return;
   }
-  std::vector<std::pair<std::string, git_oid>> workspaces;
-  for (const auto& [name, oid] : repo.data_refs()) {
-    if (starts_with(name, kWorkspacePrefix)) {
-      workspaces.emplace_back(name.substr(kWorkspacePrefix.size()), oid);
-    }
-  }
-  if (workspaces.empty()) {
+  if (workspace_records.empty()) {
     output << "No workspaces.\n";
     return;
   }
-  for (const auto& [name, oid] : workspaces) {
-    const auto found = roots.find(name);
-    const std::string workspace_root =
-        found == roots.end()
-            ? "(stale)"
-            : std::filesystem::weakly_canonical(found->second).string();
-    output << name << ": "
-           << repo.short_commit_id(oid).value << ' ' << workspace_root << '\n';
+  for (const WorkspaceRecord& record : workspace_records) {
+    const std::string id = record.working_copy.has_value()
+                               ? repo.short_commit_id(*record.working_copy).value
+                               : "(unborn)";
+    const std::string workspace_root = record.root.empty()
+        ? "(stale)"
+        : std::filesystem::weakly_canonical(record.root).string();
+    output << record.name << ": " << id << ' ' << workspace_root;
+    if (record.current) output << " (current)";
+    if (record.primary) output << " (primary)";
+    if (!record.managed) output << " (unmanaged)";
+    if (record.stale) output << " (stale)";
+    output << '\n';
   }
 }
 
