@@ -160,6 +160,33 @@ primary checkout, and the checkout running the command. Operation history keeps
 the final working change for recovery, but deletion of the directory itself is
 not undoable.
 
+`gg workspace move NAME DESTINATION` moves a linked checkout using Git while
+preserving its name, working change, and independent history. Run it from
+another checkout and choose a destination that does not exist. Git's restrictions
+on moving locked worktrees, primary checkouts, and worktrees containing submodules
+also apply. Local files move with the checkout.
+
+`gg workspace lock NAME [--reason TEXT]` and `gg workspace unlock NAME` use native
+Git locks. A lock protects even a missing checkout, such as one on an unmounted
+drive, from removal and pruning. `gg workspace list` includes lock reasons.
+
+After moving a linked checkout outside gg, run `gg workspace repair NEW_PATH`
+from a checkout Git can still open. After moving the primary checkout, run
+`gg workspace repair` there to reconnect its linked worktrees. These commands
+also support linked checkouts attached to a bare common repository.
+
+`gg workspace prune [--dry-run] [--expire DATE]` runs native Git pruning, then
+cleans gg refs and per-worktree state for worktrees no longer registered. The
+expiration defaults to `now`; native locks are respected. Repair moved checkouts
+before pruning. Move, lock, unlock, and repair are physical Git lifecycle changes
+that `gg undo` does not reverse. Undo can restore pruned gg refs, but cannot
+recreate Git worktree administration.
+
+The C API exposes the same lifecycle through `gg_repository_workspace_*`.
+`gg_repository_workspace_lock_info` returns an owned lock reason; release it
+with `gg_workspace_lock_info_dispose`. The existing workspace array ABI is
+unchanged.
+
 ## Command reference
 
 The following is the full implemented command surface shown by `gg --help`.
@@ -219,6 +246,11 @@ gg workspace forget [NAME...]
 gg workspace list
 gg workspace rename NEW [--workspace OLD]
 gg workspace remove NAME
+gg workspace move NAME DESTINATION
+gg workspace lock NAME [--reason TEXT]
+gg workspace unlock NAME
+gg workspace prune [--dry-run] [--expire DATE]
+gg workspace repair [PATH...]
 gg workspace root [--name default]
 gg next [--edit] [OFFSET]
 gg prev [--edit] [OFFSET]

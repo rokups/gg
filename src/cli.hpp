@@ -267,7 +267,9 @@ struct UtilSnapshotCommand {};
 struct UtilInstallGitHooksCommand {};
 struct UtilCheckPushConflictsCommand {};
 
-enum class WorkspaceAction { list, root, add, forget, rename, remove };
+enum class WorkspaceAction {
+  list, root, add, forget, rename, remove, move, lock, unlock, prune, repair
+};
 struct WorkspaceCommand {
   WorkspaceAction action{WorkspaceAction::list};
   std::string name;
@@ -277,6 +279,10 @@ struct WorkspaceCommand {
   std::string sparse_patterns{"copy"};
   std::vector<std::string> names;
   std::string workspace;
+  std::string reason;
+  std::string expire{"now"};
+  bool dry_run{false};
+  std::vector<std::string> paths;
 };
 
 enum class SparseAction { list, reset };

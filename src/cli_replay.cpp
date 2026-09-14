@@ -478,9 +478,31 @@ std::vector<std::string> repository_replay_arguments(
               result.emplace_back("forget");
               result.insert(result.end(), value.names.begin(),
                             value.names.end());
-            } else {
+            } else if (value.action == WorkspaceAction::rename) {
               result.emplace_back("rename");
+              add_option(result, "--workspace", value.workspace);
               result.push_back(value.name);
+            } else if (value.action == WorkspaceAction::remove) {
+              result.emplace_back("remove");
+              result.push_back(value.name);
+            } else if (value.action == WorkspaceAction::move) {
+              result.emplace_back("move");
+              result.push_back(value.name);
+              result.push_back(value.destination);
+            } else if (value.action == WorkspaceAction::lock) {
+              result.emplace_back("lock");
+              add_option(result, "--reason", value.reason);
+              result.push_back(value.name);
+            } else if (value.action == WorkspaceAction::unlock) {
+              result.emplace_back("unlock");
+              result.push_back(value.name);
+            } else if (value.action == WorkspaceAction::prune) {
+              result.emplace_back("prune");
+              add_option(result, "--expire", value.expire);
+              if (value.dry_run) result.emplace_back("--dry-run");
+            } else if (value.action == WorkspaceAction::repair) {
+              result.emplace_back("repair");
+              result.insert(result.end(), value.paths.begin(), value.paths.end());
             }
             return result;
           },

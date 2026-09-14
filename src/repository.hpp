@@ -158,6 +158,8 @@ struct WorkspaceRecord {
   bool stale{false};
   bool current{false};
   bool primary{false};
+  bool locked{false};
+  std::string lock_reason;
 };
 
 class Repository {

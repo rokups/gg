@@ -519,6 +519,12 @@ typedef struct gg_workspace_array {
   size_t count;
 } gg_workspace_array;
 
+/* Native lock state. Dispose owned reason with gg_workspace_lock_info_dispose. */
+typedef struct gg_workspace_lock_info {
+  int locked;
+  char *reason;
+} gg_workspace_lock_info;
+
 GG_EXTERN int gg_operation_options_init(gg_operation_options *options,
                                         unsigned int version);
 GG_EXTERN int gg_new_options_init(gg_new_options *options,
@@ -616,6 +622,8 @@ GG_EXTERN int gg_repository_operation_capabilities(
     gg_operation_capabilities *out, gg_repository *repository);
 GG_EXTERN int gg_repository_workspaces(gg_workspace_array *out,
                                        gg_repository *repository);
+GG_EXTERN int gg_repository_workspace_lock_info(
+    gg_workspace_lock_info *out, gg_repository *repository, const char *name);
 GG_EXTERN int gg_repository_sparse_patterns(gg_owned_string_array *out,
                                             gg_repository *repository);
 
@@ -720,6 +728,31 @@ GG_EXTERN int gg_repository_workspace_rename_named(
 GG_EXTERN int gg_repository_workspace_remove(
     gg_mutation_result *out, gg_repository *repository,
     const char *name, const gg_operation_options *operation);
+/* Physical Git lifecycle changes are not restored by operation undo.
+ * Move requires another linked worktree and a destination that does not exist.
+ * Lock/unlock also accept missing, registered worktrees. Names are required.
+ * A NULL reason creates a lock without a reason. */
+GG_EXTERN int gg_repository_workspace_move(
+    gg_mutation_result *out, gg_repository *repository, const char *name,
+    const char *destination, const gg_operation_options *operation);
+GG_EXTERN int gg_repository_workspace_lock(
+    gg_mutation_result *out, gg_repository *repository, const char *name,
+    const char *reason, const gg_operation_options *operation);
+GG_EXTERN int gg_repository_workspace_unlock(
+    gg_mutation_result *out, gg_repository *repository, const char *name,
+    const gg_operation_options *operation);
+/* Prune missing native worktrees (respecting locks), their gg workspace refs,
+ * and orphaned per-worktree history. NULL expire means "now"; dry_run writes
+ * nothing. Undo can restore gg refs, but cannot restore native administration.
+ * Repair moved worktrees before pruning. */
+GG_EXTERN int gg_repository_workspace_prune(
+    gg_mutation_result *out, gg_repository *repository, const char *expire,
+    int dry_run, const gg_operation_options *operation);
+/* An empty paths array repairs registered links; otherwise paths identify
+ * the new locations of worktrees moved outside gg. */
+GG_EXTERN int gg_repository_workspace_repair(
+    gg_mutation_result *out, gg_repository *repository, gg_string_array paths,
+    const gg_operation_options *operation);
 GG_EXTERN int gg_repository_sparse_reset(
     gg_mutation_result *out, gg_repository *repository,
     const gg_operation_options *operation);
@@ -765,6 +798,7 @@ GG_EXTERN void gg_revision_array_dispose(gg_revision_array *array);
 GG_EXTERN void gg_status_dispose(gg_status *status);
 GG_EXTERN void gg_operation_array_dispose(gg_operation_array *array);
 GG_EXTERN void gg_workspace_array_dispose(gg_workspace_array *array);
+GG_EXTERN void gg_workspace_lock_info_dispose(gg_workspace_lock_info *info);
 GG_EXTERN void gg_string_dispose(char *value);
 
 #ifdef __cplusplus

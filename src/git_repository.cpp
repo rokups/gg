@@ -430,8 +430,10 @@ std::vector<WorkspaceRecord> Repository::workspaces() const {
   check(git_repository_open(&raw_main, common.string().c_str()),
         "open primary worktree");
   RepositoryPtr main(raw_main);
-  add_worktree(stored_workspace_name(common).value_or("default"),
-               git_repository_workdir(main.get()), {}, true);
+  if (const char* primary_root = git_repository_workdir(main.get())) {
+    add_worktree(stored_workspace_name(common).value_or("default"),
+                 primary_root, {}, true);
+  }
 
   git_strarray ids{};
   check(git_worktree_list(&ids, repo_.get()), "list linked worktrees");
@@ -442,9 +444,18 @@ std::vector<WorkspaceRecord> Repository::workspaces() const {
             "read linked worktree");
       WorktreePtr worktree(raw_worktree);
       const std::string id = ids.strings[index];
-      add_worktree(stored_workspace_name(common / "worktrees" / id)
-                       .value_or(id),
+      const std::string name =
+          stored_workspace_name(common / "worktrees" / id).value_or(id);
+      add_worktree(name,
                    git_worktree_path(worktree.get()), id, false);
+      git_buf reason = GIT_BUF_INIT;
+      const int locked = git_worktree_is_locked(&reason, worktree.get());
+      if (locked >= 0) {
+        result.at(name).locked = locked != 0;
+        if (reason.ptr != nullptr) result.at(name).lock_reason = reason.ptr;
+      }
+      git_buf_dispose(&reason);
+      check(locked, "inspect worktree lock");
     }
   } catch (...) {
     git_strarray_dispose(&ids);
@@ -471,7 +482,7 @@ std::vector<WorkspaceRecord> Repository::workspaces() const {
   // or otherwise writing gg metadata.
   for (auto& [name, record] : result) {
     (void)name;
-    if (record.managed || record.stale) continue;
+    if (record.stale) continue;
     git_repository* raw_worktree = nullptr;
     if (git_repository_open(&raw_worktree, record.root.string().c_str()) !=
         GIT_OK) {
@@ -480,6 +491,16 @@ std::vector<WorkspaceRecord> Repository::workspaces() const {
       continue;
     }
     RepositoryPtr worktree(raw_worktree);
+    const std::filesystem::path expected = record.primary
+        ? common : common / "worktrees" / record.worktree_id;
+    std::error_code error;
+    if (!std::filesystem::equivalent(
+            expected, git_repository_path(worktree.get()), error) || error) {
+      record.stale = true;
+      record.current = false;
+      continue;
+    }
+    if (record.managed) continue;
     git_object* raw_head = nullptr;
     if (git_revparse_single(&raw_head, worktree.get(), "HEAD") == GIT_OK) {
       ObjectPtr head(raw_head);
@@ -517,27 +538,40 @@ void Repository::remember_workspace_root(
 void Repository::set_workspace_name(std::string_view name) const {
   validate_workspace_name(name);
   const std::string previous = workspace_name_;
-  const std::filesystem::path path =
-      workspace_name_path(git_repository_path(repo_.get()));
-  std::filesystem::create_directories(path.parent_path());
-  const std::filesystem::path temporary = path.string() + ".tmp";
-  {
-    std::ofstream output(temporary, std::ios::trunc);
-    if (!output || !(output << name << '\n')) {  // GG_COV_EXCL_BRANCH
-      throw UserError("cannot write workspace name");
-    }
-  }
-  std::error_code error;
-  std::filesystem::rename(temporary, path, error);
-  if (error) {
-    std::filesystem::remove(temporary);
-    throw UserError("cannot replace workspace name: " + error.message());
-  }
-  workspace_name_ = name;
   const std::filesystem::path common = git_repository_commondir(repo_.get());
+  const auto previous_root = stored_workspace_root(common, name);
+  // Write the fallible shared metadata before changing this worktree's name.
+  // A failed rename must not make the checkout adopt a different working ref.
   write_workspace_root(common, name,
                        std::filesystem::weakly_canonical(
                            git_repository_workdir(repo_.get())));
+  const std::filesystem::path path =
+      workspace_name_path(git_repository_path(repo_.get()));
+  const std::filesystem::path temporary = path.string() + ".tmp";
+  try {
+    std::filesystem::create_directories(path.parent_path());
+    {
+      std::ofstream output(temporary, std::ios::trunc);
+      if (!output || !(output << name << '\n')) {  // GG_COV_EXCL_BRANCH
+        throw UserError("cannot write workspace name");
+      }
+    }
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+      throw UserError("cannot replace workspace name: " + error.message());
+    }
+  } catch (...) {
+    std::error_code error;
+    std::filesystem::remove(temporary, error);
+    if (previous_root.has_value()) {
+      write_workspace_root(common, name, *previous_root);
+    } else {
+      forget_workspace_root(name);
+    }
+    throw;
+  }
+  workspace_name_ = name;
   if (previous != name) forget_workspace_root(previous);
 }
 

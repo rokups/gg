@@ -828,7 +828,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "install-git-hooks", "Install Git hooks that protect gg state");
   auto* util_check_push_conflicts = util->add_subcommand(
       "check-push-conflicts", "Check pre-push input for conflicted history");
-  auto* workspace = app.add_subcommand("workspace", "Inspect workspaces");
+  auto* workspace = app.add_subcommand("workspace", "Manage Git worktree workspaces");
   workspace->require_subcommand(1);
   WorkspaceCommand workspace_list_value;
   auto* workspace_list =
@@ -879,6 +879,41 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   workspace_remove
       ->add_option("name", workspace_remove_value.name, "Workspace name")
       ->required();
+  WorkspaceCommand workspace_move_value;
+  workspace_move_value.action = WorkspaceAction::move;
+  auto* workspace_move =
+      workspace->add_subcommand("move", "Move a linked workspace");
+  workspace_move->add_option("name", workspace_move_value.name, "Workspace name")
+      ->required();
+  workspace_move->add_option("destination", workspace_move_value.destination,
+                              "New workspace path (must not exist)")->required();
+  WorkspaceCommand workspace_lock_value;
+  workspace_lock_value.action = WorkspaceAction::lock;
+  auto* workspace_lock =
+      workspace->add_subcommand("lock", "Protect a linked workspace from removal");
+  workspace_lock->add_option("name", workspace_lock_value.name, "Workspace name")
+      ->required();
+  workspace_lock->add_option("--reason", workspace_lock_value.reason, "Lock reason");
+  WorkspaceCommand workspace_unlock_value;
+  workspace_unlock_value.action = WorkspaceAction::unlock;
+  auto* workspace_unlock =
+      workspace->add_subcommand("unlock", "Unlock a linked workspace");
+  workspace_unlock->add_option("name", workspace_unlock_value.name, "Workspace name")
+      ->required();
+  WorkspaceCommand workspace_prune_value;
+  workspace_prune_value.action = WorkspaceAction::prune;
+  auto* workspace_prune =
+      workspace->add_subcommand("prune", "Prune missing worktrees and stale gg state");
+  workspace_prune->add_option("--expire", workspace_prune_value.expire,
+                              "Prune entries older than this Git date (default: now)");
+  workspace_prune->add_flag("--dry-run", workspace_prune_value.dry_run,
+                            "Report native pruning without changing state");
+  WorkspaceCommand workspace_repair_value;
+  workspace_repair_value.action = WorkspaceAction::repair;
+  auto* workspace_repair =
+      workspace->add_subcommand("repair", "Repair worktree links after an external move");
+  workspace_repair->add_option("paths", workspace_repair_value.paths,
+                               "New paths of worktrees moved outside gg");
   auto* sparse = app.add_subcommand("sparse", "Manage sparse working copies");
   sparse->require_subcommand(1);
   SparseCommand sparse_list_value;
@@ -1267,6 +1302,30 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "DETAILS:\n"
       "  Snapshots recoverable changes, removes a linked worktree, and cleans stale gg state.\n"
       "  Filesystem deletion is not undoable; run from another checkout to remove the current one.");
+  workspace_move->footer(
+      "DETAILS:\n"
+      "  Runs native Git worktree move, preserving the workspace name, refs and operation history.\n"
+      "  Run from another checkout. Primary, locked and stale worktrees cannot be moved.\n"
+      "  The destination must not exist. Filesystem moves are not restored by gg undo.");
+  workspace_lock->footer(
+      "DETAILS:\n"
+      "  Sets a native Git worktree lock, optionally with --reason. Locks protect missing\n"
+      "  or live linked worktrees from move, remove and prune. Locks are not restored by gg undo.");
+  workspace_unlock->footer(
+      "DETAILS:\n"
+      "  Removes a native Git worktree lock, including for a missing checkout.\n"
+      "  Locks are not restored by gg undo.");
+  workspace_prune->footer(
+      "DETAILS:\n"
+      "  Runs git worktree prune --expire now by default; --expire accepts a Git date.\n"
+      "  Respects native locks and removes gg state only for worktrees no longer registered.\n"
+      "  --dry-run leaves Git and gg state unchanged. Repair moved worktrees before pruning.\n"
+      "  Undo can recover gg refs, but cannot recreate pruned Git administration.");
+  workspace_repair->footer(
+      "DETAILS:\n"
+      "  Runs native Git worktree repair and refreshes remembered gg roots. Pass the new paths\n"
+      "  of externally moved linked checkouts, or no paths after moving the primary checkout.\n"
+      "  Run from a checkout Git can still open. Repairs are not restored by gg undo.");
 
   sparse->footer(
       "DETAILS:\n"
@@ -1493,6 +1552,16 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(workspace_rename_value)};
   } else if (workspace_remove->parsed()) {
     command = RepositoryCommand{std::move(workspace_remove_value)};
+  } else if (workspace_move->parsed()) {
+    command = RepositoryCommand{std::move(workspace_move_value)};
+  } else if (workspace_lock->parsed()) {
+    command = RepositoryCommand{std::move(workspace_lock_value)};
+  } else if (workspace_unlock->parsed()) {
+    command = RepositoryCommand{std::move(workspace_unlock_value)};
+  } else if (workspace_prune->parsed()) {
+    command = RepositoryCommand{std::move(workspace_prune_value)};
+  } else if (workspace_repair->parsed()) {
+    command = RepositoryCommand{std::move(workspace_repair_value)};
   } else if (sparse_list->parsed()) {
     command = RepositoryCommand{sparse_list_value};
   } else if (sparse_reset->parsed()) {

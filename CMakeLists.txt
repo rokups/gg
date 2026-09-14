@@ -197,6 +197,7 @@ if(GG_BUILD_TESTS)
     tests/commit_test.cpp
     tests/metaedit_test.cpp
     tests/workflow_test.cpp
+    tests/workspace_test.cpp
     tests/git_compatibility_test.cpp
     tests/diff_test.cpp
     tests/file_test.cpp

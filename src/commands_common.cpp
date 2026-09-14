@@ -125,6 +125,23 @@ class WorkspaceLock {
 #endif
 };
 
+void prevalidate_workspace_deletions(Repository& repo,
+                                    const std::set<std::string>& references) {
+  // Catch existing ref locks and unwritable ref paths before Git removes any
+  // files or administration. Native Git clients do not take gg's lifecycle
+  // lock, so the final reference transaction still performs its own checks.
+  git_transaction* raw_transaction = nullptr;
+  check(git_transaction_new(&raw_transaction, repo.raw()),
+        "prepare workspace reference cleanup");
+  TransactionPtr transaction(raw_transaction);
+  std::set<std::string> names = references;
+  names.insert(repo.operation_ref_name());
+  for (const auto& name : names) {
+    check(git_transaction_lock_ref(transaction.get(), name.c_str()),
+          "prepare workspace reference cleanup");
+  }
+}
+
 bool wildcard_matches(std::string_view pattern, std::string_view value) {
 #ifdef _WIN32
   const std::string owned_pattern(pattern);
@@ -1023,6 +1040,47 @@ void command_workspace(Repository& repo,
                        std::ostream& output) {
   const std::filesystem::path root =
       std::filesystem::weakly_canonical(git_repository_workdir(repo.raw()));
+  const auto native_worktree = [&](std::vector<std::string> arguments) {
+    arguments.insert(arguments.begin(), "worktree");
+    arguments.insert(arguments.begin(),
+                     "--git-dir=" + std::string(git_repository_commondir(repo.raw())));
+    arguments.insert(arguments.begin(), root.string());
+    arguments.insert(arguments.begin(), "-C");
+    return command_util_exec(UtilExecCommand{"git", std::move(arguments)}, root);
+  };
+  // Repair must run before enumeration: broken native links can prevent libgit2
+  // from looking up the worktrees that Git is about to repair.
+  if (options.action == WorkspaceAction::repair) {
+    WorkspaceLock lock(repo.raw());
+    std::vector<std::string> arguments{"repair"};
+    for (const std::string& path : options.paths) {
+      const auto destination = std::filesystem::absolute(path).lexically_normal();
+      if (path.empty() || !std::filesystem::is_directory(destination) ||
+          !std::filesystem::exists(destination / ".git")) {
+        throw UserError("not a worktree path: " + path);
+      }
+      arguments.push_back(destination.string());
+    }
+    if (native_worktree(std::move(arguments)) != 0) {
+      throw UserError("cannot repair workspaces; check the supplied worktree paths");
+    }
+    for (const WorkspaceRecord& record : repo.workspaces()) {
+      // Remembered roots also belong to native worktrees moved by gg.
+      // Refreshing this cache does not adopt them or create working refs.
+      if (!record.stale) {
+        repo.remember_workspace_root(record.name, record.root);
+      }
+    }
+    output << "Repaired workspace links.\n";
+    return;
+  }
+  // Serialize gg lifecycle commands and enumerate only after taking the lock.
+  std::unique_ptr<WorkspaceLock> lifecycle_lock;
+  if (options.action != WorkspaceAction::list &&
+      options.action != WorkspaceAction::root) {
+    lifecycle_lock = std::make_unique<WorkspaceLock>(repo.raw());
+  }
+  if (options.action == WorkspaceAction::add) repo.sync_for_command();
   const auto workspace_reference = repo.workspace_ref();
   const auto workspace = repo.workspace();
   const std::string workspace_name = repo.workspace_name();
@@ -1046,8 +1104,7 @@ void command_workspace(Repository& repo,
     return;
   }
   if (options.action == WorkspaceAction::add) {
-    WorkspaceLock lock(repo.raw());
-    repo.sync_for_command();
+    if (options.destination.empty()) throw UserError("workspace destination must not be empty");
     if (!options.name.empty()) {
       int valid = 0;
       const std::string reference =
@@ -1076,8 +1133,18 @@ void command_workspace(Repository& repo,
                                  : options.revision;
     const git_oid parent = repo.resolve(revision);
     const CommitPtr parent_commit = repo.commit(parent);
-    const git_oid working = repo.create_commit(
-        *git_commit_tree_id(parent_commit.get()), {parent}, options.message);
+    // Two identical empty changes created in one second must still have
+    // independent identities; rewriting one must not target another workspace.
+    SignaturePtr actor = repo.signature();
+    git_oid working{};
+    do {
+      working = repo.create_commit(*git_commit_tree_id(parent_commit.get()),
+                                   {parent}, options.message, actor.get(), actor.get());
+      ++actor->when.time;
+    } while (std::ranges::any_of(workspace_records, [&](const WorkspaceRecord& record) {
+      return record.managed && record.working_copy.has_value() &&
+             git_oid_equal(&*record.working_copy, &working) != 0;
+    }));
     UtilExecCommand command{
         "git",
         {"--git-dir=" + std::string(git_repository_commondir(repo.raw())),
@@ -1086,39 +1153,167 @@ void command_workspace(Repository& repo,
     if (command_util_exec(command, git_repository_path(repo.raw())) != 0) {
       throw UserError("cannot create linked workspace");
     }
-    Repository linked(destination);
-    if (!options.name.empty()) linked.set_workspace_name(options.name);
-    if (options.sparse_patterns == "empty") {
-      const UtilExecCommand sparse_command{
-          "git", {"-C", destination.string(), "sparse-checkout", "set",
-                  "--no-cone", "!/*"}};
-      if (command_util_exec(sparse_command, destination) != 0) throw UserError("cannot initialize empty sparse workspace");  // GG_COV_EXCL_BRANCH
-    } else if (options.sparse_patterns == "copy") {  // GG_COV_EXCL_BRANCH
-      const std::filesystem::path current_patterns =
-          std::filesystem::path(git_repository_path(repo.raw())) / "info" /
-          "sparse-checkout";
-      if (std::filesystem::exists(current_patterns)) {
-        const UtilExecCommand initialize_sparse{
-            "git", {"-C", destination.string(), "sparse-checkout", "init",
-                    "--no-cone"}};
-        if (command_util_exec(initialize_sparse, destination) != 0) throw UserError("cannot initialize copied sparse workspace");  // GG_COV_EXCL_BRANCH
-        const std::filesystem::path linked_patterns =
-            std::filesystem::path(git_repository_path(linked.raw())) / "info" /
+    std::string created_name;
+    try {
+      Repository linked(destination);
+      created_name = linked.workspace_name();
+      if (!options.name.empty()) linked.set_workspace_name(options.name);
+      created_name = linked.workspace_name();
+      if (options.sparse_patterns == "empty") {
+        const UtilExecCommand sparse_command{
+            "git", {"-C", destination.string(), "sparse-checkout", "set",
+                    "--no-cone", "!/*"}};
+        if (command_util_exec(sparse_command, destination) != 0) throw UserError("cannot initialize empty sparse workspace");  // GG_COV_EXCL_BRANCH
+      } else if (options.sparse_patterns == "copy") {  // GG_COV_EXCL_BRANCH
+        const std::filesystem::path current_patterns =
+            std::filesystem::path(git_repository_path(repo.raw())) / "info" /
             "sparse-checkout";
-        std::filesystem::create_directories(linked_patterns.parent_path());
-        std::filesystem::copy_file(
-            current_patterns, linked_patterns,
-            std::filesystem::copy_options::overwrite_existing);
-        const UtilExecCommand apply_sparse{
-            "git", {"-C", destination.string(), "sparse-checkout", "reapply"}};
-        if (command_util_exec(apply_sparse, destination) != 0) throw UserError("cannot apply copied sparse patterns");  // GG_COV_EXCL_BRANCH
+        if (std::filesystem::exists(current_patterns)) {
+          const UtilExecCommand initialize_sparse{
+              "git", {"-C", destination.string(), "sparse-checkout", "init",
+                      "--no-cone"}};
+          if (command_util_exec(initialize_sparse, destination) != 0) throw UserError("cannot initialize copied sparse workspace");  // GG_COV_EXCL_BRANCH
+          const std::filesystem::path linked_patterns =
+              std::filesystem::path(git_repository_path(linked.raw())) / "info" /
+              "sparse-checkout";
+          std::filesystem::create_directories(linked_patterns.parent_path());
+          std::filesystem::copy_file(
+              current_patterns, linked_patterns,
+              std::filesystem::copy_options::overwrite_existing);
+          const UtilExecCommand apply_sparse{
+              "git", {"-C", destination.string(), "sparse-checkout", "reapply"}};
+          if (command_util_exec(apply_sparse, destination) != 0) throw UserError("cannot apply copied sparse patterns");  // GG_COV_EXCL_BRANCH
+        }
+      }
+      const std::string name = linked.workspace_name();
+      repo.record({{std::string(kWorkspacePrefix) + name, working}},
+                  {}, repo.head_state(), "gg workspace add " + name, true);
+    } catch (...) {
+      // Only this newly created worktree is eligible for rollback. Native Git
+      // owns its administration and refuses unexpected locks or submodules.
+      if (native_worktree({"remove", "--force", destination.string()}) != 0) {
+        throw UserError("workspace initialization failed; cannot roll back worktree at " +
+                        destination.string() + "; inspect it before removing it");
+      }
+      if (!created_name.empty()) repo.forget_workspace_root(created_name);
+      if (!options.name.empty()) repo.forget_workspace_root(options.name);
+      throw;
+    }
+    output << "Created workspace " << created_name << " at " << destination.string()
+           << ".\n";
+    return;
+  }
+  if (options.action == WorkspaceAction::move ||
+      options.action == WorkspaceAction::lock ||
+      options.action == WorkspaceAction::unlock) {
+    const auto selected = std::ranges::find(workspace_records, options.name,
+                                            &WorkspaceRecord::name);
+    if (selected == workspace_records.end()) {
+      throw UserError("workspace not found: " + options.name);
+    }
+    if (selected->primary || selected->worktree_id.empty()) {
+      throw UserError("workspace has no linked worktree: " + options.name);
+    }
+    if (options.action == WorkspaceAction::move) {
+      if (selected->current) {
+        throw UserError("cannot move the current workspace; run this command from another checkout");
+      }
+      if (selected->stale) throw UserError("workspace is stale; repair it before moving: " + options.name);
+      if (selected->locked) throw UserError("workspace is locked: " + options.name);
+      if (options.destination.empty()) throw UserError("workspace destination must not be empty");
+      const auto destination = std::filesystem::absolute(options.destination).lexically_normal();
+      if (std::filesystem::exists(destination) || std::filesystem::is_symlink(destination)) {
+        throw UserError("workspace destination already exists: " + destination.string());
+      }
+      // Pre-write the only gg metadata that changes, then restore it if Git
+      // refuses the move. Worktree IDs, names, refs and histories stay intact.
+      repo.remember_workspace_root(selected->name, destination);
+      try {
+        if (native_worktree({"move", selected->root.string(), destination.string()}) != 0) {
+          throw UserError("cannot move workspace: " + options.name);
+        }
+      } catch (...) {
+        repo.remember_workspace_root(selected->name, selected->root);
+        throw;
+      }
+      output << "Moved workspace " << options.name << " to " << destination.string() << ".\n";
+      return;
+    }
+    git_worktree* raw_worktree = nullptr;
+    check(git_worktree_lookup(&raw_worktree, repo.raw(), selected->worktree_id.c_str()),
+          "read linked worktree");
+    WorktreePtr worktree(raw_worktree);
+    if (options.action == WorkspaceAction::lock) {
+      if (selected->locked) throw UserError("workspace is already locked: " + options.name);
+      check(git_worktree_lock(worktree.get(), options.reason.empty() ? nullptr : options.reason.c_str()),
+            "lock workspace");
+      output << "Locked workspace " << options.name << ".\n";
+    } else {
+      if (!selected->locked) throw UserError("workspace is not locked: " + options.name);
+      check(git_worktree_unlock(worktree.get()), "unlock workspace");
+      output << "Unlocked workspace " << options.name << ".\n";
+    }
+    return;
+  }
+  if (options.action == WorkspaceAction::prune) {
+    if (!options.dry_run) {
+      std::set<std::string> candidates;
+      std::set<std::string> retained_ids;
+      for (const auto& record : workspace_records) {
+        if (record.stale && !record.locked) {
+          if (record.managed) candidates.insert(std::string(kWorkspacePrefix) + record.name);
+        } else if (!record.worktree_id.empty()) {
+          retained_ids.insert(record.worktree_id);
+        }
+      }
+      for (const std::string_view prefix : {"refs/gg/operations/worktrees/", "refs/gg/rewrites/"}) {
+        for (const auto& [reference, oid] : repo.refs_with_prefix(prefix)) {
+          (void)oid;
+          if (!retained_ids.contains(reference.substr(prefix.size()))) candidates.insert(reference);
+        }
+      }
+      prevalidate_workspace_deletions(repo, candidates);
+    }
+    std::vector<std::string> arguments{"prune", "--verbose", "--expire=" + options.expire};
+    if (options.dry_run) arguments.emplace_back("--dry-run");
+    if (native_worktree(std::move(arguments)) != 0) {
+      throw UserError("cannot prune workspaces");
+    }
+    if (options.dry_run) {
+      output << "Dry run; workspace state unchanged.\n";
+      return;
+    }
+    const auto remaining = repo.workspaces();
+    std::set<std::string> live_ids;
+    for (const auto& record : remaining) {
+      if (!record.worktree_id.empty()) live_ids.insert(record.worktree_id);
+    }
+    std::set<std::string> deletes;
+    std::set<std::string> forgotten;
+    for (const auto& record : workspace_records) {
+      if (!record.worktree_id.empty() && !live_ids.contains(record.worktree_id)) {
+        forgotten.insert(record.name);
       }
     }
-    const std::string name = linked.workspace_name();
-    repo.record({{std::string(kWorkspacePrefix) + name, working}},
-                {}, repo.head_state(), "gg workspace add " + name, true);
-    output << "Created workspace " << name << " at " << destination.string()
-           << ".\n";
+    for (const auto& record : remaining) {
+      if (record.stale && record.worktree_id.empty() && record.managed) {
+        deletes.insert(std::string(kWorkspacePrefix) + record.name);
+        forgotten.insert(record.name);
+      }
+    }
+    for (const std::string_view prefix : {"refs/gg/operations/worktrees/", "refs/gg/rewrites/"}) {
+      for (const auto& [reference, oid] : repo.refs_with_prefix(prefix)) {
+        (void)oid;
+        if (!live_ids.contains(reference.substr(prefix.size()))) {
+          deletes.insert(reference);
+        }
+      }
+    }
+    if (!deletes.empty()) {
+      repo.record({}, std::move(deletes), repo.head_state(), "gg workspace prune", true);
+    }
+    for (const auto& name : forgotten) repo.forget_workspace_root(name);
+    output << "Pruned missing workspaces.\n";
     return;
   }
   if (options.action == WorkspaceAction::rename) {
@@ -1193,7 +1388,18 @@ void command_workspace(Repository& repo,
       throw UserError("cannot remove the current workspace; run this command from another checkout");
     }
 
-    WorkspaceLock lock(repo.raw());
+    std::set<std::string> deletes;
+    const std::string workspace_ref = std::string(kWorkspacePrefix) + options.name;
+    if (repo.ref_target(workspace_ref).has_value()) deletes.insert(workspace_ref);
+    if (!selected->worktree_id.empty()) {
+      for (const std::string& reference : {
+               "refs/gg/operations/worktrees/" + selected->worktree_id,
+               "refs/gg/rewrites/" + selected->worktree_id}) {
+        deletes.insert(reference);
+      }
+    }
+    prevalidate_workspace_deletions(repo, deletes);
+
     if (!selected->worktree_id.empty()) {
       git_worktree* raw_worktree = nullptr;
       check(git_worktree_lookup(&raw_worktree, repo.raw(),
@@ -1207,12 +1413,14 @@ void command_workspace(Repository& repo,
       if (locked != 0) throw UserError("workspace is locked: " + options.name);
 
       if (selected->stale) {
+        (void)repo.ensure_operation();
         check(git_worktree_prune(worktree.get(), nullptr),
               "prune stale workspace");
       } else {
         if (selected->managed) {
           Repository target(selected->root);
           target.sync_workspace();
+          repo.invalidate_ref_cache();
           const auto target_workspace = target.workspace();
           if (target_workspace.has_value() &&
               target.commit_has_conflicts(*target_workspace)) {
@@ -1245,6 +1453,8 @@ void command_workspace(Repository& repo,
           }
         }
 
+        prevalidate_workspace_deletions(repo, deletes);
+        (void)repo.ensure_operation();
         UtilExecCommand remove{"git", {"--git-dir=" +
                                            std::string(git_repository_commondir(repo.raw())),
                                        "worktree", "remove"}};
@@ -1256,17 +1466,6 @@ void command_workspace(Repository& repo,
       }
     }
 
-    std::set<std::string> deletes;
-    const std::string workspace_ref =
-        std::string(kWorkspacePrefix) + options.name;
-    if (repo.ref_target(workspace_ref).has_value()) deletes.insert(workspace_ref);
-    if (!selected->worktree_id.empty()) {
-      for (const std::string& reference : {
-               "refs/gg/operations/worktrees/" + selected->worktree_id,
-               "refs/gg/rewrites/" + selected->worktree_id}) {
-        if (repo.ref_target(reference).has_value()) deletes.insert(reference);
-      }
-    }
     repo.record({}, std::move(deletes), repo.head_state(),
                 "gg workspace remove " + options.name, true);
     repo.forget_workspace_root(options.name);
@@ -1313,6 +1512,11 @@ void command_workspace(Repository& repo,
     if (record.primary) output << " (primary)";
     if (!record.managed) output << " (unmanaged)";
     if (record.stale) output << " (stale)";
+    if (record.locked) {
+      output << " (locked";
+      if (!record.lock_reason.empty()) output << ": " << record.lock_reason;
+      output << ')';
+    }
     output << '\n';
   }
 }

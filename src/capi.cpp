@@ -1091,6 +1091,23 @@ int gg_repository_workspaces(gg_workspace_array* out,
   });
 }
 
+int gg_repository_workspace_lock_info(gg_workspace_lock_info* out,
+                                      gg_repository* repository,
+                                      const char* name) {
+  return boundary([&] {
+    if (out == nullptr || repository == nullptr || name == nullptr || *name == '\0') {
+      throw gg::detail::UserError("workspace arguments must not be null or empty");
+    }
+    *out = {};
+    const auto records = repository->implementation.workspaces();
+    const auto found = std::ranges::find(records, name, &gg::detail::WorkspaceRecord::name);
+    if (found == records.end()) throw gg::detail::UserError("workspace not found: " + std::string(name));
+    out->reason = duplicate(found->lock_reason);
+    out->locked = found->locked;
+    return GIT_OK;
+  });
+}
+
 int gg_repository_sparse_patterns(gg_owned_string_array* out,
                                   gg_repository* repository) {
   return boundary([&] {
@@ -1511,6 +1528,87 @@ int gg_repository_workspace_remove(gg_mutation_result* out,
     command.name = name;
     command_workspace(repo, command, output);
   });
+}
+
+int gg_repository_workspace_move(
+    gg_mutation_result* out, gg_repository* repository, const char* name,
+    const char* destination, const gg_operation_options* operation) {
+  const int result = mutate(out, repository, operation, "workspace_move",
+      [&](Repository& repo, std::ostream& output) {
+    if (name == nullptr || destination == nullptr) {
+      throw gg::detail::UserError("workspace name and destination must not be null");
+    }
+    WorkspaceCommand command;
+    command.action = WorkspaceAction::move;
+    command.name = name;
+    command.destination = destination;
+    command_workspace(repo, command, output);
+  });
+  if (result == GIT_OK) out->changed = 1;
+  return result;
+}
+
+int gg_repository_workspace_lock(
+    gg_mutation_result* out, gg_repository* repository, const char* name,
+    const char* reason, const gg_operation_options* operation) {
+  const int result = mutate(out, repository, operation, "workspace_lock",
+      [&](Repository& repo, std::ostream& output) {
+    if (name == nullptr) throw gg::detail::UserError("workspace name must not be null");
+    WorkspaceCommand command;
+    command.action = WorkspaceAction::lock;
+    command.name = name;
+    command.reason = string(reason);
+    command_workspace(repo, command, output);
+  });
+  if (result == GIT_OK) out->changed = 1;
+  return result;
+}
+
+int gg_repository_workspace_unlock(
+    gg_mutation_result* out, gg_repository* repository, const char* name,
+    const gg_operation_options* operation) {
+  const int result = mutate(out, repository, operation, "workspace_unlock",
+      [&](Repository& repo, std::ostream& output) {
+    if (name == nullptr) throw gg::detail::UserError("workspace name must not be null");
+    WorkspaceCommand command;
+    command.action = WorkspaceAction::unlock;
+    command.name = name;
+    command_workspace(repo, command, output);
+  });
+  if (result == GIT_OK) out->changed = 1;
+  return result;
+}
+
+int gg_repository_workspace_prune(
+    gg_mutation_result* out, gg_repository* repository, const char* expire,
+    int dry_run, const gg_operation_options* operation) {
+  bool native_changed = false;
+  const int result = mutate(out, repository, operation, "workspace_prune",
+      [&](Repository& repo, std::ostream& output) {
+    WorkspaceCommand command;
+    command.action = WorkspaceAction::prune;
+    command.expire = expire == nullptr ? "now" : expire;
+    command.dry_run = dry_run != 0;
+    const auto before = repo.workspaces();
+    command_workspace(repo, command, output);
+    native_changed = before.size() != repo.workspaces().size();
+  });
+  if (result == GIT_OK && native_changed) out->changed = 1;
+  return result;
+}
+
+int gg_repository_workspace_repair(
+    gg_mutation_result* out, gg_repository* repository, gg_string_array paths,
+    const gg_operation_options* operation) {
+  const int result = mutate(out, repository, operation, "workspace_repair",
+      [&](Repository& repo, std::ostream& output) {
+    WorkspaceCommand command;
+    command.action = WorkspaceAction::repair;
+    command.paths = strings(paths);
+    command_workspace(repo, command, output);
+  });
+  if (result == GIT_OK) out->changed = 1;
+  return result;
 }
 
 int gg_repository_sparse_reset(gg_mutation_result* out,
@@ -2037,5 +2135,11 @@ void gg_workspace_array_dispose(gg_workspace_array* array) {
 }
 
 void gg_string_dispose(char* value) { std::free(value); }
+
+void gg_workspace_lock_info_dispose(gg_workspace_lock_info* info) {
+  if (info == nullptr) return;
+  std::free(info->reason);
+  *info = {};
+}
 
 }  // extern "C"
