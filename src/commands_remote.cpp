@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -416,6 +417,37 @@ void command_bookmark(Repository& repo,
                       const BookmarkCommand& options,
                       std::ostream& output) {
   repo.sync_for_command();
+  const auto record_head_change = [&](std::map<std::string, git_oid> updates,
+                                      std::set<std::string> deletes,
+                                      HeadState head,
+                                      std::string_view description) {
+    const HeadState current_head = repo.head_state();
+    if (head.symbolic && current_head.symbolic && head.value == current_head.value) {
+      const auto replacement = updates.find(head.value);
+      const auto original = repo.head_oid();
+      if (replacement != updates.end() && original.has_value() &&
+          !(replacement->second == *original)) {
+        head = {false, oid_string(*original)};
+      }
+    }
+    const git_oid previous_operation = repo.ensure_operation();
+    const auto previous_aliases = repo.data_refs();
+    repo.record(std::move(updates), std::move(deletes), head, description);
+    try {
+      repo.set_head(head);
+    } catch (const std::exception& error) {
+      const std::string original = error.what();
+      try {
+        repo.restore_operation(previous_operation, "", true, true, false,
+                             &previous_aliases);
+      } catch (const std::exception& recovery) {
+        repo.clear_checkout_recovery();
+        throw UserError(original + "; could not restore the previous operation: " +
+                        recovery.what());
+      }
+      throw;
+    }
+  };
   if (options.action == BookmarkAction::track ||
       options.action == BookmarkAction::untrack) {
     command_tracking(repo, options.names, options.remotes,
@@ -526,7 +558,12 @@ void command_bookmark(Repository& repo,
         }
       }
     }
-    repo.record({}, deletes, repo.head_state(),
+    HeadState head = repo.head_state();
+    const bool deletes_head = head.symbolic && deletes.contains(head.value);
+    if (deletes_head) {
+      head = {false, oid_string(*repo.head_oid())};
+    }
+    record_head_change({}, deletes, head,
                 options.action == BookmarkAction::erase ? "gg bookmark delete"
                                                         : "gg bookmark forget");
     output << (options.action == BookmarkAction::erase ? "Deleted " : "Forgot ")
@@ -534,6 +571,9 @@ void command_bookmark(Repository& repo,
     return;
   }
   if (options.action == BookmarkAction::rename) {
+    if (options.names.size() != 2) {
+      throw UserError("bookmark rename requires two names");
+    }
     if (options.names[0] == options.names[1]) {
       throw UserError("bookmark names must differ");
     }
@@ -553,7 +593,10 @@ void command_bookmark(Repository& repo,
         repo.ref_target(new_reference).has_value()) {
       throw UserError("bookmark already exists: " + options.names[1]);
     }
-    repo.record({{new_reference, *target}}, {old_reference}, repo.head_state(),
+    HeadState head = repo.head_state();
+    const bool renames_head = head.symbolic && head.value == old_reference;
+    if (renames_head) head.value = new_reference;
+    record_head_change({{new_reference, *target}}, {old_reference}, head,
                 "gg bookmark rename");
     output << "Renamed " << options.names[0] << " to " << options.names[1]
            << ".\n";
@@ -616,7 +659,7 @@ void command_bookmark(Repository& repo,
       updates.emplace("refs/heads/" + name, target);
     }
     const bool advancing = options.action == BookmarkAction::advance;
-    repo.record(std::move(updates), {}, repo.head_state(),
+    record_head_change(std::move(updates), {}, repo.head_state(),
                 advancing ? "gg bookmark advance" : "gg bookmark move");
     output << (advancing ? "Advanced " : "Moved ") << matches.size()
            << " bookmark(s) to " << repo.short_commit_id(target).value << '\n';
@@ -649,7 +692,7 @@ void command_bookmark(Repository& repo,
     }
     updates.emplace(reference, target);
   }
-  repo.record(std::move(updates), {}, repo.head_state(), "gg bookmark");
+  record_head_change(std::move(updates), {}, repo.head_state(), "gg bookmark");
   for (const std::string& name : options.names) {
     output << (options.action == BookmarkAction::create ? "Created " : "Moved ")
            << name << " at " << repo.short_commit_id(target).value << '\n';

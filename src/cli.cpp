@@ -362,7 +362,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required();
 
   SquashCommand squash_value;
-  auto* squash = app.add_subcommand("squash", "Move a change into its parent");
+  auto* squash = app.add_subcommand("squash", "Move a change into another revision (default: its parent)");
   CLI::Option* squash_revision =
       squash->add_option("-r,--revision", squash_value.revision, "Revision");
   CLI::Option* squash_source =

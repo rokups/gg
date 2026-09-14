@@ -238,8 +238,16 @@ void command_new(Repository& repo,
     }
     if (!revisions.empty()) parents = commit_parents(repo, revisions);
   }
-  const git_oid change =
-      repo.create_commit(combined_tree(repo, parents), parents, options.message);
+  const auto visible = repo.resolve_set("all()");
+  const std::set<git_oid, OidLess> existing(visible.begin(), visible.end());
+  const git_oid tree = combined_tree(repo, parents);
+  SignaturePtr identity = repo.signature();
+  git_oid change{};
+  do {
+    change = repo.create_commit(tree, parents, options.message,
+                                identity.get(), identity.get());
+    ++identity->when.time;
+  } while (existing.contains(change));
   RewritePlan plan;
   if (!after.empty() || !before.empty()) {
     const auto refs = repo.rewrite_refs();
@@ -314,7 +322,7 @@ void command_new(Repository& repo,
                                   : *old_workspace;
     finish_workspace(repo, workspace, std::move(plan.updates), {}, "gg new");
   } else {
-    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg new");
+    finish_without_workspace(repo, std::move(plan), {}, "gg new");
   }
   output << (options.no_edit ? "Created change: " : "Working copy now at: ")
          << repo.short_commit_id(change).value << ' '
@@ -763,8 +771,7 @@ void command_metaedit(Repository& repo,
     finish_workspace(repo, next, std::move(plan.updates), {},
                      "gg metaedit");
   } else {
-    repo.record(std::move(plan.updates), {}, repo.head_state(),
-                "gg metaedit");
+    finish_without_workspace(repo, std::move(plan), {}, "gg metaedit");
   }
   output << "Modified " << modified << " revision(s).\n";
   if (reparented > 0) {
@@ -882,7 +889,7 @@ void command_describe(Repository& repo,
                              : *workspace;
     finish_workspace(repo, next, std::move(plan.updates), {}, "gg describe");
   } else {
-    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg describe");
+    finish_without_workspace(repo, std::move(plan), {}, "gg describe");
   }
   output << "Rewrote " << modified << " revision(s).\n";
 }

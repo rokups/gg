@@ -1315,13 +1315,25 @@ int gg_repository_move_files(gg_mutation_result* out,
                              gg_repository* repository,
                              const gg_move_files_options* options,
                              const gg_operation_options* operation) {
+  return gg_repository_move_files_ex(out, repository, options, nullptr, nullptr,
+                                     operation);
+}
+
+int gg_repository_move_files_ex(gg_mutation_result* out,
+                                gg_repository* repository,
+                                const gg_move_files_options* options,
+                                const char* selected,
+                                const char* remaining,
+                                const gg_operation_options* operation) {
   return mutate(out, repository, operation, "move_files",
                 [&](Repository& repo, std::ostream& output) {
     const auto& value = required(options);
     command_move_files(repo,
                        MoveFilesCommand{string(value.source),
                                         string(value.destination),
-                                        strings(value.filesets)},
+                                        strings(value.filesets),
+                                        string(selected),
+                                        string(remaining)},
                        output);
   });
 }

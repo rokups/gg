@@ -26,6 +26,7 @@
 #include <charconv>
 #include <cctype>
 #include <cstdlib>
+#include <exception>
 #ifndef _WIN32
 #include <fnmatch.h>
 #endif
@@ -677,9 +678,65 @@ void finish_workspace(Repository& repo,
   }
   updates[repo.workspace_ref_name()] = workspace;
   const HeadState head = repo.head_for_workspace(workspace);
+  const git_oid previous_operation = repo.ensure_operation();
+  const auto previous_aliases = repo.data_refs();
   repo.record(std::move(updates), std::move(deletes), head, operation);
-  repo.set_head(head);
-  if (!tree_unchanged) repo.checkout(workspace);
+  try {
+    repo.set_head(head);
+    if (!tree_unchanged) repo.checkout(workspace);
+  } catch (const std::exception& error) {
+    const std::string original = error.what();
+    try {
+      repo.restore_operation(previous_operation, "", true, true, false,
+                             &previous_aliases);
+    } catch (const std::exception& recovery) {
+      repo.clear_checkout_recovery();
+      throw UserError(original + "; could not restore the previous operation: " +
+                      recovery.what());
+    }
+    throw;
+  }
+}
+
+void finish_without_workspace(Repository& repo, RewritePlan plan,
+                              std::set<std::string> deletes,
+                              std::string_view operation,
+                              std::optional<git_oid> head_override) {
+  const auto previous_head = repo.head_oid();
+  HeadState head = repo.head_state();
+  auto checkout = head_override.has_value() ? head_override : previous_head;
+  if (!head_override.has_value() && previous_head.has_value()) {
+    if (const auto found = plan.commits.find(*previous_head); found != plan.commits.end()) {
+      checkout = found->second;
+    }
+  }
+  if (head.symbolic && !deletes.contains(head.value)) {
+    if (const auto found = plan.updates.find(head.value); found != plan.updates.end()) {
+      checkout = found->second;
+    }
+  } else if (checkout.has_value()) {
+    head = {false, oid_string(*checkout)};
+  }
+  const git_oid previous_operation = repo.ensure_operation();
+  const auto previous_aliases = repo.data_refs();
+  repo.record(std::move(plan.updates), std::move(deletes), head, operation);
+  try {
+    repo.set_head(head);
+    if (checkout.has_value() != previous_head.has_value() ||
+        (checkout.has_value() && !(*checkout == *previous_head))) {
+      repo.checkout(checkout);
+    }
+  } catch (const std::exception& error) {
+    const std::string original = error.what();
+    try {
+      repo.restore_operation(previous_operation, "", true, true, false,
+                             &previous_aliases);
+    } catch (const std::exception& recovery) {
+      repo.clear_checkout_recovery();
+      throw UserError(original + "; could not restore the previous operation: " + recovery.what());
+    }
+    throw;
+  }
 }
 
 void edit_file_with_editor(Repository& repo,

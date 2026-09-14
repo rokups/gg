@@ -172,6 +172,175 @@ TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
             2);
 }
 
+TEST_F(RepositoryTest, FailedAttachedBookmarkMutationPreservesExistingAliases) {
+  const git_oid original = ref("HEAD");
+  const git_oid alias_source = raw_commit("previous identity");
+  const std::string alias = std::string(detail::kAliasPrefix) + detail::oid_string(alias_source);
+  set_ref(alias, original);
+  detail::Repository before(path_);
+  const git_oid operation = before.ensure_operation();
+  write(".git/HEAD.lock", "held by another process\n");
+  for (const auto& command : {std::vector<std::string>{"bookmark", "rename", "main", "renamed"},
+                              std::vector<std::string>{"bookmark", "delete", "main"}}) {
+    SCOPED_TRACE(command[1]);
+    const Result failed = invoke(command);
+    EXPECT_NE(failed.code, 0);
+    EXPECT_NE(failed.error.find("HEAD.lock"), std::string::npos);
+    EXPECT_EQ(failed.error.find("could not restore"), std::string::npos) << failed.error;
+    detail::Repository after(path_);
+    const auto retained_alias = after.ref_target(alias);
+    ASSERT_TRUE(retained_alias.has_value());
+    EXPECT_NE(git_oid_equal(&*retained_alias, &original), 0);
+    const auto retained_operation = after.operation();
+    ASSERT_TRUE(retained_operation.has_value());
+    EXPECT_NE(git_oid_equal(&*retained_operation, &operation), 0);
+    EXPECT_TRUE(has_ref("refs/heads/main"));
+    EXPECT_FALSE(has_ref("refs/heads/renamed"));
+  }
+}
+
+TEST_F(RepositoryTest, LockedHeadRejectsBookmarkRenameAndDeletionWithoutChangingState) {
+  detail::Repository before(path_);
+  const git_oid operation = before.ensure_operation();
+  const git_oid original = ref("HEAD");
+  write(".git/HEAD.lock", "held by another process\n");
+  for (const auto& command : {std::vector<std::string>{"bookmark", "rename", "main", "renamed"},
+                              std::vector<std::string>{"bookmark", "delete", "main"},
+                              std::vector<std::string>{"bookmark", "forget", "main"}}) {
+    SCOPED_TRACE(command[1]);
+    const Result failed = invoke(command);
+    EXPECT_NE(failed.code, 0);
+    EXPECT_NE(failed.error.find("HEAD.lock"), std::string::npos);
+    EXPECT_EQ(failed.error.find("could not restore"), std::string::npos) << failed.error;
+    EXPECT_TRUE(has_ref("refs/heads/main"));
+    EXPECT_FALSE(has_ref("refs/heads/renamed"));
+    const git_oid head = ref("HEAD");
+    EXPECT_NE(git_oid_equal(&head, &original), 0);
+    detail::Repository after(path_);
+    EXPECT_TRUE(after.head_state().symbolic);
+    EXPECT_EQ(after.head_state().value, "refs/heads/main");
+    const auto actual_operation = after.operation();
+    ASSERT_TRUE(actual_operation.has_value());
+    EXPECT_NE(git_oid_equal(&*actual_operation, &operation), 0);
+    EXPECT_EQ(read_path(path_ / ".git/HEAD.lock"), "held by another process\n");
+  }
+}
+
+TEST_F(RepositoryTest, MovingAttachedBookmarkPreservesCheckoutAndUndoState) {
+  const git_oid original = ref("HEAD");
+  write("tracked.txt", "target contents\n");
+  ASSERT_EQ(invoke_git({"commit", "-am", "target"}).code, 0);
+  const git_oid target = ref("HEAD");
+  ASSERT_EQ(invoke_git({"branch", "target"}).code, 0);
+  ASSERT_EQ(invoke_git({"reset", "--hard", detail::oid_string(original)}).code, 0);
+  for (const char* action : {"move", "set", "advance"}) {
+    SCOPED_TRACE(action);
+    detail::Repository before(path_);
+    const git_oid previous_operation = before.ensure_operation();
+    write(".git/HEAD.lock", "held by another process\n");
+    const Result rejected = invoke({"bookmark", action, "main", "--to", "target"});
+    EXPECT_NE(rejected.code, 0);
+    EXPECT_NE(rejected.error.find("HEAD.lock"), std::string::npos);
+    EXPECT_EQ(rejected.error.find("could not restore"), std::string::npos) << rejected.error;
+    const git_oid unchanged = ref("refs/heads/main");
+    EXPECT_NE(git_oid_equal(&unchanged, &original), 0);
+    {
+      detail::Repository after(path_);
+      const auto operation = after.operation();
+      ASSERT_TRUE(operation.has_value());
+      EXPECT_NE(git_oid_equal(&*operation, &previous_operation), 0);
+      EXPECT_TRUE(after.head_state().symbolic);
+      EXPECT_EQ(after.head_state().value, "refs/heads/main");
+    }
+    std::filesystem::remove(path_ / ".git/HEAD.lock");
+
+    const Result moved = invoke({"bookmark", action, "main", "--to", "target"});
+    ASSERT_EQ(moved.code, 0) << moved.error;
+    const git_oid bookmark = ref("refs/heads/main");
+    EXPECT_NE(git_oid_equal(&bookmark, &target), 0);
+    const git_oid head = ref("HEAD");
+    EXPECT_NE(git_oid_equal(&head, &original), 0);
+    {
+      detail::Repository after(path_);
+      EXPECT_FALSE(after.head_state().symbolic);
+      EXPECT_FALSE(after.workspace().has_value());
+    }
+    EXPECT_EQ(file(), "base\n");
+    EXPECT_EQ(invoke_git({"diff", "--quiet"}).code, 0);
+    ASSERT_EQ(invoke({"status"}).code, 0);
+    EXPECT_FALSE(has_ref("refs/gg/workspaces/default"));
+    ASSERT_EQ(invoke({"undo"}).code, 0);
+    const git_oid restored = ref("refs/heads/main");
+    EXPECT_NE(git_oid_equal(&restored, &original), 0);
+    EXPECT_TRUE(detail::Repository(path_).head_state().symbolic);
+    EXPECT_EQ(file(), "base\n");
+    ASSERT_EQ(invoke({"redo"}).code, 0);
+    const git_oid redone = ref("refs/heads/main");
+    EXPECT_NE(git_oid_equal(&redone, &target), 0);
+    EXPECT_FALSE(detail::Repository(path_).head_state().symbolic);
+    EXPECT_EQ(file(), "base\n");
+    ASSERT_EQ(invoke({"undo"}).code, 0);
+  }
+}
+
+TEST_F(RepositoryTest, RenamesAttachedHeadBookmarkAndRestoresItThroughUndo) {
+  const git_oid original = ref("HEAD");
+  const auto expect_head = [&](bool symbolic, const std::string& value) {
+    detail::Repository repository(path_);
+    const detail::HeadState head = repository.head_state();
+    EXPECT_EQ(head.symbolic, symbolic);
+    EXPECT_EQ(head.value, value);
+    const auto target = repository.head_oid();
+    ASSERT_TRUE(target.has_value());
+    EXPECT_NE(git_oid_equal(&*target, &original), 0);
+    EXPECT_FALSE(repository.workspace().has_value());
+    EXPECT_EQ(file(), "base\n");
+  };
+
+  ASSERT_EQ(invoke({"bookmark", "rename", "main", "renamed"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/heads/main"));
+  EXPECT_TRUE(has_ref("refs/heads/renamed"));
+  expect_head(true, "refs/heads/renamed");
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_TRUE(has_ref("refs/heads/main"));
+  EXPECT_FALSE(has_ref("refs/heads/renamed"));
+  expect_head(true, "refs/heads/main");
+  ASSERT_EQ(invoke({"redo"}).code, 0);
+  expect_head(true, "refs/heads/renamed");
+}
+
+TEST_F(RepositoryTest, DetachesHeadWhenDeletingOrForgettingItsBookmark) {
+  const git_oid original = ref("HEAD");
+  for (const char* action : {"delete", "forget"}) {
+    SCOPED_TRACE(action);
+    ASSERT_EQ(invoke({"bookmark", action, "main"}).code, 0);
+    EXPECT_FALSE(has_ref("refs/heads/main"));
+    {
+      detail::Repository repository(path_);
+      const detail::HeadState head = repository.head_state();
+      EXPECT_FALSE(head.symbolic);
+      EXPECT_EQ(head.value, detail::oid_string(original));
+      const auto target = repository.head_oid();
+      ASSERT_TRUE(target.has_value());
+      EXPECT_NE(git_oid_equal(&*target, &original), 0);
+      EXPECT_FALSE(repository.workspace().has_value());
+    }
+    EXPECT_EQ(file(), "base\n");
+    ASSERT_EQ(invoke({"undo"}).code, 0);
+    EXPECT_TRUE(has_ref("refs/heads/main"));
+    {
+      detail::Repository repository(path_);
+      EXPECT_TRUE(repository.head_state().symbolic);
+      EXPECT_EQ(repository.head_state().value, "refs/heads/main");
+    }
+    ASSERT_EQ(invoke({"redo"}).code, 0);
+    EXPECT_FALSE(has_ref("refs/heads/main"));
+    const git_oid redone_head = ref("HEAD");
+    EXPECT_NE(git_oid_equal(&redone_head, &original), 0);
+    ASSERT_EQ(invoke({"undo"}).code, 0);
+  }
+}
+
 TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
   ASSERT_EQ(invoke({"new", "main"}).code, 0);
   ASSERT_EQ(invoke({"bookmark", "create", "old", "occupied", "plain"}).code,

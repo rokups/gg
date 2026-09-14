@@ -227,6 +227,10 @@ class Repository {
   git_oid snapshot_tree(const git_oid& baseline_tree,
                         const std::vector<std::string>& paths) const;
 
+  void record_workspace_snapshot(const git_oid& workspace,
+                                 std::map<std::string, git_oid> updates,
+                                 std::string_view description) const;
+
   std::vector<std::string> untracked_paths() const;
 
   git_oid selected_tree(const git_oid& base_tree,
@@ -279,7 +283,9 @@ class Repository {
 
   RewritePlan move_files(const git_oid& source,
                            const git_oid& destination,
-                           const std::vector<std::string>& paths) const;
+                           const std::vector<std::string>& paths,
+                           std::optional<git_oid> selected = std::nullopt,
+                           std::optional<git_oid> remaining = std::nullopt) const;
 
   void apply_refs(const std::map<std::string, git_oid>& updates,
                     const std::set<std::string>& deletes,
@@ -289,7 +295,9 @@ class Repository {
 
   HeadState head_for_workspace(const git_oid& workspace) const;
 
-  void checkout(const git_oid& oid) const;
+  void checkout(std::optional<git_oid> oid) const;
+
+  void clear_checkout_recovery() const;
 
   OperationState state() const;
 
@@ -336,7 +344,9 @@ class Repository {
   void restore_operation(const git_oid& operation_oid,
                          std::string_view description = {},
                          bool restore_repository = true,
-                         bool restore_remote_tracking = true) const;
+                         bool restore_remote_tracking = true,
+                         bool rollback_on_failure = true,
+                         const std::map<std::string, git_oid>* rollback_aliases = nullptr) const;
 
   void import_git_history(std::ostream* progress = nullptr) const;
 
@@ -401,6 +411,7 @@ class Repository {
   mutable std::optional<std::map<std::string, git_oid>> aliases_cache_;
   mutable std::map<git_oid, TreeConflicts, OidLess> conflict_cache_;
   mutable std::map<std::string, git_oid> pending_conflict_refs_;
+  mutable std::optional<git_oid> failed_checkout_tree_;
   std::optional<std::vector<std::string>> scoped_commit_ids_;
   bool ref_cache_enabled_{false};
   bool linked_worktree_{false};

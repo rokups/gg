@@ -55,14 +55,23 @@ TEST_F(RepositoryTest, CoversRepositoryStateEdgeCases) {
   const detail::ShortId short_commit = repo.short_commit_id(base);
   const std::string base_text = detail::oid_string(base);
   const std::string other_text = detail::oid_string(other);
-  std::size_t common = 0;
-  while (base_text[common] == other_text[common]) ++common;
-  // Unscoped display IDs use conservative ODB uniqueness so formatting them
-  // never requires a full history walk. Collisions with blobs or trees may
-  // make the prefix longer than commit-only uniqueness requires.
-  EXPECT_GE(short_commit.prefix_length, common + 1);
+  // Unscoped abbreviations must also distinguish alias IDs. The base hash can
+  // begin with 'a' or 'b', so comparing only the two commit hashes is flaky.
+  std::size_t expected_prefix = 1;
+  for (const std::string& candidate :
+       {other_text, first_alias + "a", second_alias, matching_one, matching_two}) {
+    if (candidate == base_text) continue;
+    std::size_t common = 0;
+    while (common < base_text.size() && common < candidate.size() &&
+           base_text[common] == candidate[common]) ++common;
+    expected_prefix = std::max(expected_prefix, common + 1);
+  }
+  // ODB collisions can require more digits than these commit and alias IDs.
+  EXPECT_GE(short_commit.prefix_length, expected_prefix);
   EXPECT_EQ(short_commit.value.size(),
             std::max<std::size_t>(8, short_commit.prefix_length));
+  const git_oid abbreviated = repo.resolve(short_commit.value);
+  EXPECT_NE(git_oid_equal(&abbreviated, &base), 0);
 
   repo.apply_refs({}, {}, "no changes");
 

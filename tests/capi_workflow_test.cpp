@@ -5,6 +5,7 @@
 #include "gg/gg.h"
 
 #include "test_support.hpp"
+#include "repository.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -669,6 +670,154 @@ TEST_F(RepositoryTest, MovesFilesBetweenChangesAtomically) {
   EXPECT_EQ(delta_count(rewritten_source), 0U);
   EXPECT_EQ(delta_count(rewritten_destination), 1U);
   gg_mutation_result_dispose(&mutation);
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, MovesFilesBetweenRemoteOnlyAndUnreferencedEndpointsAtomically) {
+  ASSERT_EQ(invoke({"new", "-m", "workspace", "main"}).code, 0);
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  detail::Repository repo(path_);
+  const git_oid base = ref("refs/heads/main");
+  const git_oid workspace = *repo.workspace();
+  const git_oid base_tree = *git_commit_tree_id(repo.commit(base).get());
+  const auto make_revision = [&](const std::string& message, const std::string& contents) {
+    git_oid blob{};
+    EXPECT_EQ(git_blob_create_from_buffer(&blob, repository_.get(), contents.data(), contents.size()), GIT_OK);
+    detail::TreePtr tree = repo.tree(base_tree);
+    git_treebuilder* raw_builder = nullptr;
+    EXPECT_EQ(git_treebuilder_new(&raw_builder, repository_.get(), tree.get()), GIT_OK);
+    std::unique_ptr<git_treebuilder, decltype(&git_treebuilder_free)> builder(raw_builder, git_treebuilder_free);
+    EXPECT_EQ(git_treebuilder_insert(nullptr, builder.get(), "tracked.txt", &blob, GIT_FILEMODE_BLOB), GIT_OK);
+    git_oid tree_oid{};
+    EXPECT_EQ(git_treebuilder_write(&tree_oid, builder.get()), GIT_OK);
+    return repo.create_commit(tree_oid, {base}, message);
+  };
+
+  for (const bool remote : {true, false}) {
+    SCOPED_TRACE(remote);
+    const git_oid source = make_revision(remote ? "remote source" : "unreferenced source", "moved\n");
+    const git_oid destination = make_revision(remote ? "remote destination" : "unreferenced destination", "base\n");
+    if (remote) {
+      set_ref("refs/remotes/origin/move-source", source);
+      set_ref("refs/remotes/origin/move-destination", destination);
+    }
+    const auto refs_before = repo.rewrite_refs();
+    EXPECT_TRUE(std::ranges::none_of(refs_before, [&](const auto& entry) {
+      return git_oid_equal(&entry.second, &source) != 0 || git_oid_equal(&entry.second, &destination) != 0;
+    }));
+    const std::string source_text = detail::oid_string(source);
+    const std::string destination_text = detail::oid_string(destination);
+    const char* paths[] = {"tracked.txt"};
+    gg_move_files_options move = GG_MOVE_FILES_OPTIONS_INIT;
+    move.source = source_text.c_str();
+    move.destination = destination_text.c_str();
+    move.filesets = {paths, 1};
+    gg_mutation_result mutation{};
+    ASSERT_EQ(gg_repository_move_files(&mutation, repository, &move, nullptr), GIT_OK)
+        << (git_error_last() == nullptr ? "" : git_error_last()->message);
+    EXPECT_TRUE(mutation.changed);
+    EXPECT_EQ(mutation.rewrite_count, 2U);
+    EXPECT_NE(git_oid_equal(&mutation.working_copy, &workspace), 0);
+    gg_mutation_result_dispose(&mutation);
+
+    detail::Repository after(path_);
+    const git_oid moved_source = after.resolve(source_text);
+    const git_oid moved_destination = after.resolve(destination_text);
+    EXPECT_EQ(git_oid_equal(&moved_source, &source), 0);
+    EXPECT_EQ(git_oid_equal(&moved_destination, &destination), 0);
+    EXPECT_EQ(invoke_git({"show", detail::oid_string(moved_source) + ":tracked.txt"}).output, "base\n");
+    EXPECT_EQ(invoke_git({"show", detail::oid_string(moved_destination) + ":tracked.txt"}).output, "moved\n");
+    const auto visible = after.resolve_set("all()");
+    for (const git_oid& endpoint : {moved_source, moved_destination}) {
+      EXPECT_TRUE(std::ranges::any_of(visible, [&](const git_oid& oid) {
+        return git_oid_equal(&oid, &endpoint) != 0;
+      }));
+    }
+    if (remote) {
+      const git_oid source_ref = ref("refs/remotes/origin/move-source");
+      const git_oid destination_ref = ref("refs/remotes/origin/move-destination");
+      EXPECT_NE(git_oid_equal(&source_ref, &source), 0);
+      EXPECT_NE(git_oid_equal(&destination_ref, &destination), 0);
+    }
+    const git_oid main = ref("refs/heads/main");
+    EXPECT_NE(git_oid_equal(&main, &base), 0);
+    ASSERT_EQ(gg_repository_undo(&mutation, repository, nullptr), GIT_OK);
+    gg_mutation_result_dispose(&mutation);
+    detail::Repository undone(path_);
+    const git_oid restored_source = undone.resolve(source_text);
+    const git_oid restored_destination = undone.resolve(destination_text);
+    EXPECT_NE(git_oid_equal(&restored_source, &source), 0);
+    EXPECT_NE(git_oid_equal(&restored_destination, &destination), 0);
+    expect_workspace_coherent();
+  }
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ValidatesPartialMoveCarriersAndRestrictsThemToSelectedFiles) {
+  ASSERT_EQ(invoke({"new", "-m", "source", "main"}).code, 0);
+  const git_oid base = ref("HEAD");
+  write("tracked.txt", "moved\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid source = ref("refs/gg/workspaces/default");
+  ASSERT_EQ(invoke({"new", "-m", "destination"}).code, 0);
+  const git_oid destination = ref("refs/gg/workspaces/default");
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  detail::Repository repo(path_);
+  const auto carrier = [&](const git_oid& revision, const char* message) {
+    const git_oid tree_oid = *git_commit_tree_id(repo.commit(revision).get());
+    detail::TreePtr tree = repo.tree(tree_oid);
+    git_treebuilder* raw_builder = nullptr;
+    EXPECT_EQ(git_treebuilder_new(&raw_builder, repository_.get(), tree.get()), GIT_OK);
+    std::unique_ptr<git_treebuilder, decltype(&git_treebuilder_free)> builder(raw_builder, git_treebuilder_free);
+    git_oid blob{};
+    EXPECT_EQ(git_blob_create_from_buffer(&blob, repository_.get(), "unselected\n", 11), GIT_OK);
+    EXPECT_EQ(git_treebuilder_insert(nullptr, builder.get(), "unselected.txt", &blob, GIT_FILEMODE_BLOB), GIT_OK);
+    git_oid result{};
+    EXPECT_EQ(git_treebuilder_write(&result, builder.get()), GIT_OK);
+    return detail::oid_string(repo.create_commit(result, {}, message));
+  };
+  const std::string selected = carrier(source, "selected carrier");
+  const std::string remaining = carrier(base, "remaining carrier");
+  const std::string source_text = detail::oid_string(source);
+  std::string destination_text = detail::oid_string(destination);
+  const char* paths[] = {"tracked.txt"};
+  gg_move_files_options move = GG_MOVE_FILES_OPTIONS_INIT;
+  move.source = source_text.c_str();
+  move.destination = destination_text.c_str();
+  move.filesets = {paths, 1};
+  gg_operation_array operations{};
+  ASSERT_EQ(gg_repository_operations(&operations, repository, 100), GIT_OK);
+  const size_t operation_count = operations.count;
+  gg_operation_array_dispose(&operations);
+  gg_mutation_result mutation{};
+  EXPECT_LT(gg_repository_move_files_ex(&mutation, repository, &move, selected.c_str(), nullptr, nullptr), 0);
+  gg_mutation_result_dispose(&mutation);
+  EXPECT_LT(gg_repository_move_files_ex(&mutation, repository, &move, nullptr, remaining.c_str(), nullptr), 0);
+  gg_mutation_result_dispose(&mutation);
+  ASSERT_EQ(gg_repository_operations(&operations, repository, 100), GIT_OK);
+  EXPECT_EQ(operations.count, operation_count);
+  gg_operation_array_dispose(&operations);
+  EXPECT_EQ(detail::oid_string(repo.resolve(source_text)), source_text);
+  EXPECT_EQ(detail::oid_string(*repo.workspace()), destination_text);
+  EXPECT_EQ(invoke_git({"show", destination_text + ":tracked.txt"}).output, "moved\n");
+
+  for (const git_oid& target : {destination, base}) {
+    destination_text = detail::oid_string(target);
+    move.destination = destination_text.c_str();
+    ASSERT_EQ(gg_repository_move_files_ex(&mutation, repository, &move, selected.c_str(), remaining.c_str(), nullptr), GIT_OK)
+        << (git_error_last() == nullptr ? "" : git_error_last()->message);
+    gg_mutation_result_dispose(&mutation);
+    detail::Repository after(path_);
+    for (const git_oid& endpoint : {after.resolve(source_text), after.resolve(destination_text)}) {
+      EXPECT_NE(invoke_git({"cat-file", "-e", detail::oid_string(endpoint) + ":unselected.txt"}).code, 0);
+    }
+    EXPECT_FALSE(std::filesystem::exists(path_ / "unselected.txt"));
+    ASSERT_EQ(gg_repository_undo(&mutation, repository, nullptr), GIT_OK);
+    gg_mutation_result_dispose(&mutation);
+    expect_workspace_coherent();
+  }
   gg_repository_free(repository);
 }
 

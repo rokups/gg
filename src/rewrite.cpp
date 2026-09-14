@@ -339,6 +339,15 @@ git_oid Repository::rewrite_commit(const git_oid& old_oid,
   const std::string_view original =
       old_message == nullptr ? "" : old_message;  // GG_COV_EXCL_BRANCH
   const std::string_view message = message_override.value_or(original);
+  if (author_override == nullptr && committer_override == nullptr &&
+      new_tree == *git_commit_tree_id(old.get()) && message == original &&
+      new_parents.size() == git_commit_parentcount(old.get())) {
+    bool same_parents = true;
+    for (std::size_t index = 0; index < new_parents.size(); ++index) {
+      same_parents &= new_parents[index] == *git_commit_parent_id(old.get(), index);
+    }
+    if (same_parents) return old_oid;
+  }
   return create_commit(
       new_tree, new_parents, message,
       author_override == nullptr ? git_commit_author(old.get()) : author_override,
@@ -359,6 +368,7 @@ RewritePlan Repository::descendants(
     const std::set<git_oid, OidLess>& skipped,
     bool preserve_content) const {
   RewritePlan plan;
+  std::erase_if(roots, [](const auto& entry) { return entry.first == entry.second; });
   plan.commits = std::move(roots);
   const auto refs = rewrite_refs();
   git_revwalk* raw_walk = nullptr;
@@ -437,14 +447,43 @@ RewritePlan Repository::descendants(
 
 RewritePlan Repository::move_files(const git_oid& source,
                                    const git_oid& destination,
-                                   const std::vector<std::string>& paths) const {
+                                   const std::vector<std::string>& requested_paths,
+                                   std::optional<git_oid> selected,
+                                   std::optional<git_oid> remaining) const {
   const std::vector<git_oid> source_parents = parents(source);
   const git_oid source_tree = *git_commit_tree_id(commit(source).get());
   const git_oid base_tree = *git_commit_tree_id(commit(source_parents.front()).get());
-  const git_oid selected_change = selected_tree(base_tree, source_tree, paths);
+  std::vector<std::string> paths = requested_paths;
+  if (!selected.has_value()) {
+    TreePtr before = tree(base_tree);
+    TreePtr after = tree(source_tree);
+    git_diff* raw_diff = nullptr;
+    check(git_diff_tree_to_tree(&raw_diff, repo_.get(), before.get(), after.get(), nullptr),
+          "find moved file changes");
+    DiffPtr diff(raw_diff);
+    git_diff_find_options find_options = GIT_DIFF_FIND_OPTIONS_INIT;
+    find_options.flags = GIT_DIFF_FIND_RENAMES;
+    check(git_diff_find_similar(diff.get(), &find_options), "find moved file renames");
+    for (std::size_t index = 0; index < git_diff_num_deltas(diff.get()); ++index) {
+      const git_diff_delta* delta = git_diff_get_delta(diff.get(), index);
+      if (delta->status != GIT_DELTA_RENAMED) continue;
+      if (std::ranges::any_of(requested_paths, [&](const std::string& path) {
+            return fileset_matches(path, delta->old_file.path) ||
+                   fileset_matches(path, delta->new_file.path);
+          })) {
+        paths.emplace_back(delta->old_file.path);
+        paths.emplace_back(delta->new_file.path);
+      }
+    }
+  }
+  const git_oid selected_change = selected_tree(base_tree, selected.value_or(source_tree), paths);
   if (selected_change == base_tree) {
     throw UserError("selected paths are not changed in the source revision");
   }
+  const auto destination_parents = parents(destination);
+  const bool move_to_parent = source_parents.front() == destination;
+  const bool move_to_child = std::ranges::any_of(destination_parents,
+      [&](const git_oid& parent) { return parent == source; });
 
   RewritePlan plan;
   const auto refs = rewrite_refs();
@@ -457,6 +496,10 @@ RewritePlan Repository::move_files(const git_oid& source,
     const int pushed = git_revwalk_push(walk.get(), &oid);
     if (pushed != GIT_EINVALIDSPEC) check(pushed, "walk revisions");
   }
+  // Remote-only and unreferenced revisions are valid explicit endpoints even
+  // though their refs must not be rewritten with local history.
+  check(git_revwalk_push(walk.get(), &source), "walk move source");
+  check(git_revwalk_push(walk.get(), &destination), "walk move destination");
 
   git_oid oid{};
   while (git_revwalk_next(&oid, walk.get()) == 0) {
@@ -474,15 +517,20 @@ RewritePlan Repository::move_files(const git_oid& source,
     if (!parent_changed && !(oid == source) && !(oid == destination)) continue;
 
     git_oid tree = *git_commit_tree_id(commit(oid).get());
-    if (parent_changed && !old_parents.empty() && !new_parents.empty()) {
+    // The complete tree at the lower endpoint is unchanged by an adjacent
+    // transfer. Replaying and then undoing the selection can conflict on
+    // neighboring edits and can lose edits already present at the endpoint.
+    const bool preserve_tree = (oid == source && move_to_parent) ||
+                               (oid == destination && move_to_child);
+    if (!preserve_tree && parent_changed && !old_parents.empty() && !new_parents.empty()) {
       tree = replay(old_parents.front(), new_parents.front(), tree);
     }
-    if (oid == source) {
+    if (oid == source && !preserve_tree) {
       const git_oid parent_tree =
           *git_commit_tree_id(commit(new_parents.front()).get());
-      tree = selected_tree(tree, parent_tree, paths);
+      tree = selected_tree(tree, remaining.value_or(parent_tree), paths);
     }
-    if (oid == destination) {
+    if (oid == destination && !preserve_tree) {
       tree = merge_trees(base_tree, tree, selected_change,
                          /*preserve_ours_conflicts=*/true,
                          /*preserve_theirs_conflicts=*/true);

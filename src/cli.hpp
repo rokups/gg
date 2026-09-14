@@ -128,6 +128,8 @@ struct MoveFilesCommand {
   std::string source;
   std::string destination;
   std::vector<std::string> paths;
+  std::string selected;
+  std::string remaining;
 };
 struct SimplifyParentsCommand {
   std::vector<std::string> sources;

@@ -173,6 +173,42 @@ bool explicitly_tracked(const FileTrackingState& tracking,
 
 }  // namespace
 
+void Repository::record_workspace_snapshot(const git_oid& workspace,
+                                           std::map<std::string, git_oid> updates,
+                                           std::string_view description) const {
+  const HeadState previous_head = head_state();
+  const HeadState head = head_for_workspace(workspace);
+  const bool head_changed = head.symbolic != previous_head.symbolic ||
+                            head.value != previous_head.value;
+  if (!head_changed) {
+    record(std::move(updates), {}, head, description);
+    return;
+  }
+  const git_oid previous_operation = ensure_operation();
+  const auto previous_refs = data_refs();
+  record(std::move(updates), {}, head, description);
+  try {
+    set_head(head);
+  } catch (const std::exception& error) {
+    const std::string original = error.what();
+    try {
+      auto restore = previous_refs;
+      restore[operation_ref_name()] = previous_operation;
+      std::set<std::string> deletes;
+      for (const auto& [name, target] : data_refs()) {
+        (void)target;
+        if (!previous_refs.contains(name)) deletes.insert(name);
+      }
+      apply_refs(restore, deletes, "gg restore failed snapshot");
+      set_head(previous_head);
+    } catch (const std::exception& recovery) {
+      throw UserError(original + "; could not restore the previous snapshot: " + recovery.what());
+    }
+    // Preserve dirty files and their index snapshot when recording fails.
+    throw;
+  }
+}
+
 std::optional<std::uint64_t> parse_file_size(std::string_view value) {
   const std::size_t suffix_begin = value.find_first_not_of("0123456789");
   const std::string_view number = value.substr(0, suffix_begin);
@@ -576,6 +612,15 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
   if (ref_target(kLegacyChangeMapRef).has_value()) {
     physical_deletes.insert(std::string(kLegacyChangeMapRef));
   }
+  // Transactions should lock only references whose physical value changes.
+  std::erase_if(physical_updates, [&](const auto& entry) {
+    const auto current = ref_target(entry.first);
+    return current.has_value() && *current == entry.second;
+  });
+  std::erase_if(physical_deletes, [&](const std::string& name) {
+    return !ref_target(name).has_value();
+  });
+
   const bool should_compress =
       physical_updates.size() + physical_deletes.size() >= 1024 ||
       has_many_loose_change_refs(repo_.get());
@@ -642,6 +687,8 @@ void Repository::apply_refs(const std::map<std::string, git_oid>& updates,
 }
 
 void Repository::set_head(const HeadState& head) const {
+  const HeadState current = head_state();
+  if (current.symbolic == head.symbolic && current.value == head.value) return;
   if (head.symbolic) {
     check(git_repository_set_head(repo_.get(), head.value.c_str()), "set HEAD");
     return;
@@ -656,21 +703,115 @@ void Repository::set_head(const HeadState& head) const {
 HeadState Repository::head_for_workspace(const git_oid& workspace) const {
   const auto workspace_parents = parents(workspace);
   if (workspace_parents.empty()) {
-    return head_state();
+    // A root has no parent to check out. Anchor detached HEAD to the root itself.
+    return {false, oid_string(workspace)};
   }
   return {false, oid_string(workspace_parents.front())};
 }
 
-void Repository::checkout(const git_oid& oid) const {
+void Repository::clear_checkout_recovery() const {
+  failed_checkout_tree_.reset();
+}
+
+void Repository::checkout(std::optional<git_oid> oid) const {
   if (ignore_working_copy_) return;
-  CommitPtr target = commit(oid);
+  const git_oid target_tree = oid.has_value()
+                                  ? *git_commit_tree_id(commit(*oid).get())
+                                  : empty_tree();
+  TreePtr target = tree(target_tree);
+
+  // Snapshot exclusions (large files, explicit untracking, ignores) must not
+  // turn a graph checkout into permission to overwrite local-only content.
+  git_status_options status_options = GIT_STATUS_OPTIONS_INIT;
+  status_options.show = GIT_STATUS_SHOW_WORKDIR_ONLY;
+  status_options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
+                         GIT_STATUS_OPT_INCLUDE_IGNORED |
+                         GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS |
+                         GIT_STATUS_OPT_RECURSE_IGNORED_DIRS;
+  git_status_list* raw_status = nullptr;
+  check(git_status_list_new(&raw_status, repo_.get(), &status_options),
+        "inspect checkout local files");
+  GitPtr<git_status_list, git_status_list_free> status(raw_status);
+  for (std::size_t index = 0; index < git_status_list_entrycount(status.get()); ++index) {
+    const git_status_entry* entry = git_status_byindex(status.get(), index);
+    if ((entry->status & (GIT_STATUS_WT_NEW | GIT_STATUS_IGNORED)) == 0 ||
+        entry->index_to_workdir == nullptr) continue;
+    std::string path = entry->index_to_workdir->new_file.path;
+    const bool directory = !path.empty() && path.back() == '/';
+    if (directory) path.pop_back();
+    if (failed_checkout_tree_.has_value()) {
+      TreePtr attempted = tree(*failed_checkout_tree_);
+      if (tree_contains(attempted.get(), path.c_str())) continue;
+    }
+    for (std::size_t end = path.find('/');;) {
+      const bool full_path = end == std::string::npos;
+      const std::string prefix = full_path ? path : path.substr(0, end);
+      git_tree_entry* raw_entry = nullptr;
+      const int lookup = git_tree_entry_bypath(&raw_entry, target.get(), prefix.c_str());
+      if (lookup == GIT_ENOTFOUND) {
+        git_error_clear();
+        break;
+      }
+      check(lookup, "inspect checkout destination");
+      TreeEntryPtr destination(raw_entry);
+      const bool target_directory = git_tree_entry_type(destination.get()) == GIT_OBJECT_TREE;
+      if (!target_directory || (full_path && !directory)) {
+        throw UserError("checkout would overwrite untracked or ignored path: " + path);
+      }
+      if (full_path) break;
+      end = path.find('/', end + 1);
+    }
+  }
+
+  // Compare against the actual tracked worktree, not the already-updated HEAD.
+  // This also avoids rewriting an already-correct file during error recovery.
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo_.get()), "open checkout index");
+  IndexPtr index(raw_index);
+  check(git_index_read(index.get(), 1), "read checkout index");
+  git_oid baseline_oid{};
+  try {
+    check(git_index_update_all(index.get(), nullptr, nullptr, nullptr),
+          "inspect checkout baseline");
+    if (failed_checkout_tree_.has_value()) {
+      git_index_options index_options = GIT_INDEX_OPTIONS_INIT;
+      index_options.oid_type = git_repository_oid_type(repo_.get());
+      git_index* raw_attempted = nullptr;
+      check(git_index_new(&raw_attempted, &index_options), "open attempted checkout index");
+      IndexPtr attempted(raw_attempted);
+      TreePtr attempted_tree = tree(*failed_checkout_tree_);
+      check(git_index_read_tree(attempted.get(), attempted_tree.get()), "read attempted checkout");
+      const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+      for (std::size_t offset = 0; offset < git_index_entrycount(attempted.get()); ++offset) {
+        const git_index_entry* entry = git_index_get_byindex(attempted.get(), offset);
+        if (git_index_get_bypath(index.get(), entry->path, 0) != nullptr) continue;
+        std::error_code error;
+        const auto file = std::filesystem::symlink_status(workdir / entry->path, error);
+        if (error || !std::filesystem::exists(file) || std::filesystem::is_directory(file)) continue;
+        check(git_index_add_bypath(index.get(), entry->path), "inspect partially checked out file");
+      }
+    }
+    check(git_index_write_tree_to(&baseline_oid, index.get(), repo_.get()),
+          "write checkout baseline");
+  } catch (...) {
+    git_index_read(index.get(), 1);
+    throw;
+  }
+  check(git_index_read(index.get(), 1), "restore checkout index");
+  TreePtr baseline = tree(baseline_oid);
   git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
+  options.baseline = baseline.get();
   options.checkout_strategy = GIT_CHECKOUT_FORCE |
-                              GIT_CHECKOUT_RECREATE_MISSING;
+                              GIT_CHECKOUT_RECREATE_MISSING |
+                              GIT_CHECKOUT_DONT_OVERWRITE_IGNORED;
+  // Only paths from an actual failed checkout may be removed on recovery.
+  // A preflight refusal must leave pre-existing local-only paths untouched.
+  failed_checkout_tree_ = target_tree;
   check(git_checkout_tree(repo_.get(),
                           reinterpret_cast<const git_object*>(target.get()),
                           &options),
         "update working copy");
+  failed_checkout_tree_.reset();
 }
 
 bool Repository::sync_workspace() const {
@@ -694,8 +835,8 @@ bool Repository::sync_workspace(const std::vector<std::string>& paths) const {
     const std::vector<git_oid> parents =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
     const git_oid imported = create_commit(tree_oid, parents, "");
-    record({{workspace_ref_name(), imported}}, {}, head_for_workspace(imported),
-           "gg import working copy");
+    record_workspace_snapshot(imported, {{workspace_ref_name(), imported}},
+                    "gg import working copy");
     return true;
   }
   const auto workspace = ref_target(*workspace_reference);
@@ -704,7 +845,7 @@ bool Repository::sync_workspace(const std::vector<std::string>& paths) const {
   const auto head = head_oid();
   if ((!current_parents.empty() &&
        (!head.has_value() || !(*head == current_parents.front()))) ||
-      (current_parents.empty() && head.has_value())) {
+      (current_parents.empty() && head.has_value() && !(*head == *workspace))) {
     const git_oid base_tree = head.has_value()
                                   ? *git_commit_tree_id(commit(*head).get())
                                   : empty_tree();
@@ -712,8 +853,8 @@ bool Repository::sync_workspace(const std::vector<std::string>& paths) const {
     const std::vector<git_oid> parent_oids =
         head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
     const git_oid imported = create_commit(tree_oid, parent_oids, "");
-    record({{*workspace_reference, imported}}, {}, head_for_workspace(imported),
-           "gg import state");
+    record_workspace_snapshot(imported, {{*workspace_reference, imported}},
+                    "gg import state");
     return true;
   }
 
@@ -725,8 +866,8 @@ bool Repository::sync_workspace(const std::vector<std::string>& paths) const {
   const git_oid rewritten =
       rewrite_commit(*workspace, current_parents, new_tree);
   RewritePlan plan = descendants({{*workspace, rewritten}});
-  record(plan.updates, {}, head_for_workspace(rewritten),
-         "gg snapshot working copy");
+  record_workspace_snapshot(rewritten, std::move(plan.updates),
+                  "gg snapshot working copy");
   return true;
 }
 

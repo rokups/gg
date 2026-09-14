@@ -655,6 +655,10 @@ GG_EXTERN int gg_repository_split(
 GG_EXTERN int gg_repository_squash(
     gg_mutation_result *out, gg_repository *repository,
     const gg_squash_options *options, const gg_operation_options *operation);
+/** Squash a change, or its non-merge branch since divergence, into destination.
+ * Consumed changes' aliases follow destination; their children are restacked
+ * onto their original unconsumed ancestors. Recorded as one undoable operation.
+ */
 GG_EXTERN int gg_repository_squash_ex(
     gg_mutation_result *out, gg_repository *repository,
     const gg_squash_options *options, int entire_branch,
@@ -669,6 +673,15 @@ GG_EXTERN int gg_repository_move_files(
     gg_mutation_result *out, gg_repository *repository,
     const gg_move_files_options *options,
     const gg_operation_options *operation);
+/** Transfer a partial selection between adjacent revisions as one operation.
+ * Both carrier revisions are required, or both may be NULL for whole files.
+ * selected contains the source-parent tree plus selected changes; remaining
+ * contains the source tree with those changes removed. Only filesets are used.
+ */
+GG_EXTERN int gg_repository_move_files_ex(
+    gg_mutation_result *out, gg_repository *repository,
+    const gg_move_files_options *options, const char *selected,
+    const char *remaining, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_simplify_parents(
     gg_mutation_result *out, gg_repository *repository,
     const gg_simplify_parents_options *options,

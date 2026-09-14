@@ -6,6 +6,7 @@
 
 #include <git2/sys/errors.h>
 
+#include <exception>
 #include <sstream>
 
 namespace gg::detail {
@@ -287,6 +288,23 @@ git_oid Repository::create_operation(const OperationState& state,
       displaced_targets.push_back(target);
     }
   }
+  // A detached HEAD can be the only reference to a revision. Retain its old
+  // and replacement targets just like displaced refs so operation restoration
+  // remains possible after reflog expiration and garbage collection.
+  const auto retain_detached_head = [&](const HeadState& head) {
+    if (head.symbolic || head.value.empty()) return;
+    git_oid target{};
+    check(git_oid_fromstr(&target, head.value.c_str(),
+                          git_repository_oid_type(repo_.get())),
+          "parse operation HEAD");
+    displaced_targets.push_back(target);
+  };
+  if (!previous_state.has_value() ||
+      previous_state->head.symbolic != state.head.symbolic ||
+      previous_state->head.value != state.head.value) {
+    retain_detached_head(state.head);
+    if (previous_state.has_value()) retain_detached_head(previous_state->head);
+  }
   for (const git_oid& target : displaced_targets) {
     git_commit* raw_commit = nullptr;
     if (!seen.contains(target) &&
@@ -511,9 +529,14 @@ void Repository::record(std::map<std::string, git_oid> updates,
 void Repository::restore_operation(const git_oid& operation_oid,
                                    std::string_view description,
                                    bool restore_repository,
-                                   bool restore_remote_tracking) const {
+                                   bool restore_remote_tracking,
+                                   bool rollback_on_failure,
+                                   const std::map<std::string, git_oid>* rollback_aliases) const {
   const OperationState source = parse_operation(operation_oid);
   OperationState target = state();
+  const HeadState previous_head = target.head;
+  std::optional<git_oid> previous_checkout = workspace();
+  if (!previous_checkout.has_value()) previous_checkout = head_oid();
   const auto current_operation = operation();
   const bool manage_workspaces =
       starts_with(operation_description(operation_oid), "gg workspace ") ||
@@ -570,6 +593,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
     }
   }
   for (const auto& [name, oid] : source.refs) {
+    if (starts_with(name, kAliasPrefix) || name == kAliasMapRef) continue;
     if (!manage_workspaces && other_workspaces.contains(name)) {
       continue;
     }
@@ -588,10 +612,20 @@ void Repository::restore_operation(const git_oid& operation_oid,
       description.empty()
           ? operation_oid
           : create_operation(target, ensure_operation(), description);
+  // V4 snapshots omit aliases, so normal restoration clears the overlay:
+  // aliases for undone rewrites must not redirect revisions in restored history.
+  // Failure recovery instead restores the exact overlay captured by its caller.
+  if (rollback_aliases != nullptr) {
+    for (const auto& [name, oid] : *rollback_aliases) {
+      if (starts_with(name, kAliasPrefix) || name == kAliasMapRef) {
+        updates[name] = oid;
+      }
+    }
+  }
   std::set<std::string> deletes;
   for (const auto& [name, oid] : current) {
     (void)oid;
-    if (!target.refs.contains(name)) {
+    if (!updates.contains(name)) {
       deletes.insert(name);
     }
   }
@@ -599,26 +633,48 @@ void Repository::restore_operation(const git_oid& operation_oid,
   if (restored_workspace_name.has_value()) {
     set_workspace_name(*restored_workspace_name);
   }
+  bool refs_applied = false;
   try {
     apply_refs(updates, deletes,
                description.empty() ? "gg restore operation" : description);
-  } catch (...) {
-    if (restored_workspace_name.has_value()) {
+    refs_applied = true;
+    if (restore_repository) {
+      set_head(target.head);
+      std::optional<git_oid> target_checkout = workspace();
+      if (!target_checkout.has_value()) target_checkout = head_oid();
+      checkout(target_checkout);
+    }
+  } catch (const std::exception& error) {
+    const std::string original = error.what();
+    if (restored_workspace_name.has_value() && (!refs_applied || rollback_on_failure)) {
       set_workspace_name(previous_workspace_name);
     }
-    throw;
-  }
-  if (restore_repository) {
-    set_head(target.head);
-    const auto workspace = this->workspace();
-    if (workspace.has_value()) {
-      checkout(*workspace);
-    } else {
-      const auto head = head_oid();
-      if (head.has_value()) {
-        checkout(*head);
+    if (refs_applied && rollback_on_failure) {
+      try {
+        std::map<std::string, git_oid> rollback_updates = current;
+        std::set<std::string> rollback_deletes;
+        for (const auto& [name, oid] : data_refs()) {
+          (void)oid;
+          if (!current.contains(name)) rollback_deletes.insert(name);
+        }
+        if (current_operation.has_value()) {
+          rollback_updates[operation_ref_name()] = *current_operation;
+        } else {
+          rollback_deletes.insert(operation_ref_name());
+        }
+        apply_refs(rollback_updates, rollback_deletes, "gg restore failed operation");
+        if (restore_repository) {
+          set_head(previous_head);
+          checkout(previous_checkout);
+        }
+      } catch (const std::exception& recovery) {
+        clear_checkout_recovery();
+        throw UserError(original + "; could not restore the previous repository state: " +
+                        recovery.what());
       }
     }
+    clear_checkout_recovery();
+    throw;
   }
 }
 

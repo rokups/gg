@@ -298,21 +298,26 @@ const std::map<std::string, git_oid>& Repository::aliases() const {
 }
 
 void Repository::import_git_history(std::ostream* progress) const {
-  const bool initializing = !operation().has_value();
+  const auto current_operation = operation();
+  const bool initializing = !current_operation.has_value();
+  const bool bootstrap_workspace = initializing ||
+      operation_description(*current_operation) == "initialize repository";
   if (initializing && progress != nullptr && head_oid().has_value()) {
     *progress << "Initializing gg for this "
               << (linked_worktree_ ? "workspace" : "repository")
               << "; this may take a moment...\n";
   }
-  if (linked_worktree_ &&  // GG_COV_EXCL_BRANCH
+  // Refresh must respect an undone or forgotten workspace. A bare bootstrap
+  // operation still permits retry after a failed initial HEAD transition.
+  if (linked_worktree_ && bootstrap_workspace &&  // GG_COV_EXCL_BRANCH
       !workspace().has_value()) {  // GG_COV_EXCL_BRANCH
     const auto head = head_oid();
     if (head.has_value()) {  // GG_COV_EXCL_BRANCH
       const git_oid tree = snapshot_tree(
           *git_commit_tree_id(commit(*head).get()));
       const git_oid imported = create_commit(tree, {*head}, "");
-      record({{workspace_ref_name(), imported}}, {}, head_for_workspace(imported),
-             "gg import history");
+      record_workspace_snapshot(imported, {{workspace_ref_name(), imported}},
+                                "gg import history");
       return;
     }
   }

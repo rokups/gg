@@ -15,6 +15,22 @@
 #include <vector>
 
 namespace gg::detail {
+namespace {
+
+git_oid replacement_workspace(Repository& repo, const git_oid& tree,
+                              const std::vector<git_oid>& parents) {
+  const auto visible = repo.resolve_set("all()");
+  const std::set<git_oid, OidLess> existing(visible.begin(), visible.end());
+  SignaturePtr identity = repo.signature();
+  git_oid result{};
+  do {
+    result = repo.create_commit(tree, parents, "", identity.get(), identity.get());
+    ++identity->when.time;
+  } while (existing.contains(result));
+  return result;
+}
+
+}  // namespace
 
 void command_rebase(Repository& repo,
                     const RebaseCommand& options,
@@ -31,6 +47,10 @@ void command_rebase(Repository& repo,
   const auto old_parents = repo.parents(old);
   if (old_parents.size() != 1) {
     throw UserError("rebase source must have exactly one parent");
+  }
+  if (old_parents.front() == parent) {
+    output << "Nothing changed.\n";
+    return;
   }
   CommitPtr source_commit = repo.commit(old);
   const git_oid tree = repo.replay(old_parents.front(), parent,
@@ -51,7 +71,7 @@ void command_rebase(Repository& repo,
     finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                      "gg rebase");
   } else {
-    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg rebase");
+    finish_without_workspace(repo, std::move(plan), {}, "gg rebase");
   }
   output << "Rebased " << repo.short_commit_id(old).value << " as "
          << repo.short_commit_id(rewritten).value << '\n';
@@ -153,22 +173,6 @@ void command_reorder(Repository& repo,
   std::reverse(segment.begin(), segment.end());
 
   const auto base_parents = repo.parents(segment.front());
-  if (base_parents.size() > 1) {
-    throw UserError("reorder cannot move merge changes");
-  }
-  for (std::size_t index = 0; index < segment.size(); ++index) {
-    const auto parents = repo.parents(segment[index]);
-    if (parents.size() > 1 || (index != 0 && parents.size() != 1)) {
-      throw UserError("reorder cannot move merge changes");
-    }
-    if (index + 1 < segment.size()) {
-      const auto children = repo.children(segment[index]);
-      if (children.size() != 1 || !(children.front() == segment[index + 1])) {
-        throw UserError("reorder stack has an ambiguous branch");
-      }
-    }
-  }
-
   struct ReorderEntry {
     git_oid oid{};
     bool copy{false};
@@ -202,11 +206,52 @@ void command_reorder(Repository& repo,
     return;
   }
 
+  std::size_t unchanged_prefix = 0;
+  while (unchanged_prefix < segment.size() &&
+         !reordered[unchanged_prefix].copy &&
+         segment[unchanged_prefix] == reordered[unchanged_prefix].oid) {
+    ++unchanged_prefix;
+  }
+  for (std::size_t index = unchanged_prefix; index < segment.size(); ++index) {
+    const auto parents = repo.parents(segment[index]);
+    if (parents.size() > 1 || (index != 0 && parents.size() != 1)) {
+      throw UserError("reorder cannot move merge changes");
+    }
+    if (index + 1 < segment.size()) {
+      const auto children = repo.children(segment[index]);
+      if (children.size() != 1 || !(children.front() == segment[index + 1])) {
+        throw UserError("reorder stack has an ambiguous branch");
+      }
+    }
+  }
+
   std::map<git_oid, git_oid, OidLess> roots;
   std::vector<git_oid> parents = base_parents;
-  for (const ReorderEntry& entry : reordered) {
-    const git_oid rewritten = repo.rewrite_commit(entry.oid, parents);
-    if (!entry.copy) roots.emplace(entry.oid, rewritten);
+  std::set<git_oid, OidLess> existing;
+  if (options.copy) {
+    const auto visible = repo.resolve_set("all()");
+    existing.insert(visible.begin(), visible.end());
+  }
+  for (std::size_t index = 0; index < reordered.size(); ++index) {
+    const ReorderEntry& entry = reordered[index];
+    // Keep the common prefix byte-for-byte, including its committer metadata.
+    if (index < unchanged_prefix) {
+      parents = {entry.oid};
+      continue;
+    }
+    git_oid rewritten{};
+    if (entry.copy) {
+      SignaturePtr committer = repo.signature();
+      do {
+        rewritten = repo.rewrite_commit(entry.oid, parents, std::nullopt,
+                                         std::nullopt, nullptr, committer.get());
+        ++committer->when.time;
+      } while (existing.contains(rewritten));
+    } else {
+      rewritten = repo.rewrite_commit(entry.oid, parents);
+      roots.emplace(entry.oid, rewritten);
+    }
+    existing.insert(rewritten);
     parents = {rewritten};
   }
   const git_oid new_tip = parents.front();
@@ -228,6 +273,10 @@ void command_reorder(Repository& repo,
     roots.emplace(child, repo.rewrite_commit(child, child_parents));
   }
   RewritePlan plan = repo.descendants(std::move(roots));
+  if (options.copy) {
+    plan.updates.emplace(std::string(kVisibleHeadPrefix) + oid_string(new_tip),
+                         new_tip);
+  }
   const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     const git_oid new_workspace = plan.commits.contains(*workspace)
@@ -236,7 +285,7 @@ void command_reorder(Repository& repo,
     finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                      "gg reorder");
   } else {
-    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg reorder");
+    finish_without_workspace(repo, std::move(plan), {}, "gg reorder");
   }
   output << (options.copy ? "Copied " : "Reordered ")
          << repo.short_commit_id(source).value << '\n';
@@ -281,12 +330,16 @@ void command_split(Repository& repo,
   }
   plan.updates[std::string(kAliasPrefix) + oid_string(old)] = selected;
   const auto workspace = repo.workspace();
-  const git_oid new_workspace = *workspace == old
-                                    ? remainder
-                                    : (plan.commits.contains(*workspace)
-                                           ? plan.commits.at(*workspace)
-                                           : *workspace);
-  finish_workspace(repo, new_workspace, std::move(plan.updates), {}, "gg split");
+  if (workspace.has_value()) {
+    const git_oid new_workspace = *workspace == old
+                                      ? remainder
+                                      : (plan.commits.contains(*workspace)
+                                             ? plan.commits.at(*workspace)
+                                             : *workspace);
+    finish_workspace(repo, new_workspace, std::move(plan.updates), {}, "gg split");
+  } else {
+    finish_without_workspace(repo, std::move(plan), {}, "gg split");
+  }
   output << "Selected change: " << repo.short_commit_id(selected).value << '\n'
          << "Remaining change: " << repo.short_commit_id(remainder).value
          << '\n';
@@ -311,44 +364,39 @@ void command_squash(Repository& repo,
   const git_oid destination_oid =
       options.destination.empty() ? source_parents.front()
                                   : repo.resolve(options.destination);
-  const int destination_is_descendant =
-      git_graph_descendant_of(repo.raw(), &destination_oid, &source_oid);
-  check(destination_is_descendant, "check squash destination");
-  if (destination_oid == source_oid || destination_is_descendant != 0) {
-    throw UserError("squash destination cannot be the source or its descendant");
+  if (source_oid == destination_oid) {
+    throw UserError("squash source and destination must be different");
   }
+
   std::set<git_oid, OidLess> selected{source_oid};
-  git_oid change_base = source_parents.front();
+  git_oid base = source_parents.front();
   if (options.entire_branch) {
-    const std::vector<git_oid> branch = repo.resolve_set(
+    const auto values = repo.resolve_set(
         "ancestors(" + oid_string(source_oid) + ") ~ ancestors(" +
         oid_string(destination_oid) + ")");
-    selected = std::set<git_oid, OidLess>(branch.begin(), branch.end());
-    std::vector<git_oid> roots;
-    for (const git_oid& oid : selected) {
-      const std::vector<git_oid> parents = repo.parents(oid);
-      if (std::ranges::none_of(parents, [&](const git_oid& parent) {
-            return selected.contains(parent);
-          })) {
-        roots.push_back(oid);
+    selected = std::set<git_oid, OidLess>(values.begin(), values.end());
+    if (selected.empty()) {
+      throw UserError("squash branch has no changes outside destination history");
+    }
+    // A branch squash transfers the cumulative diff from its divergence point.
+    // Reject merges instead of silently discarding one of their parent edges.
+    std::set<git_oid, OidLess> visited;
+    for (git_oid current = source_oid; selected.contains(current);) {
+      visited.insert(current);
+      const auto parents = repo.parents(current);
+      if (parents.size() != 1) {
+        throw UserError("squash branch must be a non-merge stack with a parent");
       }
+      base = parents.front();
+      current = base;
     }
-    if (roots.size() != 1) {
-      throw UserError("squash branch must have one divergence root");
-    }
-    const std::vector<git_oid> root_parents = repo.parents(roots.front());
-    if (root_parents.size() != 1) {
-      throw UserError("squash branch root must have exactly one parent");
-    }
-    change_base = root_parents.front();
-    const int destination_is_below_root =
-        git_graph_descendant_of(repo.raw(), &destination_oid, &roots.front());
-    check(destination_is_below_root, "check squash branch destination");
-    if (destination_is_below_root != 0) {
-      throw UserError("squash destination cannot be inside the selected branch");
+    if (visited.size() != selected.size()) {
+      throw UserError("squash branch must be a single stack");
     }
   }
+  const git_oid base_tree = *git_commit_tree_id(repo.commit(base).get());
   CommitPtr source_commit = repo.commit(source_oid);
+  const git_oid source_tree = *git_commit_tree_id(source_commit.get());
   CommitPtr destination_commit = repo.commit(destination_oid);
   std::string combined_message = options.message;
   if (!options.message_provided) {
@@ -357,31 +405,87 @@ void command_squash(Repository& repo,
       combined_message = first_line(git_commit_message(source_commit.get()));
     }
   }
-  const git_oid combined_tree = repo.replay(
-      change_base, destination_oid, *git_commit_tree_id(source_commit.get()),
-      /*preserve_new_parent_conflicts=*/true);
-  const git_oid rewritten_destination = repo.rewrite_commit(
-      destination_oid, repo.parents(destination_oid), combined_tree,
-      combined_message);
-  std::map<git_oid, git_oid, OidLess> replacements{
-      {destination_oid, rewritten_destination}};
-  for (const git_oid& oid : selected) {
-    replacements.emplace(oid, rewritten_destination);
+
+  RewritePlan plan;
+  std::map<git_oid, git_oid, OidLess> restacked;
+  const auto refs = repo.rewrite_refs();
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo.raw()), "walk squash revisions");
+  RevwalkPtr walk(raw_walk);
+  git_revwalk_sorting(walk.get(), GIT_SORT_TOPOLOGICAL | GIT_SORT_REVERSE);
+  for (const auto& [name, target] : refs) {
+    (void)name;
+    const int pushed = git_revwalk_push(walk.get(), &target);
+    if (pushed != GIT_EINVALIDSPEC) check(pushed, "walk squash revisions");
   }
-  RewritePlan plan = repo.descendants(std::move(replacements), selected);
+  check(git_revwalk_push(walk.get(), &source_oid), "walk squash source");
+  check(git_revwalk_push(walk.get(), &destination_oid), "walk squash destination");
+  // Removal and aliasing are separate: children stay on the source's old stack,
+  // while names for the consumed changes follow the squash destination.
+  git_oid old{};
+  while (git_revwalk_next(&old, walk.get()) == 0) {
+    const auto old_parents = repo.parents(old);
+    std::vector<git_oid> new_parents;
+    bool changed = false;
+    for (const git_oid& parent : old_parents) {
+      const auto found = restacked.find(parent);
+      const git_oid replacement = found == restacked.end() ? parent : found->second;
+      changed |= !(replacement == parent);
+      if (std::none_of(new_parents.begin(), new_parents.end(),
+                       [&](const git_oid& value) { return value == replacement; })) {
+        new_parents.push_back(replacement);
+      }
+    }
+    if (selected.contains(old)) {
+      restacked.emplace(old, new_parents.front());
+      continue;
+    }
+    git_oid result = old;
+    if (old == destination_oid) {
+      git_oid tree = *git_commit_tree_id(destination_commit.get());
+      if (changed && !old_parents.empty() && !new_parents.empty()) {
+        tree = repo.replay(old_parents.front(), new_parents.front(), tree);
+      }
+      tree = repo.merge_trees(
+          base_tree, tree, source_tree,
+          /*preserve_ours_conflicts=*/tree == *git_commit_tree_id(destination_commit.get()),
+          /*preserve_theirs_conflicts=*/true);
+      result = repo.rewrite_commit(old, new_parents, tree, combined_message);
+    } else if (changed) {
+      result = repo.rewrite_commit(old, new_parents);
+    }
+    if (!(result == old)) {
+      restacked.emplace(old, result);
+      plan.commits.emplace(old, result);
+    }
+  }
+  const git_oid rewritten_destination = plan.commits.contains(destination_oid)
+                                            ? plan.commits.at(destination_oid)
+                                            : destination_oid;
+  for (const git_oid& old : selected) {
+    plan.commits[old] = rewritten_destination;
+  }
+  for (const auto& [name, target] : refs) {
+    if (const auto replacement = plan.commits.find(target);
+        replacement != plan.commits.end()) {
+      plan.updates[name] = replacement->second;
+    }
+  }
+  repo.add_alias_updates(plan);
   const auto workspace = repo.workspace();
   if (workspace.has_value()) {
     git_oid new_workspace = *workspace;
     if (selected.contains(*workspace)) {
-      new_workspace = repo.create_commit(
-          combined_tree, {rewritten_destination}, "");
-    } else if (plan.commits.contains(*workspace)) {  // GG_COV_EXCL_BRANCH
+      new_workspace = replacement_workspace(
+          repo, *git_commit_tree_id(repo.commit(rewritten_destination).get()),
+          {rewritten_destination});
+    } else if (plan.commits.contains(*workspace)) {
       new_workspace = plan.commits.at(*workspace);
     }
     finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                      "gg squash");
   } else {
-    repo.record(std::move(plan.updates), {}, repo.head_state(), "gg squash");
+    finish_without_workspace(repo, std::move(plan), {}, "gg squash");
   }
   output << "Squashed into " << repo.short_commit_id(rewritten_destination).value
          << '\n';
@@ -410,6 +514,14 @@ void command_abandon(Repository& repo,
   }
 
   const auto refs = repo.rewrite_refs();
+  for (const auto& [name, target] : refs) {
+    if (starts_with(name, kWorkspacePrefix) &&
+        name != repo.workspace_ref_name() && selected.contains(target)) {
+      throw UserError("operation would remove active workspace: " +
+                      name.substr(kWorkspacePrefix.size()));
+    }
+  }
+
   git_revwalk* raw_walk = nullptr;
   check(git_revwalk_new(&raw_walk, repo.raw()), "walk revisions");
   RevwalkPtr walk(raw_walk);
@@ -498,20 +610,20 @@ void command_abandon(Repository& repo,
     git_oid new_workspace = *workspace;
     if (selected.contains(*workspace)) {
       const std::vector<git_oid>& parents = replacements.at(*workspace);
-      SignaturePtr signature = repo.signature();
-      do {
-        new_workspace = repo.create_commit(combined_tree(repo, parents), parents,
-                                           "", signature.get(), signature.get());
-        ++signature->when.time;
-      } while (selected.contains(new_workspace));
+      new_workspace = replacement_workspace(repo, combined_tree(repo, parents), parents);
     } else if (plan.commits.contains(*workspace)) {
       new_workspace = plan.commits.at(*workspace);
     }
     finish_workspace(repo, new_workspace, std::move(plan.updates),
                      std::move(deletes), "gg abandon");
   } else {
-    repo.record(std::move(plan.updates), std::move(deletes), repo.head_state(),
-                "gg abandon");
+    std::optional<git_oid> head_override;
+    const auto head = repo.head_oid();
+    if (head.has_value() && selected.contains(*head)) {
+      head_override = replacements.at(*head).front();
+    }
+    finish_without_workspace(repo, std::move(plan), std::move(deletes),
+                             "gg abandon", head_override);
   }
   output << "Abandoned " << selected.size() << " revision(s).\n";
 }
@@ -615,14 +727,33 @@ void command_move_files(Repository& repo,
     paths.push_back(parsed.lexically_normal().generic_string());
   }
 
-  RewritePlan plan = repo.move_files(source, destination, paths);
+  std::optional<git_oid> selected;
+  std::optional<git_oid> remaining;
+  if (!options.selected.empty() || !options.remaining.empty()) {
+    if (options.selected.empty() || options.remaining.empty()) {
+      throw UserError("partial moves require selected and remaining revisions");
+    }
+    const auto destination_parents = repo.parents(destination);
+    if (!(repo.parents(source).front() == destination) &&
+        !(destination_parents.size() == 1 && destination_parents.front() == source)) {
+      throw UserError("partial moves require an adjacent parent or child");
+    }
+    selected = *git_commit_tree_id(repo.commit(repo.resolve(options.selected)).get());
+    remaining = *git_commit_tree_id(repo.commit(repo.resolve(options.remaining)).get());
+  }
+  RewritePlan plan = repo.move_files(source, destination, paths, selected, remaining);
+  if (!plan.commits.contains(source) || !plan.commits.contains(destination)) {
+    throw UserError("could not prepare both file move endpoints");
+  }
+  const std::string destination_id =
+      repo.short_commit_id(plan.commits.at(destination)).value;
   const git_oid new_workspace = plan.commits.contains(*workspace)
                                     ? plan.commits.at(*workspace)
                                     : *workspace;
   finish_workspace(repo, new_workspace, std::move(plan.updates), {},
                    "gg move files");
   output << "Moved " << paths.size() << " file" << (paths.size() == 1 ? "" : "s")
-         << " into " << repo.short_commit_id(plan.commits.at(destination)).value
+         << " into " << destination_id
          << ".\n";
 }
 

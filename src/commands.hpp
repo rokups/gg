@@ -71,6 +71,10 @@ void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation);
+void finish_without_workspace(Repository& repo, RewritePlan plan,
+                              std::set<std::string> deletes,
+                              std::string_view operation,
+                              std::optional<git_oid> head_override = std::nullopt);
 void edit_file_with_editor(Repository&, const std::filesystem::path&);
 std::string edit_text(Repository&, std::string_view);
 
