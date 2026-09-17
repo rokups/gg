@@ -450,6 +450,20 @@ TEST_F(RepositoryTest, SnapshotPreservesSparseCheckoutEntries) {
   gg_repository_free(repository);
 }
 
+TEST_F(RepositoryTest, SnapshotDirtyGitlinkDirectoryDoesNotRecurse) {
+  write("gitlink/dirty.txt", "dirty\n");
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(gg_repository_adopt_git_history(repository, nullptr), GIT_OK);
+  int changed = 0;
+  const char* gitlink = "gitlink";
+  ASSERT_EQ(gg_repository_snapshot_working_copy_paths(
+                &changed, repository, {&gitlink, 1}, nullptr),
+            GIT_OK);
+  gg_repository_free(repository);
+}
+
 struct LineEndingSnapshotCase {
   const char* name;
   const char* auto_crlf;

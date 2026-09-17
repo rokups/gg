@@ -74,6 +74,22 @@ std::string string(const char* value) {
   return value == nullptr ? std::string{} : std::string(value);
 }
 
+bool simple_status_pathspec(std::string_view value) {
+  // fileset expressions are richer than libgit2 pathspecs.  Only forward
+  // conservative, literal repository-relative paths; all other expressions
+  // retain the old full scan and are filtered by fileset_matches below.
+  if (value.empty() || value == "." || value.front() == ':' || value.front() == '/'
+      || value.front() == '!' || value.front() == '^') return false;
+  if (value.find("../") != std::string_view::npos) return false;
+  if (value.find_first_of(" \t\n\r*?[]|&~()\\\"'") != std::string_view::npos) return false;
+  for (const auto& component : std::filesystem::path(value))
+    if (component == "." || component == "..") return false;
+  for (const std::string_view prefix : {"glob:", "file:", "root:", "cwd:"}) {
+    if (value.starts_with(prefix)) return false;
+  }
+  return true;
+}
+
 std::vector<std::string> strings(gg_string_array values) {
   if (values.count != 0 && values.strings == nullptr) {
     throw gg::detail::UserError("string array must not be null");
@@ -917,6 +933,11 @@ int gg_repository_status(gg_status* out,
     *out = {};
     const auto& value = required(options);
     const std::vector<std::string> filesets = strings(value.filesets);
+    std::vector<std::string> pathspecs;
+    if (!filesets.empty()
+        && std::ranges::all_of(filesets, simple_status_pathspec)) {
+      pathspecs = filesets;
+    }
     for (const std::string& fileset : filesets) {
       (void)gg::detail::fileset_matches(fileset, "");
     }
@@ -990,7 +1011,11 @@ int gg_repository_status(gg_status* out,
         entries.push_back(entry);
       }
     }
-    for (const std::string& path : repo.untracked_paths()) {
+    // The tracked diff is intentionally kept unfiltered: filtering it before
+    // rename detection can turn a rename into an add/delete pair when callers
+    // ask for only one side.  Untracked discovery has no such dependency and
+    // can safely use simple pathspecs to avoid walking the whole worktree.
+    for (const std::string& path : repo.untracked_paths(pathspecs)) {
       if (!selected(path.c_str())) continue;
       gg_status_entry entry{};
       entry.status = GIT_DELTA_UNTRACKED;

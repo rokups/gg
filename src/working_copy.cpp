@@ -245,6 +245,11 @@ std::optional<std::uint64_t> parse_file_size(std::string_view value) {
 }
 
 git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
+  return snapshot_tree(baseline_tree, true);
+}
+
+git_oid Repository::snapshot_tree(const git_oid& baseline_tree,
+                                  bool allow_stat_cache) const {
   git_index* raw_index = nullptr;
   check(git_repository_index(&raw_index, repo_.get()), "open index");
   IndexPtr index(raw_index);
@@ -270,7 +275,7 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
     check(git_index_read_tree(index.get(), baseline.get()), "prepare snapshot");
   }
   const FileTrackingState tracking = read_tracking(*this);
-  if (prepared && !sparse && tracking.tracked.empty() &&
+  if (allow_stat_cache && prepared && !sparse && tracking.tracked.empty() &&
       tracking.untracked.empty() && tracking.forced.empty()) {
     // The cached index already represents the working-copy change, so use it
     // as the stat cache to discover the small set of paths which actually
@@ -453,10 +458,13 @@ git_oid Repository::snapshot_tree(
       continue;
     }
     if (status.type() == std::filesystem::file_type::directory) {
-      return snapshot_tree(baseline_tree);
+      // A directory event can name a dirty submodule (a gitlink). A full
+      // fallback must bypass the stat-cache fast path, otherwise the same
+      // directory is rediscovered and recursively falls back forever.
+      return snapshot_tree(baseline_tree, false);
     }
     if (in_baseline && git_tree_entry_type(baseline_entry.get()) == GIT_OBJECT_TREE) {
-      return snapshot_tree(baseline_tree);
+      return snapshot_tree(baseline_tree, false);
     }
 
     if (!in_baseline && !tracked) {
@@ -477,7 +485,7 @@ git_oid Repository::snapshot_tree(
 
     if (status.type() != std::filesystem::file_type::symlink &&
         status.type() != std::filesystem::file_type::regular) {
-      return snapshot_tree(baseline_tree);
+      return snapshot_tree(baseline_tree, false);
     }
 
     // add_bypath applies Git's clean filters and platform configuration, but
@@ -519,11 +527,24 @@ git_oid Repository::snapshot_tree(
 }
 
 std::vector<std::string> Repository::untracked_paths() const {
+  return untracked_paths({});
+}
+
+std::vector<std::string> Repository::untracked_paths(
+    const std::vector<std::string>& pathspecs) const {
   if (operation_view_.has_value()) return {};
   git_status_options options = GIT_STATUS_OPTIONS_INIT;
   options.show = GIT_STATUS_SHOW_WORKDIR_ONLY;
   options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
                   GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+  std::vector<char*> mutable_pathspecs;
+  if (!pathspecs.empty()) {
+    mutable_pathspecs.reserve(pathspecs.size());
+    for (const std::string& path : pathspecs) {
+      mutable_pathspecs.push_back(const_cast<char*>(path.c_str()));
+    }
+    options.pathspec = {mutable_pathspecs.data(), mutable_pathspecs.size()};
+  }
   git_status_list* raw_status = nullptr;
   check(git_status_list_new(&raw_status, repo_.get(), &options),
         "scan untracked files");

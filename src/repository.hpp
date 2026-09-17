@@ -234,6 +234,10 @@ class Repository {
                                  std::string_view description) const;
 
   std::vector<std::string> untracked_paths() const;
+  // Restrict the worktree traversal to the supplied Git pathspecs.  An empty
+  // list retains the full repository scan used by status and snapshotting.
+  std::vector<std::string> untracked_paths(
+      const std::vector<std::string>& pathspecs) const;
 
   git_oid selected_tree(const git_oid& base_tree,
                           const git_oid& final_tree,
@@ -387,6 +391,9 @@ class Repository {
   std::vector<std::string> bookmarks(const git_oid& oid) const;
 
  private:
+  git_oid snapshot_tree(const git_oid& baseline_tree,
+                        bool allow_stat_cache) const;
+
   void initialize();
 
   git_oid resolve_atom(std::string_view revision) const;
