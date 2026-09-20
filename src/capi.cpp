@@ -1349,6 +1349,7 @@ int gg_repository_restore(gg_mutation_result* out,
     command.into = string(value.into);
     command.changes_in = string(value.changes_in);
     command.restore_descendants = value.restore_descendants != 0;
+    command.preserve_conflicts = value.preserve_conflicts != 0;
     command_restore(repo, command, output);
   });
 }

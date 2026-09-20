@@ -34,7 +34,7 @@
 extern "C" {
 #endif
 
-#define GG_OPTIONS_VERSION 1
+#define GG_OPTIONS_VERSION 2
 
 /* gg_repository borrows its git_repository for its entire lifetime. Every
  * function returns a libgit2 GIT_* code; failure details are available from
@@ -266,10 +266,11 @@ typedef struct gg_restore_options {
   const char *into;
   const char *changes_in;
   int restore_descendants;
+  int preserve_conflicts;
 } gg_restore_options;
 
 #define GG_RESTORE_OPTIONS_INIT \
-  { GG_OPTIONS_VERSION, { NULL, 0 }, NULL, NULL, NULL, 0 }
+  { GG_OPTIONS_VERSION, { NULL, 0 }, NULL, NULL, NULL, 0, 0 }
 
 typedef struct gg_move_files_options {
   unsigned int version;

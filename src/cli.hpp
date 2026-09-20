@@ -123,6 +123,7 @@ struct RestoreCommand {
   std::string tool;
   bool interactive{false};
   bool restore_descendants{false};
+  bool preserve_conflicts{false};
 };
 struct MoveFilesCommand {
   std::string source;

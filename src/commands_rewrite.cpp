@@ -674,7 +674,8 @@ void command_restore(Repository& repo,
   const git_oid destination_tree = *git_commit_tree_id(old.get());
   git_oid restored_tree =
       select_all ? source_tree
-                 : repo.selected_tree(destination_tree, source_tree, paths);
+           : repo.selected_tree(destination_tree, source_tree, paths,
+                      options.preserve_conflicts);
   if (options.interactive || !options.tool.empty()) {
     restored_tree = select_diff_tree(
         repo, destination_tree, restored_tree,

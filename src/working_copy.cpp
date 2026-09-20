@@ -565,7 +565,8 @@ std::vector<std::string> Repository::untracked_paths(
 
 git_oid Repository::selected_tree(const git_oid& base_tree,
                       const git_oid& final_tree,
-                      const std::vector<std::string>& paths) const {
+                      const std::vector<std::string>& paths,
+                      bool preserve_conflicts) const {
   git_index* raw_selected = nullptr;
   git_index* raw_final = nullptr;
   git_index_options index_options = GIT_INDEX_OPTIONS_INIT;
@@ -613,7 +614,11 @@ git_oid Repository::selected_tree(const git_oid& base_tree,
       return fileset_matches(fileset, entry_path);
     });
   };
-  std::erase_if(conflicts, [&](const auto& item) { return selected_path(item.first); });  // GG_COV_EXCL_BRANCH
+  std::erase_if(conflicts, [&](const auto& item) {
+    if (!selected_path(item.first)) return false;
+    return !preserve_conflicts ||
+           git_index_get_bypath(final.get(), item.first.c_str(), 0) == nullptr;
+  });  // GG_COV_EXCL_BRANCH
   for (const auto& [path, conflict] : final_conflicts) {
     if (selected_path(path)) conflicts[path] = conflict;
   }

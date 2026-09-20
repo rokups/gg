@@ -241,7 +241,8 @@ class Repository {
 
   git_oid selected_tree(const git_oid& base_tree,
                           const git_oid& final_tree,
-                          const std::vector<std::string>& paths) const;
+                          const std::vector<std::string>& paths,
+                          bool preserve_conflicts = false) const;
 
   git_oid merge_trees(const git_oid& ancestor_oid,
                         const git_oid& ours_oid,
