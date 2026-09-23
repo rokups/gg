@@ -42,6 +42,25 @@ CPMAddPackage(
     "USE_SSH exec"
 )
 
+if(WIN32)
+  # libgit2 starts ssh.exe without CREATE_NO_WINDOW, so a GUI process without
+  # a console opens a visible console window for every SSH operation. Hide it
+  # only when the caller has no console, keeping prompts for console clients.
+  set(GG_LIBGIT2_PROCESS_SOURCE "${libgit2_SOURCE_DIR}/src/util/win32/process.c")
+  file(READ "${GG_LIBGIT2_PROCESS_SOURCE}" GG_LIBGIT2_PROCESS)
+  string(FIND "${GG_LIBGIT2_PROCESS}" "CREATE_NO_WINDOW" GG_LIBGIT2_PROCESS_PATCHED)
+  if(GG_LIBGIT2_PROCESS_PATCHED EQUAL -1)
+    set(GG_LIBGIT2_PROCESS_FLAGS "DWORD flags = CREATE_UNICODE_ENVIRONMENT;")
+    string(REPLACE "${GG_LIBGIT2_PROCESS_FLAGS}"
+      "DWORD flags = CREATE_UNICODE_ENVIRONMENT |\n\t\t(GetConsoleWindow() == NULL ? CREATE_NO_WINDOW : 0);"
+      GG_LIBGIT2_PROCESS_WITHOUT_WINDOW "${GG_LIBGIT2_PROCESS}")
+    if(GG_LIBGIT2_PROCESS_WITHOUT_WINDOW STREQUAL GG_LIBGIT2_PROCESS)
+      message(FATAL_ERROR "Could not hide libgit2 child process console windows")
+    endif()
+    file(WRITE "${GG_LIBGIT2_PROCESS_SOURCE}" "${GG_LIBGIT2_PROCESS_WITHOUT_WINDOW}")
+  endif()
+endif()
+
 CPMAddPackage(
   NAME CLI11
   GITHUB_REPOSITORY CLIUtils/CLI11
