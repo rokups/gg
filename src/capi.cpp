@@ -1033,6 +1033,97 @@ int gg_repository_status(gg_status* out,
   });
 }
 
+int gg_repository_worktree_status(gg_status* out,
+                                  gg_repository* repository,
+                                  const gg_status_options* options) {
+  return boundary([&] {
+    if (out == nullptr || repository == nullptr) {
+      throw gg::detail::UserError("status arguments must not be null");
+    }
+    *out = {};
+    const auto& value = required(options);
+    if (value.at_operation != nullptr) {
+      throw gg::detail::UserError("working-tree status cannot use a historical operation");
+    }
+    const std::vector<std::string> filesets = strings(value.filesets);
+    for (const std::string& fileset : filesets) {
+      (void)gg::detail::fileset_matches(fileset, "");
+    }
+    Repository& repo = repository->implementation;
+    const auto active = repo.workspace().has_value() ? repo.workspace()
+                                                      : repo.head_oid();
+    if (active.has_value()) {
+      out->has_working_copy = 1;
+      out->working_copy = *active;
+      const auto parents = repo.parents(*active);
+      if (!parents.empty()) {
+        out->parents.ids = static_cast<git_oid*>(
+            std::malloc(parents.size() * sizeof(git_oid)));
+        if (out->parents.ids == nullptr) throw std::bad_alloc();
+        std::ranges::copy(parents, out->parents.ids);
+        out->parents.count = parents.size();
+      }
+    }
+    const git_oid baseline = active.has_value()
+                                 ? *git_commit_tree_id(repo.commit(*active).get())
+                                 : repo.empty_tree();
+    gg::detail::DiffPtr diff = repo.worktree_diff(baseline);
+    git_diff_find_options find = GIT_DIFF_FIND_OPTIONS_INIT;
+    gg::detail::check(git_diff_find_similar(diff.get(), &find),
+                      "find renamed working-tree files");
+    const auto selected = [&](const char* raw_path) {
+      const std::string_view path = raw_path == nullptr ? "" : raw_path;
+      return filesets.empty() ||
+             std::ranges::any_of(filesets, [&](const auto& fileset) {
+               return gg::detail::fileset_matches(fileset, path);
+             });
+    };
+    std::vector<gg_status_entry> entries;
+    for (size_t index = 0; index < git_diff_num_deltas(diff.get()); ++index) {
+      const git_diff_delta* delta = git_diff_get_delta(diff.get(), index);
+      if (!selected(delta->old_file.path) && !selected(delta->new_file.path)) {
+        continue;
+      }
+      gg_status_entry entry{};
+      entry.status = delta->status;
+      entry.old_path = duplicate(delta->old_file.path == nullptr
+                                     ? "" : delta->old_file.path);
+      entry.new_path = duplicate(delta->new_file.path == nullptr
+                                     ? "" : delta->new_file.path);
+      entry.old_mode = static_cast<git_filemode_t>(delta->old_file.mode);
+      entry.new_mode = static_cast<git_filemode_t>(delta->new_file.mode);
+      entries.push_back(entry);
+    }
+    if (active.has_value()) {
+      for (const std::string& path : repo.conflict_paths(*active)) {
+        if (!selected(path.c_str())) continue;
+        auto found = std::ranges::find_if(entries,
+            [&](const gg_status_entry& entry) {
+              return path == entry.old_path || path == entry.new_path;
+            });
+        if (found != entries.end()) {
+          found->conflicted = 1;
+        } else {
+          gg_status_entry entry{};
+          entry.status = GIT_DELTA_CONFLICTED;
+          entry.old_path = duplicate(path);
+          entry.new_path = duplicate(path);
+          entry.conflicted = 1;
+          entries.push_back(entry);
+        }
+      }
+    }
+    if (!entries.empty()) {
+      out->entries = static_cast<gg_status_entry*>(
+          std::malloc(entries.size() * sizeof(gg_status_entry)));
+      if (out->entries == nullptr) throw std::bad_alloc();
+      std::ranges::copy(entries, out->entries);
+      out->entry_count = entries.size();
+    }
+    return GIT_OK;
+  });
+}
+
 int gg_repository_operations(gg_operation_array* out,
                              gg_repository* repository,
                              size_t limit) {
@@ -1180,6 +1271,47 @@ int gg_repository_commit(gg_mutation_result* out,
   });
 }
 
+int gg_repository_commit_worktree(gg_mutation_result* out,
+                                  gg_repository* repository,
+                                  const char* message,
+                                  const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "commit_worktree",
+                [&](Repository& repo, std::ostream& output) {
+    if (message == nullptr) {
+      throw gg::detail::UserError("commit message must not be null");
+    }
+    gg::detail::command_commit_worktree(repo, message, output);
+  });
+}
+
+int gg_repository_amend_worktree(gg_mutation_result* out,
+                                 gg_repository* repository,
+                                 const char* revision,
+                                 const char* message,
+                                 const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "amend_worktree",
+                [&](Repository& repo, std::ostream& output) {
+    gg::detail::command_amend_worktree(
+        repo, revision == nullptr ? std::nullopt
+                                  : std::optional<std::string_view>(revision),
+        message == nullptr ? std::nullopt
+                           : std::optional<std::string_view>(message), output);
+  });
+}
+
+int gg_repository_amend_tree_worktree(
+    gg_mutation_result* out, gg_repository* repository,
+    const char* revision, const git_oid* tree_oid,
+    const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "amend_tree_worktree",
+                [&](Repository& repo, std::ostream& output) {
+    if (revision == nullptr || tree_oid == nullptr) {
+      throw gg::detail::UserError("revision and tree must not be null");
+    }
+    gg::detail::command_amend_tree_worktree(repo, revision, *tree_oid, output);
+  });
+}
+
 int gg_repository_describe(gg_mutation_result* out,
                            gg_repository* repository,
                            const gg_describe_options* options,
@@ -1226,6 +1358,19 @@ int gg_repository_edit(gg_mutation_result* out,
   return mutate(out, repository, operation, "edit", [&](Repository& repo, std::ostream& output) {
     if (revision == nullptr) throw gg::detail::UserError("revision must not be null");
     command_edit(repo, EditCommand{revision}, output);
+  });
+}
+
+int gg_repository_edit_worktree(gg_mutation_result* out,
+                                gg_repository* repository,
+                                const char* revision,
+                                const gg_operation_options* operation) {
+  return mutate(out, repository, operation, "edit_worktree",
+                [&](Repository& repo, std::ostream& output) {
+    if (revision == nullptr) {
+      throw gg::detail::UserError("revision must not be null");
+    }
+    gg::detail::command_edit_worktree(repo, revision, output);
   });
 }
 

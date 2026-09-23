@@ -325,6 +325,7 @@ void Repository::import_git_history(std::ostream* progress) const {
     record({}, {}, head_state(), "gg import history");
   } else {
     (void)ensure_operation();
+    (void)adopt_external_head();
   }
 }
 

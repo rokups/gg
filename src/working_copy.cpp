@@ -248,6 +248,116 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   return snapshot_tree(baseline_tree, true);
 }
 
+DiffPtr Repository::worktree_diff(const git_oid& baseline_tree) const {
+  TreePtr baseline = tree(baseline_tree);
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo_.get()), "open working-tree index");
+  IndexPtr index(raw_index);
+  check(git_index_read(index.get(), true), "read working-tree index");
+  git_diff_options options = GIT_DIFF_OPTIONS_INIT;
+  options.flags = GIT_DIFF_INCLUDE_UNTRACKED |
+                  GIT_DIFF_RECURSE_UNTRACKED_DIRS |
+                  GIT_DIFF_INCLUDE_TYPECHANGE;
+  options.notify_cb = [](const git_diff*, const git_diff_delta* delta,
+                         const char*, void* payload) {
+    if (delta->status != GIT_DELTA_DELETED ||
+        delta->old_file.path == nullptr) return 0;
+    auto* index = static_cast<git_index*>(payload);
+    const git_index_entry* entry =
+        git_index_get_bypath(index, delta->old_file.path, 0);
+    return entry != nullptr &&
+                   (entry->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE) != 0
+               ? 1
+               : 0;
+  };
+  options.payload = index.get();
+  git_diff* raw_diff = nullptr;
+  check(git_diff_tree_to_workdir(&raw_diff, repo_.get(), baseline.get(),
+                                 &options),
+        "compare working tree with active change");
+  return DiffPtr(raw_diff);
+}
+
+bool Repository::worktree_dirty(const git_oid& baseline_tree) const {
+  return git_diff_num_deltas(worktree_diff(baseline_tree).get()) != 0;
+}
+
+bool Repository::worktree_tracked_dirty(const git_oid& baseline_tree) const {
+  DiffPtr diff = worktree_diff(baseline_tree);
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo_.get()), "open working-tree index");
+  IndexPtr index(raw_index);
+  check(git_index_read(index.get(), true), "read working-tree index");
+  const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+  for (size_t position = 0; position < git_diff_num_deltas(diff.get()); ++position) {
+    const git_diff_delta* delta = git_diff_get_delta(diff.get(), position);
+    if (delta->status == GIT_DELTA_UNTRACKED) continue;
+    const char* path = delta->new_file.path;
+    if (path != nullptr && git_index_get_bypath(index.get(), path, 0) == nullptr) {
+      std::error_code error;
+      const auto file = std::filesystem::symlink_status(workdir / path, error);
+      if (!error && file.type() != std::filesystem::file_type::not_found) {
+        // The caller removed this path from the index. Checkout's untracked
+        // collision preflight protects its disk content with a path-specific
+        // error, even when the baseline commit still contains the path.
+        continue;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+bool Repository::synchronizes_commands() const {
+  return synchronize_commands_;
+}
+
+bool Repository::projects_workspace_head() const {
+  const auto current_operation = operation();
+  if (!current_operation.has_value()) return false;
+  const OperationState recorded = parse_operation(*current_operation);
+  const auto it = recorded.refs.find(workspace_ref_name());
+  if (it == recorded.refs.end()) return false;
+  if (!recorded.head.symbolic) {
+    return recorded.head.value == oid_string(it->second);
+  }
+  // A branch checked out at the active commit projects it as well.
+  const auto branch = recorded.refs.find(recorded.head.value);
+  return branch != recorded.refs.end() && branch->second == it->second;
+}
+
+std::optional<git_oid> Repository::expected_head() const {
+  const auto current = workspace();
+  if (!current.has_value() || projects_workspace_head()) return current;
+  const auto current_parents = parents(*current);
+  return current_parents.empty() ? current
+                                 : std::optional<git_oid>(current_parents.front());
+}
+
+bool Repository::head_matches_workspace() const {
+  if (!workspace().has_value()) return true;
+  const auto expected = expected_head();
+  const auto actual = head_oid();
+  return actual.has_value() == expected.has_value() &&
+         (!actual.has_value() || *actual == *expected);
+}
+
+void Repository::require_current_head() const {
+  if (!head_matches_workspace()) {
+    throw UserError("Git HEAD changed outside gg; adopt Git history before editing the working tree");
+  }
+}
+
+bool Repository::adopt_external_head() const {
+  if (synchronize_commands_ || head_matches_workspace()) return false;
+  const auto head = head_oid();
+  if (!head.has_value()) return false;
+  // Project the workspace onto Git's HEAD without snapshotting the disk.
+  // Uncommitted edits stay in the working tree, relative to the new commit.
+  record({{workspace_ref_name(), *head}}, {}, head_state(), "gg adopt Git HEAD");
+  return true;
+}
+
 git_oid Repository::snapshot_tree(const git_oid& baseline_tree,
                                   bool allow_stat_cache) const {
   git_index* raw_index = nullptr;
@@ -727,6 +837,9 @@ void Repository::set_head(const HeadState& head) const {
 }
 
 HeadState Repository::head_for_workspace(const git_oid& workspace) const {
+  if (projects_workspace_head()) {
+    return {false, oid_string(workspace)};
+  }
   const auto workspace_parents = parents(workspace);
   if (workspace_parents.empty()) {
     // A root has no parent to check out. Anchor detached HEAD to the root itself.
@@ -869,9 +982,14 @@ bool Repository::sync_workspace(const std::vector<std::string>& paths) const {
   CommitPtr current = commit(*workspace);
   const auto current_parents = parents(*workspace);
   const auto head = head_oid();
-  if ((!current_parents.empty() &&
-       (!head.has_value() || !(*head == current_parents.front()))) ||
-      (current_parents.empty() && head.has_value() && !(*head == *workspace))) {
+  const bool projected = projects_workspace_head();
+  const bool head_mismatch = projected
+      ? (!head.has_value() || !(*head == *workspace))
+      : ((!current_parents.empty() &&
+          (!head.has_value() || !(*head == current_parents.front()))) ||
+         (current_parents.empty() && head.has_value() &&
+          !(*head == *workspace)));
+  if (head_mismatch) {
     const git_oid base_tree = head.has_value()
                                   ? *git_commit_tree_id(commit(*head).get())
                                   : empty_tree();

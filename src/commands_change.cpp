@@ -389,6 +389,127 @@ void command_commit(Repository& repo,
          << '\n';
 }
 
+void command_commit_worktree(Repository& repo,
+                             std::string_view message,
+                             std::ostream& output) {
+  repo.require_current_head();
+  const auto active = repo.workspace().has_value() ? repo.workspace()
+                                                    : repo.head_oid();
+  const git_oid old_tree = active.has_value()
+                               ? *git_commit_tree_id(repo.commit(*active).get())
+                               : repo.empty_tree();
+  const git_oid new_tree = repo.snapshot_tree(old_tree);
+  if (new_tree == old_tree) {
+    throw UserError("no working-tree changes to commit");
+  }
+  const std::vector<git_oid> parents = active.has_value()
+                                            ? std::vector<git_oid>{*active}
+                                            : std::vector<git_oid>{};
+  const git_oid created = repo.create_commit(new_tree, parents, message);
+  std::map<std::string, git_oid> updates;
+  if (active.has_value()) {
+    const HeadState head = repo.head_state();
+    const auto attached = head.symbolic ? repo.ref_target(head.value)
+                                        : std::nullopt;
+    if (head.symbolic && head.value.starts_with("refs/heads/") &&
+        attached.has_value() && *attached == *active) {
+      updates.emplace(head.value, created);
+    }
+  }
+  finish_workspace_preserving_worktree(repo, created, std::move(updates),
+                                       "gg commit working tree");
+  output << "Committed as " << repo.short_commit_id(created).value << '\n';
+}
+
+void command_amend_worktree(Repository& repo,
+                            std::optional<std::string_view> revision,
+                            std::optional<std::string_view> message,
+                            std::ostream& output) {
+  repo.require_current_head();
+  const auto active = repo.workspace().has_value() ? repo.workspace()
+                                                    : repo.head_oid();
+  if (!active.has_value()) {
+    throw UserError("no active commit to amend");
+  }
+  if (revision.has_value()) {
+    const std::string oid = oid_string(*active);
+    if (!revision->empty() &&
+        std::ranges::all_of(*revision, [](unsigned char c) {
+          return std::isxdigit(c) != 0;
+        }) && !oid.starts_with(*revision)) {
+      throw UserError("selected revision is stale");
+    }
+    if (repo.resolve(*revision) != *active) {
+      throw UserError("selected revision is not the active commit");
+    }
+  }
+  CommitPtr original = repo.commit(*active);
+  const git_oid old_tree = *git_commit_tree_id(original.get());
+  const git_oid new_tree = repo.snapshot_tree(old_tree);
+  const git_oid rewritten = repo.rewrite_commit(
+      *active, repo.parents(*active), new_tree, message);
+  if (rewritten == *active) {
+    output << "Nothing changed.\n";
+    return;
+  }
+  RewritePlan plan = repo.descendants({{*active, rewritten}});
+  finish_workspace_preserving_worktree(repo, rewritten,
+                                       std::move(plan.updates),
+                                       "gg amend working tree");
+  output << "Amended as " << repo.short_commit_id(rewritten).value << '\n';
+}
+
+void command_amend_tree_worktree(Repository& repo,
+                                 std::string_view revision,
+                                 const git_oid& tree_oid,
+                                 std::ostream& output) {
+  repo.require_current_head();
+  const auto active = repo.workspace().has_value() ? repo.workspace()
+                                                    : repo.head_oid();
+  if (!active.has_value()) {
+    throw UserError("no active commit to amend");
+  }
+  const std::string oid = oid_string(*active);
+  if (revision.empty() ||
+      (std::ranges::all_of(revision, [](unsigned char c) {
+         return std::isxdigit(c) != 0;
+       }) && !oid.starts_with(revision)) ||
+      repo.resolve(revision) != *active) {
+    throw UserError("selected revision is not the active commit");
+  }
+  (void)repo.tree(tree_oid);  // Validate object type before modifying refs.
+  const git_oid old_tree = *git_commit_tree_id(repo.commit(*active).get());
+  if (old_tree == tree_oid) {
+    output << "Nothing changed.\n";
+    return;
+  }
+  repo.preserve_conflicts(old_tree, tree_oid);
+  const git_oid rewritten = repo.rewrite_commit(
+      *active, repo.parents(*active), tree_oid);
+  RewritePlan plan = repo.descendants({{*active, rewritten}});
+  finish_workspace_preserving_worktree(
+      repo, rewritten, std::move(plan.updates), "gg amend tree");
+  output << "Amended as " << repo.short_commit_id(rewritten).value << '\n';
+}
+
+void command_edit_worktree(Repository& repo,
+                           std::string_view revision,
+                           std::ostream& output) {
+  repo.require_current_head();
+  const auto current = repo.workspace().has_value() ? repo.workspace()
+                                                     : repo.head_oid();
+  const git_oid tree = current.has_value()
+                           ? *git_commit_tree_id(repo.commit(*current).get())
+                           : repo.empty_tree();
+  if (repo.worktree_dirty(tree)) {
+    throw UserError("working tree has uncommitted changes; commit or amend before switching changes");
+  }
+  const git_oid target = repo.resolve(revision);
+  finish_workspace(repo, target, {}, {}, "gg edit working tree", true);
+  output << "Working copy now at: " << repo.short_commit_id(target).value
+         << '\n';
+}
+
 void command_status(Repository& repo,
                     const StatusCommand& options,
                     std::ostream& output) {

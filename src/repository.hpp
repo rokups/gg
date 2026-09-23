@@ -228,6 +228,16 @@ class Repository {
   git_oid snapshot_tree(const git_oid& baseline_tree) const;
   git_oid snapshot_tree(const git_oid& baseline_tree,
                         const std::vector<std::string>& paths) const;
+  DiffPtr worktree_diff(const git_oid& baseline_tree) const;
+  bool worktree_dirty(const git_oid& baseline_tree) const;
+  bool worktree_tracked_dirty(const git_oid& baseline_tree) const;
+  bool synchronizes_commands() const;
+  bool projects_workspace_head() const;
+  std::optional<git_oid> expected_head() const;
+  bool head_matches_workspace() const;
+  void require_current_head() const;
+  // Explicit-commit mode only: follow a HEAD moved by Git without snapshotting.
+  bool adopt_external_head() const;
 
   void record_workspace_snapshot(const git_oid& workspace,
                                  std::map<std::string, git_oid> updates,

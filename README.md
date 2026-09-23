@@ -332,11 +332,32 @@ gg_repository_free(gg);
 ```
 
 Synchronization is explicit: call `gg_repository_adopt_git_history()` after
-native Git history changes and `gg_repository_snapshot_working_copy()` after
-filesystem or index changes. Queries do not modify repository state. Fetch and
+native Git history changes. The legacy working-change workflow uses
+`gg_repository_snapshot_working_copy()` after filesystem or index changes.
+Queries do not modify repository state. Fetch and
 push use plan/complete pairs so a GUI can perform transport itself and record gg
 tracking state only after success. Long calls accept synchronous progress and
 cancellation callbacks through `gg_operation_options`.
+
+For a GUI with an explicit virtual Working tree, call
+`gg_repository_worktree_status()` to compare disk contents with the active
+commit without recording a snapshot. `gg_repository_commit_worktree()` captures
+all eligible disk changes in one new child; `gg_repository_amend_worktree()`
+captures them into the active commit and restacks its descendants. Both leave
+Git `HEAD` at the active committed change. The amend revision, when supplied,
+must still identify that active change. These operations use the filesystem as
+the source of file contents, including when the Git index holds staged data.
+They retain snapshot rules for ignored files, sparse checkouts, large new files,
+and conflict metadata. Do not call `gg_repository_snapshot_working_copy()`
+before either operation: it is the separate legacy synchronization path.
+
+Use `gg_repository_edit_worktree()` to switch active commits; it refuses a
+switch while the disk has uncommitted changes. For selected file or hunk
+transfers, construct a Git tree and pass its OID to
+`gg_repository_amend_tree_worktree()`. That operation rewrites the active commit
+and descendants while leaving the filesystem and index untouched. A native Git
+commit that moves `HEAD` outside gg is rejected by the explicit Commit/Amend
+calls until `gg_repository_snapshot_working_copy()` explicitly imports it.
 
 Install the project and consume it from CMake with
 `find_package(gg CONFIG REQUIRED)` and `target_link_libraries(app PRIVATE

@@ -70,7 +70,12 @@ git_oid select_diff_tree(Repository&, const git_oid&, const git_oid&,
 void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
-                      std::string_view operation);
+                      std::string_view operation,
+                      bool captured_worktree = false);
+void finish_workspace_preserving_worktree(
+    Repository& repo, const git_oid& workspace,
+    std::map<std::string, git_oid> updates,
+    std::string_view operation);
 void finish_without_workspace(Repository& repo, RewritePlan plan,
                               std::set<std::string> deletes,
                               std::string_view operation,
@@ -94,6 +99,12 @@ void command_split(Repository&, const SplitCommand&, std::ostream&);
 void command_squash(Repository&, const SquashCommand&, std::ostream&);
 void command_abandon(Repository&, const AbandonCommand&, std::ostream&);
 void command_commit(Repository&, const CommitCommand&, std::ostream&);
+void command_commit_worktree(Repository&, std::string_view, std::ostream&);
+void command_amend_worktree(Repository&, std::optional<std::string_view>,
+                            std::optional<std::string_view>, std::ostream&);
+void command_amend_tree_worktree(Repository&, std::string_view,
+                                 const git_oid&, std::ostream&);
+void command_edit_worktree(Repository&, std::string_view, std::ostream&);
 void command_restore(Repository&, const RestoreCommand&, std::ostream&);
 void command_move_files(Repository&, const MoveFilesCommand&, std::ostream&);
 void command_simplify_parents(Repository&, const SimplifyParentsCommand&,

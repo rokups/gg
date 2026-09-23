@@ -686,15 +686,30 @@ void finish_workspace(Repository& repo,
                       const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
-                      std::string_view operation) {
+                      std::string_view operation,
+                      bool captured_worktree) {
   bool tree_unchanged = false;
   if (const auto current = repo.workspace(); current.has_value()) {
     tree_unchanged = git_oid_equal(
         git_commit_tree_id(repo.commit(*current).get()),
         git_commit_tree_id(repo.commit(workspace).get())) != 0;
   }
+  if (!tree_unchanged && !captured_worktree &&
+      !repo.synchronizes_commands()) {
+    const auto baseline = repo.workspace().has_value()
+                              ? repo.workspace()
+                              : repo.head_oid();
+    const git_oid baseline_tree = baseline.has_value()
+                                      ? *git_commit_tree_id(repo.commit(*baseline).get())
+                                      : repo.empty_tree();
+    if (repo.worktree_tracked_dirty(baseline_tree)) {
+      throw UserError("working tree has uncommitted changes; commit or amend before switching changes");
+    }
+  }
   updates[repo.workspace_ref_name()] = workspace;
-  const HeadState head = repo.head_for_workspace(workspace);
+  const HeadState head = captured_worktree
+                             ? HeadState{false, oid_string(workspace)}
+                             : repo.head_for_workspace(workspace);
   const git_oid previous_operation = repo.ensure_operation();
   const auto previous_aliases = repo.data_refs();
   repo.record(std::move(updates), std::move(deletes), head, operation);
@@ -708,6 +723,38 @@ void finish_workspace(Repository& repo,
                              &previous_aliases);
     } catch (const std::exception& recovery) {
       repo.clear_checkout_recovery();
+      throw UserError(original + "; could not restore the previous operation: " +
+                      recovery.what());
+    }
+    throw;
+  }
+}
+
+void finish_workspace_preserving_worktree(
+    Repository& repo, const git_oid& workspace,
+    std::map<std::string, git_oid> updates,
+    std::string_view operation) {
+  const HeadState previous_head = repo.head_state();
+  const git_oid previous_operation = repo.ensure_operation();
+  const auto previous_refs = repo.data_refs();
+  updates[repo.workspace_ref_name()] = workspace;
+  const HeadState head{false, oid_string(workspace)};
+  repo.record(std::move(updates), {}, head, operation);
+  try {
+    repo.set_head(head);
+  } catch (const std::exception& error) {
+    const std::string original = error.what();
+    try {
+      auto restore = previous_refs;
+      restore[repo.operation_ref_name()] = previous_operation;
+      std::set<std::string> deletes;
+      for (const auto& [name, target] : repo.data_refs()) {
+        (void)target;
+        if (!previous_refs.contains(name)) deletes.insert(name);
+      }
+      repo.apply_refs(restore, deletes, "gg restore failed tree amend");
+      repo.set_head(previous_head);
+    } catch (const std::exception& recovery) {
       throw UserError(original + "; could not restore the previous operation: " +
                       recovery.what());
     }
@@ -733,6 +780,16 @@ void finish_without_workspace(Repository& repo, RewritePlan plan,
     }
   } else if (checkout.has_value()) {
     head = {false, oid_string(*checkout)};
+  }
+  if (!repo.synchronizes_commands() &&
+      (checkout.has_value() != previous_head.has_value() ||
+       (checkout.has_value() && !(*checkout == *previous_head)))) {
+    const git_oid baseline_tree = previous_head.has_value()
+                                      ? *git_commit_tree_id(repo.commit(*previous_head).get())
+                                      : repo.empty_tree();
+    if (repo.worktree_tracked_dirty(baseline_tree)) {
+      throw UserError("working tree has uncommitted changes; commit or amend before switching changes");
+    }
   }
   const git_oid previous_operation = repo.ensure_operation();
   const auto previous_aliases = repo.data_refs();
@@ -1419,7 +1476,10 @@ void command_workspace(Repository& repo,
       } else {
         if (selected->managed) {
           Repository target(selected->root);
-          target.sync_workspace();
+          // Explicit-commit callers never snapshot implicitly; uncommitted
+          // edits must fail the loss check below instead of being absorbed
+          // into a commit that removal would leave unreachable.
+          if (repo.synchronizes_commands()) target.sync_workspace();
           repo.invalidate_ref_cache();
           const auto target_workspace = target.workspace();
           if (target_workspace.has_value() &&

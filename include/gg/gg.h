@@ -616,6 +616,11 @@ GG_EXTERN int gg_repository_lookup_revisions(
 GG_EXTERN int gg_repository_status(gg_status *out,
                                     gg_repository *repository,
                                     const gg_status_options *options);
+/* Compare the current filesystem with the active change (or Git HEAD when
+ * there is no gg workspace). This query does not snapshot or update refs. */
+GG_EXTERN int gg_repository_worktree_status(
+    gg_status *out, gg_repository *repository,
+    const gg_status_options *options);
 GG_EXTERN int gg_repository_operations(gg_operation_array *out,
                                        gg_repository *repository,
                                        size_t limit);
@@ -634,6 +639,20 @@ GG_EXTERN int gg_repository_new_change(
 GG_EXTERN int gg_repository_commit(
     gg_mutation_result *out, gg_repository *repository,
     const gg_commit_options *options, const gg_operation_options *operation);
+/* Capture all eligible filesystem changes in one new child commit. */
+GG_EXTERN int gg_repository_commit_worktree(
+    gg_mutation_result *out, gg_repository *repository, const char *message,
+    const gg_operation_options *operation);
+/* Rewrite the active change from the filesystem and restack descendants.
+ * revision, if supplied, must identify the currently active change.
+ * A NULL message retains the previous description. */
+GG_EXTERN int gg_repository_amend_worktree(
+    gg_mutation_result *out, gg_repository *repository, const char *revision,
+    const char *message, const gg_operation_options *operation);
+/* Replace only the active commit's tree. Leaves disk and index untouched. */
+GG_EXTERN int gg_repository_amend_tree_worktree(
+    gg_mutation_result *out, gg_repository *repository, const char *revision,
+    const git_oid *tree_oid, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_describe(
     gg_mutation_result *out, gg_repository *repository,
     const gg_describe_options *options, const gg_operation_options *operation);
@@ -644,6 +663,10 @@ GG_EXTERN int gg_repository_edit(gg_mutation_result *out,
                                  gg_repository *repository,
                                  const char *revision,
                                  const gg_operation_options *operation);
+/* Switch active changes only when no filesystem edits would be overwritten. */
+GG_EXTERN int gg_repository_edit_worktree(
+    gg_mutation_result *out, gg_repository *repository, const char *revision,
+    const gg_operation_options *operation);
 GG_EXTERN int gg_repository_move(gg_mutation_result *out,
                                  gg_repository *repository,
                                  const gg_move_options *options,

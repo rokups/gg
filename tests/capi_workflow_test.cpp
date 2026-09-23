@@ -12,6 +12,371 @@
 
 namespace gg::test {
 
+TEST_F(RepositoryTest, ExplicitWorktreeCommitUsesDiskAndProjectsHead) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  const git_oid base = ref("HEAD");
+  write("tracked.txt", "staged value\n");
+  ASSERT_EQ(invoke_git({"add", "tracked.txt"}).code, 0);
+  write("tracked.txt", "disk value\n");
+  write("new.txt", "new\n");
+  write(".gitignore", "ignored.txt\n");
+  write("ignored.txt", "ignored\n");
+
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 3U);
+  EXPECT_TRUE(status.has_working_copy);
+  EXPECT_NE(git_oid_equal(&status.working_copy, &base), 0);
+  gg_status_dispose(&status);
+  EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
+
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_commit_worktree(&result, repository, "first", nullptr),
+            GIT_OK);
+  ASSERT_TRUE(result.has_working_copy);
+  const git_oid created = result.working_copy;
+  gg_mutation_result_dispose(&result);
+  const git_oid head = ref("HEAD");
+  const git_oid workspace = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&created, &head), 0);
+  EXPECT_NE(git_oid_equal(&created, &workspace), 0);
+  const git_oid parent = commit_parent(created);
+  EXPECT_NE(git_oid_equal(&base, &parent), 0);
+  EXPECT_EQ(invoke_git({"show", "HEAD:tracked.txt"}).output, "disk value\n");
+  EXPECT_EQ(invoke_git({"show", "HEAD:new.txt"}).output, "new\n");
+  EXPECT_EQ(invoke_git({"ls-files", "--", "ignored.txt"}).output, "");
+  EXPECT_EQ(invoke_git({"status", "--porcelain=v2", "--untracked-files=all"}).output,
+            "");
+
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
+  gg_status_dispose(&status);
+
+  write("tracked.txt", "second value\n");
+  std::filesystem::remove(path_ / "new.txt");
+  write("nested/fresh.txt", "fresh\n");
+  const char* selected_path = "tracked.txt";
+  options.filesets = {&selected_path, 1};
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 1U);
+  gg_status_dispose(&status);
+  options.filesets = {nullptr, 0};
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 3U);
+  gg_status_dispose(&status);
+  ASSERT_EQ(gg_repository_commit_worktree(&result, repository, "second", nullptr),
+            GIT_OK);
+  const git_oid second = result.working_copy;
+  gg_mutation_result_dispose(&result);
+  const git_oid second_head = ref("HEAD");
+  const git_oid second_parent = commit_parent(second);
+  EXPECT_NE(git_oid_equal(&second, &second_head), 0);
+  EXPECT_NE(git_oid_equal(&created, &second_parent), 0);
+  EXPECT_EQ(invoke_git({"show", "HEAD:tracked.txt"}).output, "second value\n");
+  EXPECT_EQ(invoke_git({"show", "HEAD:new.txt"}).code, 128);
+  EXPECT_EQ(invoke_git({"show", "HEAD:nested/fresh.txt"}).output, "fresh\n");
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeDetectsExternalGitCommit) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  write("tracked.txt", "first\n");
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_commit_worktree(&result, repository, "first", nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&result);
+  write("tracked.txt", "external\n");
+  ASSERT_EQ(invoke_git({"add", "tracked.txt"}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-m", "native"}).code, 0);
+  const git_oid native = ref("HEAD");
+  EXPECT_EQ(gg_repository_commit_worktree(&result, repository, "wrong", nullptr),
+            GIT_EINVALID);
+  const git_oid unchanged_head = ref("HEAD");
+  EXPECT_NE(git_oid_equal(&native, &unchanged_head), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "external\n");
+
+  int changed = 0;
+  ASSERT_EQ(gg_repository_snapshot_working_copy(&changed, repository, nullptr),
+            GIT_OK);
+  EXPECT_TRUE(changed);
+  const git_oid imported = ref(detail::kWorkspaceRef);
+  const git_oid imported_head = ref("HEAD");
+  const git_oid imported_parent = commit_parent(imported);
+  EXPECT_NE(git_oid_equal(&imported, &imported_head), 0);
+  EXPECT_NE(git_oid_equal(&native, &imported_parent), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "external\n");
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeAdoptsExternalBranchCommit) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  write("tracked.txt", "first\n");
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_commit_worktree(&result, repository, "first", nullptr),
+            GIT_OK);
+  const git_oid first = result.working_copy;
+  gg_mutation_result_dispose(&result);
+  ASSERT_EQ(invoke_git({"checkout", "-q", "-B", "main"}).code, 0);
+  write("tracked.txt", "external\n");
+  ASSERT_EQ(invoke_git({"commit", "-qam", "native"}).code, 0);
+  const git_oid native = ref("HEAD");
+  write("tracked.txt", "unsaved\n");
+
+  ASSERT_EQ(gg_repository_adopt_git_history_ex(repository, 0, nullptr), GIT_OK);
+  const git_oid adopted = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&native, &adopted), 0);
+  EXPECT_EQ(invoke_git({"symbolic-ref", "HEAD"}).output, "refs/heads/main\n");
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "unsaved\n");
+
+  // Adoption never snapshots: the edit remains uncommitted on disk.
+  EXPECT_EQ(gg_repository_edit_worktree(&result, repository,
+                                        detail::oid_string(first).c_str(), nullptr),
+            GIT_EINVALID);
+  write("tracked.txt", "external\n");
+  ASSERT_EQ(gg_repository_edit_worktree(&result, repository,
+                                        detail::oid_string(first).c_str(), nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&result);
+  const git_oid head = ref("HEAD");
+  EXPECT_NE(git_oid_equal(&head, &first), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "first\n");
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeAmendAdoptsPlainGitHead) {
+  const git_oid original = ref("HEAD");
+  write("tracked.txt", "amended without workspace\n");
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  gg_mutation_result result{};
+  const std::string selected = detail::oid_string(original);
+  ASSERT_EQ(gg_repository_amend_worktree(&result, repository, selected.c_str(),
+                                         "amended", nullptr), GIT_OK);
+  ASSERT_TRUE(result.has_working_copy);
+  const git_oid amended = result.working_copy;
+  gg_mutation_result_dispose(&result);
+  const git_oid head = ref("HEAD");
+  const git_oid workspace = ref(detail::kWorkspaceRef);
+  const git_oid main = ref("refs/heads/main");
+  EXPECT_NE(git_oid_equal(&head, &amended), 0);
+  EXPECT_NE(git_oid_equal(&workspace, &amended), 0);
+  EXPECT_NE(git_oid_equal(&main, &amended), 0);
+  EXPECT_EQ(invoke_git({"show", "HEAD:tracked.txt"}).output,
+            "amended without workspace\n");
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeCommitFromUnbornHead) {
+  ASSERT_EQ(invoke_git({"update-ref", "-d", "refs/heads/main"}).code, 0);
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_commit_worktree(&result, repository, "root", nullptr),
+            GIT_OK);
+  ASSERT_TRUE(result.has_working_copy);
+  const git_oid root = result.working_copy;
+  gg_mutation_result_dispose(&result);
+  const git_oid head = ref("HEAD");
+  EXPECT_NE(git_oid_equal(&head, &root), 0);
+  detail::Repository data(path_);
+  EXPECT_TRUE(data.parents(root).empty());
+  EXPECT_EQ(invoke_git({"show", "HEAD:tracked.txt"}).output, "base\n");
+  write("tracked.txt", "native after root\n");
+  ASSERT_EQ(invoke_git({"add", "tracked.txt"}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-m", "native after root"}).code, 0);
+  const git_oid native = ref("HEAD");
+  int changed = 0;
+  ASSERT_EQ(gg_repository_snapshot_working_copy(&changed, repository, nullptr),
+            GIT_OK);
+  EXPECT_TRUE(changed);
+  const git_oid imported = ref(detail::kWorkspaceRef);
+  const git_oid imported_head = ref("HEAD");
+  const git_oid imported_parent = commit_parent(imported);
+  EXPECT_NE(git_oid_equal(&imported, &imported_head), 0);
+  EXPECT_NE(git_oid_equal(&native, &imported_parent), 0);
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeCommitIsolatedInLinkedWorktree) {
+  const std::filesystem::path linked = path_.string() + "-explicit-linked";
+  std::filesystem::remove_all(linked);
+  ASSERT_EQ(invoke_git({"worktree", "add", "--detach", linked.string()}).code,
+            0);
+  git_repository* linked_raw = nullptr;
+  ASSERT_EQ(git_repository_open(&linked_raw, linked.string().c_str()), GIT_OK);
+  gg_repository* linked_gg = nullptr;
+  ASSERT_EQ(gg_repository_attach(&linked_gg, linked_raw), GIT_OK);
+  const git_oid primary_head = ref("HEAD");
+  write("primary-only.txt", "primary\n");
+  std::ofstream(linked / "linked.txt") << "linked\n";
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_commit_worktree(&result, linked_gg, "linked", nullptr),
+            GIT_OK);
+  ASSERT_TRUE(result.has_working_copy);
+  const git_oid linked_commit = result.working_copy;
+  gg_mutation_result_dispose(&result);
+  const git_oid still_primary = ref("HEAD");
+  EXPECT_NE(git_oid_equal(&primary_head, &still_primary), 0);
+  EXPECT_EQ(read_path(path_ / "primary-only.txt"), "primary\n");
+  EXPECT_EQ(invoke_git_at(linked, {"rev-parse", "HEAD"}).output,
+            gg::detail::oid_string(linked_commit) + "\n");
+  EXPECT_EQ(invoke_git_at(linked, {"show", "HEAD:linked.txt"}).output,
+            "linked\n");
+  gg_repository_free(linked_gg);
+  git_repository_free(linked_raw);
+  ASSERT_EQ(invoke_git({"worktree", "remove", "--force", linked.string()}).code,
+            0);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeCommitPreservesSparseFiles) {
+  write("included/visible.txt", "visible\n");
+  write("excluded/hidden.txt", "hidden\n");
+  ASSERT_EQ(invoke_git({"add", "."}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-m", "sparse base"}).code, 0);
+  ASSERT_EQ(invoke_git({"sparse-checkout", "init", "--cone"}).code, 0);
+  ASSERT_EQ(invoke_git({"sparse-checkout", "set", "included"}).code, 0);
+  ASSERT_FALSE(std::filesystem::exists(path_ / "excluded/hidden.txt"));
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
+  gg_status_dispose(&status);
+  write("included/visible.txt", "changed\n");
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_commit_worktree(&result, repository, "sparse", nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&result);
+  EXPECT_EQ(invoke_git({"show", "HEAD:excluded/hidden.txt"}).output, "hidden\n");
+  EXPECT_EQ(invoke_git({"show", "HEAD:included/visible.txt"}).output, "changed\n");
+  EXPECT_FALSE(std::filesystem::exists(path_ / "excluded/hidden.txt"));
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeAmendRestacksAndUndoRestores) {
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  write("tracked.txt", "first\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid first = ref(detail::kWorkspaceRef);
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  write("child.txt", "child\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid child = ref(detail::kWorkspaceRef);
+  set_ref("refs/heads/topic", child);
+  ASSERT_EQ(invoke({"edit", gg::detail::oid_string(first)}).code, 0);
+  write("tracked.txt", "amended\n");
+
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  gg_mutation_result result{};
+  const std::string selected = gg::detail::oid_string(first);
+  ASSERT_EQ(gg_repository_amend_worktree(&result, repository, selected.c_str(),
+                                         nullptr, nullptr), GIT_OK);
+  const git_oid amended = result.working_copy;
+  EXPECT_GT(result.rewrite_count, 0U);
+  gg_mutation_result_dispose(&result);
+  const git_oid amended_head = ref("HEAD");
+  const git_oid amended_workspace = ref(detail::kWorkspaceRef);
+  const git_oid amended_child_parent = commit_parent(ref("refs/heads/topic"));
+  EXPECT_NE(git_oid_equal(&amended, &amended_head), 0);
+  EXPECT_NE(git_oid_equal(&amended, &amended_workspace), 0);
+  EXPECT_NE(git_oid_equal(&amended, &amended_child_parent), 0);
+  EXPECT_EQ(invoke_git({"show", "topic:tracked.txt"}).output, "amended\n");
+  EXPECT_EQ(invoke_git({"show", "topic:child.txt"}).output, "child\n");
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "amended\n");
+  EXPECT_EQ(gg_repository_amend_worktree(&result, repository, selected.c_str(),
+                                         nullptr, nullptr), GIT_EINVALIDSPEC);
+  const git_oid still_amended = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&amended, &still_amended), 0);
+
+  ASSERT_EQ(gg_repository_undo(&result, repository, nullptr), GIT_OK);
+  gg_mutation_result_dispose(&result);
+  const git_oid restored_workspace = ref(detail::kWorkspaceRef);
+  const git_oid restored_child = ref("refs/heads/topic");
+  EXPECT_NE(git_oid_equal(&first, &restored_workspace), 0);
+  EXPECT_NE(git_oid_equal(&child, &restored_child), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "first\n");
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitTreeAmendRestacksWithoutTouchingDisk) {
+  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  write("tracked.txt", "first\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid first = ref(detail::kWorkspaceRef);
+  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  write("child.txt", "child\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const git_oid child = ref(detail::kWorkspaceRef);
+  set_ref("refs/heads/topic", child);
+  ASSERT_EQ(invoke({"edit", detail::oid_string(first)}).code, 0);
+  const git_oid base = commit_parent(first);
+  detail::Repository data(path_);
+  const git_oid replacement_tree =
+      *git_commit_tree_id(data.commit(base).get());
+  const std::string selected = detail::oid_string(first);
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_amend_tree_worktree(&result, repository,
+                                              selected.c_str(),
+                                              &replacement_tree, nullptr),
+            GIT_OK);
+  const git_oid amended = result.working_copy;
+  EXPECT_GT(result.rewrite_count, 0U);
+  gg_mutation_result_dispose(&result);
+  const git_oid new_head = ref("HEAD");
+  const git_oid new_child_parent = commit_parent(ref("refs/heads/topic"));
+  EXPECT_NE(git_oid_equal(&new_head, &amended), 0);
+  EXPECT_NE(git_oid_equal(&new_child_parent, &amended), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "first\n");
+  EXPECT_EQ(invoke_git({"show", "HEAD:tracked.txt"}).output, "base\n");
+  EXPECT_EQ(invoke_git({"show", "topic:child.txt"}).output, "child\n");
+
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  ASSERT_EQ(status.entry_count, 1U);
+  EXPECT_EQ(status.entries[0].status, GIT_DELTA_MODIFIED);
+  gg_status_dispose(&status);
+
+  ASSERT_EQ(gg_repository_undo(&result, repository, nullptr), GIT_OK);
+  gg_mutation_result_dispose(&result);
+  const git_oid restored = ref(detail::kWorkspaceRef);
+  const git_oid restored_child = ref("refs/heads/topic");
+  EXPECT_NE(git_oid_equal(&restored, &first), 0);
+  EXPECT_NE(git_oid_equal(&restored_child, &child), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "first\n");
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, ExplicitWorktreeEditRejectsDirtyDisk) {
+  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  const git_oid before = ref(detail::kWorkspaceRef);
+  write("tracked.txt", "unsaved\n");
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  gg_mutation_result result{};
+  EXPECT_EQ(gg_repository_edit_worktree(&result, repository, "main", nullptr),
+            GIT_EINVALID);
+  EXPECT_EQ(gg_repository_undo(&result, repository, nullptr), GIT_EINVALID);
+  const git_oid after = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&before, &after), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "unsaved\n");
+  gg_repository_free(repository);
+}
+
 TEST_F(RepositoryTest, ListsExistingGitWorktreesBeforeTheyAreManaged) {
   const std::filesystem::path linked = path_.string() + "-existing-worktree";
   std::filesystem::remove_all(linked);
@@ -73,28 +438,28 @@ TEST_F(RepositoryTest, ExposesStructuredCWorkflowApi) {
   gg_revision_query_options revision_options =
       GG_REVISION_QUERY_OPTIONS_INIT;
   gg_status_options status_options = GG_STATUS_OPTIONS_INIT;
-  EXPECT_EQ(gg_operation_options_init(&operation, 1), GIT_OK);
-  EXPECT_EQ(gg_new_options_init(&new_options, 1), GIT_OK);
-  EXPECT_EQ(gg_commit_options_init(&commit_options, 1), GIT_OK);
-  EXPECT_EQ(gg_describe_options_init(&describe_options, 1), GIT_OK);
-  EXPECT_EQ(gg_metaedit_options_init(&metaedit_options, 1), GIT_OK);
-  EXPECT_EQ(gg_rebase_options_init(&rebase_options, 1), GIT_OK);
-  EXPECT_EQ(gg_duplicate_options_init(&duplicate_options, 1), GIT_OK);
-  EXPECT_EQ(gg_reorder_options_init(&reorder_options, 1), GIT_OK);
-  EXPECT_EQ(gg_split_options_init(&split_options, 1), GIT_OK);
-  EXPECT_EQ(gg_squash_options_init(&squash_options, 1), GIT_OK);
-  EXPECT_EQ(gg_abandon_options_init(&abandon_options, 1), GIT_OK);
-  EXPECT_EQ(gg_restore_options_init(&restore_options, 1), GIT_OK);
-  EXPECT_EQ(gg_move_files_options_init(&move_files_options, 1), GIT_OK);
-  EXPECT_EQ(gg_simplify_parents_options_init(&simplify_options, 1), GIT_OK);
-  EXPECT_EQ(gg_bookmark_options_init(&bookmark_options, 1), GIT_OK);
-  EXPECT_EQ(gg_tag_options_init(&tag_options, 1), GIT_OK);
-  EXPECT_EQ(gg_move_options_init(&move_options, 1), GIT_OK);
-  EXPECT_EQ(gg_workspace_add_options_init(&workspace_options, 1), GIT_OK);
-  EXPECT_EQ(gg_fetch_options_init(&fetch_options, 1), GIT_OK);
-  EXPECT_EQ(gg_push_options_init(&push_options, 1), GIT_OK);
-  EXPECT_EQ(gg_revision_query_options_init(&revision_options, 1), GIT_OK);
-  EXPECT_EQ(gg_status_options_init(&status_options, 1), GIT_OK);
+  EXPECT_EQ(gg_operation_options_init(&operation, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_new_options_init(&new_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_commit_options_init(&commit_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_describe_options_init(&describe_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_metaedit_options_init(&metaedit_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_rebase_options_init(&rebase_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_duplicate_options_init(&duplicate_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_reorder_options_init(&reorder_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_split_options_init(&split_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_squash_options_init(&squash_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_abandon_options_init(&abandon_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_restore_options_init(&restore_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_move_files_options_init(&move_files_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_simplify_parents_options_init(&simplify_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_bookmark_options_init(&bookmark_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_tag_options_init(&tag_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_move_options_init(&move_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_workspace_add_options_init(&workspace_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_fetch_options_init(&fetch_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_push_options_init(&push_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_revision_query_options_init(&revision_options, GG_OPTIONS_VERSION), GIT_OK);
+  EXPECT_EQ(gg_status_options_init(&status_options, GG_OPTIONS_VERSION), GIT_OK);
 
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
@@ -410,6 +775,10 @@ TEST_F(RepositoryTest, SnapshotPreservesSparseCheckoutEntries) {
   ASSERT_EQ(gg_repository_status(&status, repository, &options), GIT_OK);
   ASSERT_EQ(status.entry_count, 0U)
       << (status.entry_count == 0 ? "" : status.entries[0].new_path);
+  gg_status_dispose(&status);
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
   gg_status_dispose(&status);
 
   write("included/visible.txt", "changed\n");

@@ -537,6 +537,35 @@ void Repository::restore_operation(const git_oid& operation_oid,
   const HeadState previous_head = target.head;
   std::optional<git_oid> previous_checkout = workspace();
   if (!previous_checkout.has_value()) previous_checkout = head_oid();
+  if (restore_repository && rollback_on_failure &&
+      !synchronizes_commands()) {
+    const git_oid baseline_tree = previous_checkout.has_value()
+                                      ? *git_commit_tree_id(commit(*previous_checkout).get())
+                                      : empty_tree();
+    if (worktree_tracked_dirty(baseline_tree)) {
+      std::optional<git_oid> restored_checkout;
+      if (const auto found = source.refs.find(workspace_ref_name());
+          found != source.refs.end()) {
+        restored_checkout = found->second;
+      } else if (source.head.symbolic) {
+        if (const auto found = source.refs.find(source.head.value);
+            found != source.refs.end()) {
+          restored_checkout = found->second;
+        }
+      } else {
+        git_oid parsed{};
+        check(git_oid_fromstr(&parsed, source.head.value.c_str(),
+                              git_repository_oid_type(repo_.get())),
+              "parse restored HEAD");
+        restored_checkout = parsed;
+      }
+      if (!restored_checkout.has_value() ||
+          worktree_tracked_dirty(
+              *git_commit_tree_id(commit(*restored_checkout).get()))) {
+        throw UserError("working tree has uncommitted changes; commit or amend before restoring an operation");
+      }
+    }
+  }
   const auto current_operation = operation();
   const bool manage_workspaces =
       starts_with(operation_description(operation_oid), "gg workspace ") ||
