@@ -220,15 +220,7 @@ if(GG_BUILD_TESTS)
   target_compile_options(gg_capi_test PRIVATE ${GG_WARNING_OPTIONS})
 
   include(GoogleTest)
-  set(GG_TEST_CONFIG_HOME "${CMAKE_CURRENT_BINARY_DIR}/test-config")
-  file(MAKE_DIRECTORY "${GG_TEST_CONFIG_HOME}/home" "${GG_TEST_CONFIG_HOME}/xdg")
-  file(WRITE "${GG_TEST_CONFIG_HOME}/home/.gitconfig" "")
-  gtest_discover_tests(
-    gg_tests
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES ENVIRONMENT
-      "GIT_CONFIG_GLOBAL=${GG_TEST_CONFIG_HOME}/home/.gitconfig;GIT_CONFIG_NOSYSTEM=1;HOME=${GG_TEST_CONFIG_HOME}/home;XDG_CONFIG_HOME=${GG_TEST_CONFIG_HOME}/xdg"
-  )
+  gtest_discover_tests(gg_tests DISCOVERY_MODE PRE_TEST)
   add_test(NAME gg_help COMMAND gg_cli --help)
   add_test(NAME gg_capi COMMAND gg_capi_test)
   set_tests_properties(gg_capi PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

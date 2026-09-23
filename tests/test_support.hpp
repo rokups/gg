@@ -42,6 +42,37 @@ inline Result run(std::vector<std::string> arguments) {
   return {code, output.str(), error.str()};
 }
 
+// Tests must never read the developer's Git configuration or launch their
+// editor. A configured core.editor or GIT_EDITOR takes precedence over the
+// VISUAL overrides that tests use, and an unconfigured editor must fail
+// instead of falling back to a real one.
+class IsolatedUserEnvironment : public testing::Environment {
+ public:
+  void SetUp() override {
+    home_ = std::filesystem::temp_directory_path() /
+            ("gg-test-home-" + std::to_string(getpid()));
+    std::filesystem::remove_all(home_);
+    std::filesystem::create_directories(home_ / "xdg");
+    std::ofstream(home_ / ".gitconfig");
+    setenv("HOME", home_.c_str(), 1);
+    setenv("XDG_CONFIG_HOME", (home_ / "xdg").c_str(), 1);
+    setenv("GIT_CONFIG_GLOBAL", (home_ / ".gitconfig").c_str(), 1);
+    setenv("GIT_CONFIG_NOSYSTEM", "1", 1);
+    unsetenv("GIT_EDITOR");
+    unsetenv("GIT_SEQUENCE_EDITOR");
+    setenv("VISUAL", "false", 1);
+    setenv("EDITOR", "false", 1);
+  }
+
+  void TearDown() override { std::filesystem::remove_all(home_); }
+
+ private:
+  std::filesystem::path home_;
+};
+
+inline testing::Environment* const isolated_user_environment =
+    testing::AddGlobalTestEnvironment(new IsolatedUserEnvironment);
+
 class RepositoryTest : public testing::Test {
  protected:
   void SetUp() override {
