@@ -377,6 +377,46 @@ TEST_F(RepositoryTest, ExplicitWorktreeEditRejectsDirtyDisk) {
   gg_repository_free(repository);
 }
 
+TEST_F(RepositoryTest, ExplicitWorktreeAbandonActivatesParent) {
+  const git_oid base = ref("HEAD");
+  ASSERT_EQ(invoke({"new", "-m", "", "main"}).code, 0);
+  const git_oid empty = ref(detail::kWorkspaceRef);
+  write("tracked.txt", "unsaved\n");
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  const std::string empty_id = git_oid_tostr_s(&empty);
+  const char* revisions[]{empty_id.c_str()};
+  gg_abandon_options options = GG_ABANDON_OPTIONS_INIT;
+  options.revisions = {revisions, 1};
+  gg_mutation_result result{};
+  ASSERT_EQ(gg_repository_abandon(&result, repository, &options, nullptr),
+            GIT_OK);
+  gg_mutation_result_dispose(&result);
+  // The parent becomes active; no replacement empty change is created.
+  const git_oid workspace = ref(detail::kWorkspaceRef);
+  const git_oid head = ref("HEAD");
+  EXPECT_NE(git_oid_equal(&workspace, &base), 0);
+  EXPECT_NE(git_oid_equal(&head, &base), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "unsaved\n");
+
+  // Abandoning a non-empty active commit would overwrite uncommitted edits.
+  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  write("tracked.txt", "committed\n");
+  ASSERT_EQ(invoke({"describe", "-m", "work"}).code, 0);
+  const git_oid work = ref(detail::kWorkspaceRef);
+  write("tracked.txt", "unsaved again\n");
+  const std::string work_id = git_oid_tostr_s(&work);
+  revisions[0] = work_id.c_str();
+  gg_repository_free(repository);
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  EXPECT_EQ(gg_repository_abandon(&result, repository, &options, nullptr),
+            GIT_EINVALID);
+  const git_oid unchanged = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&unchanged, &work), 0);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "unsaved again\n");
+  gg_repository_free(repository);
+}
+
 TEST_F(RepositoryTest, ListsExistingGitWorktreesBeforeTheyAreManaged) {
   const std::filesystem::path linked = path_.string() + "-existing-worktree";
   std::filesystem::remove_all(linked);

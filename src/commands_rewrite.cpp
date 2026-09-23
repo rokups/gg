@@ -610,7 +610,12 @@ void command_abandon(Repository& repo,
     git_oid new_workspace = *workspace;
     if (selected.contains(*workspace)) {
       const std::vector<git_oid>& parents = replacements.at(*workspace);
-      new_workspace = replacement_workspace(repo, combined_tree(repo, parents), parents);
+      // An explicit Working tree sits directly on the active commit, so its
+      // parent becomes active instead of a new empty change. A merge still
+      // needs a commit that joins its parents.
+      new_workspace = !repo.synchronizes_commands() && parents.size() == 1
+                          ? parents.front()
+                          : replacement_workspace(repo, combined_tree(repo, parents), parents);
     } else if (plan.commits.contains(*workspace)) {
       new_workspace = plan.commits.at(*workspace);
     }
