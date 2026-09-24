@@ -631,6 +631,11 @@ GG_EXTERN int gg_repository_status(gg_status *out,
 GG_EXTERN int gg_repository_worktree_status(
     gg_status *out, gg_repository *repository,
     const gg_status_options *options);
+/* As gg_repository_worktree_status, stopping when operation's cancel_cb
+ * reports cancellation (GIT_EUSER). operation may be NULL. */
+GG_EXTERN int gg_repository_worktree_status_ex(
+    gg_status *out, gg_repository *repository,
+    const gg_status_options *options, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_operations(gg_operation_array *out,
                                        gg_repository *repository,
                                        size_t limit);

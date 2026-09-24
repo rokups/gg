@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -250,7 +251,15 @@ class Repository {
                         const std::vector<std::string>& paths) const;
   // The working tree as a tree object, leaving Git's index untouched.
   git_oid worktree_tree(const git_oid& baseline_tree) const;
-  DiffPtr worktree_diff(const git_oid& baseline_tree) const;
+  // Paths limit the walk to those files and directories; empty compares
+  // the whole working tree. The scan stops when the operation is cancelled.
+  DiffPtr worktree_diff(const git_oid& baseline_tree,
+                        const std::vector<std::string>& paths = {}) const;
+  // Consulted by long working-tree scans for the current operation.
+  void set_cancel_check(std::function<bool()> check) const {
+    cancel_check_ = std::move(check);
+  }
+  bool cancelled() const { return cancel_check_ && cancel_check_(); }
   bool worktree_dirty(const git_oid& baseline_tree) const;
   bool worktree_tracked_dirty(const git_oid& baseline_tree) const;
   bool head_matches_workspace() const;
@@ -469,6 +478,7 @@ class Repository {
   bool linked_worktree_{false};
   std::string worktree_id_{"default"};
   mutable std::string workspace_name_{"default"};
+  mutable std::function<bool()> cancel_check_;
 };
 
 }  // namespace gg::detail

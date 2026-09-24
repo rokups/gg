@@ -42,6 +42,56 @@ void start_change(gg_repository* repository) {
 
 }  // namespace
 
+TEST_F(RepositoryTest, WorktreeStatusLimitsToPathsAndCanBeCancelled) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  write("tracked.txt", "edited\n");
+  write("nested/one.txt", "one\n");
+  write("nested/deeper/two.txt", "two\n");
+  write("other.txt", "other\n");
+
+  // A directory path lists everything below it.
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  const char* directory = "nested";
+  options.filesets = {&directory, 1};
+  gg_status status{};
+  ASSERT_EQ(gg_repository_worktree_status_ex(&status, repository, &options,
+                                             nullptr),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 2U);
+  gg_status_dispose(&status);
+
+  // Cancellation is honoured before and during the scan.
+  struct Cancel {
+    int calls = 0;
+    int cancel_after = 0;
+  };
+  gg_operation_options operation = GG_OPERATION_OPTIONS_INIT;
+  operation.cancel_cb = [](void* payload) {
+    auto* cancel = static_cast<Cancel*>(payload);
+    return ++cancel->calls > cancel->cancel_after ? 1 : 0;
+  };
+  options.filesets = {nullptr, 0};
+  for (const int cancel_after : {0, 1}) {
+    Cancel cancel{0, cancel_after};
+    operation.payload = &cancel;
+    EXPECT_EQ(gg_repository_worktree_status_ex(&status, repository, &options,
+                                               &operation),
+              GIT_EUSER);
+    EXPECT_NE(std::string(git_error_last()->message).find("cancelled"),
+              std::string::npos);
+    EXPECT_GT(cancel.calls, cancel_after);
+  }
+  Cancel never{0, 1 << 30};
+  operation.payload = &never;
+  ASSERT_EQ(gg_repository_worktree_status_ex(&status, repository, &options,
+                                             &operation),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 4U);
+  gg_status_dispose(&status);
+  gg_repository_free(repository);
+}
+
 TEST_F(RepositoryTest, ExplicitWorktreeCommitUsesDiskAndProjectsHead) {
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);

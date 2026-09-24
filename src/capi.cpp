@@ -321,6 +321,27 @@ void begin_operation(const gg_operation_options* options,
   }
 }
 
+// Lets long working-tree scans inside an operation honour its cancel
+// callback, for as long as the operation runs.
+class CancelScope {
+ public:
+  CancelScope(const Repository& repository,
+              const gg_operation_options* options)
+      : repository_(repository) {
+    if (options != nullptr && options->cancel_cb != nullptr) {
+      repository_.set_cancel_check([options] {
+        return options->cancel_cb(options->payload) != 0;
+      });
+    }
+  }
+  ~CancelScope() { repository_.set_cancel_check({}); }
+  CancelScope(const CancelScope&) = delete;
+  CancelScope& operator=(const CancelScope&) = delete;
+
+ private:
+  const Repository& repository_;
+};
+
 void finish_operation(const gg_operation_options* options,
                       const char* phase) {
   if (options != nullptr && options->progress_cb != nullptr) {
@@ -438,6 +459,7 @@ int mutate(gg_mutation_result* out,
     }
     begin_operation(options, phase);
     Repository& implementation = repository->implementation;
+    const CancelScope cancel(implementation, options);
     implementation.invalidate_ref_cache();
     const auto before = implementation.data_refs();
     const auto before_operation = implementation.operation();
@@ -602,6 +624,7 @@ int gg_repository_adopt_git_history_ex(gg_repository* repository,
     }
     begin_operation(options, "adopt_git_history");
     Repository& implementation = repository->implementation;
+    const CancelScope cancel(implementation, options);
     implementation.invalidate_ref_cache();
     implementation.import_git_history();
     implementation.sync_remote_branches(advance_branches != 0);
@@ -1023,6 +1046,13 @@ int gg_repository_status(gg_status* out,
 int gg_repository_worktree_status(gg_status* out,
                                   gg_repository* repository,
                                   const gg_status_options* options) {
+  return gg_repository_worktree_status_ex(out, repository, options, nullptr);
+}
+
+int gg_repository_worktree_status_ex(gg_status* out,
+                                     gg_repository* repository,
+                                     const gg_status_options* options,
+                                     const gg_operation_options* operation) {
   return boundary([&] {
     if (out == nullptr || repository == nullptr) {
       throw gg::detail::UserError("status arguments must not be null");
@@ -1032,11 +1062,20 @@ int gg_repository_worktree_status(gg_status* out,
     if (value.at_operation != nullptr) {
       throw gg::detail::UserError("working-tree status cannot use a historical operation");
     }
+    begin_operation(operation, "worktree_status");
     const std::vector<std::string> filesets = strings(value.filesets);
     for (const std::string& fileset : filesets) {
       (void)gg::detail::fileset_matches(fileset, "");
     }
+    // Plain paths limit the scan to those files and directories; any
+    // fileset expression scans everything and is filtered below.
+    std::vector<std::string> scan_paths;
+    if (!filesets.empty() &&
+        std::ranges::all_of(filesets, simple_status_pathspec)) {
+      scan_paths = filesets;
+    }
     Repository& repo = repository->implementation;
+    const CancelScope cancel(repo, operation);
     const auto active = repo.workspace().has_value() ? repo.workspace()
                                                       : repo.head_oid();
     if (active.has_value()) {
@@ -1054,7 +1093,7 @@ int gg_repository_worktree_status(gg_status* out,
     const git_oid baseline = active.has_value()
                                  ? *git_commit_tree_id(repo.commit(*active).get())
                                  : repo.empty_tree();
-    gg::detail::DiffPtr diff = repo.worktree_diff(baseline);
+    gg::detail::DiffPtr diff = repo.worktree_diff(baseline, scan_paths);
     git_diff_find_options find = GIT_DIFF_FIND_OPTIONS_INIT;
     gg::detail::check(git_diff_find_similar(diff.get(), &find),
                       "find renamed working-tree files");

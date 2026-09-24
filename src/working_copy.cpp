@@ -242,21 +242,26 @@ git_oid Repository::worktree_tree(const git_oid& baseline_tree) const {
   }
 }
 
-DiffPtr Repository::worktree_diff(const git_oid& baseline_tree) const {
+DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
+                                  const std::vector<std::string>& paths) const {
   TreePtr baseline = tree(baseline_tree);
   git_index* raw_index = nullptr;
   check(git_repository_index(&raw_index, repo_.get()), "open working-tree index");
   IndexPtr index(raw_index);
   check(git_index_read(index.get(), true), "read working-tree index");
+  struct Payload {
+    git_index* index;
+    const Repository* repository;
+  } payload{index.get(), this};
   git_diff_options options = GIT_DIFF_OPTIONS_INIT;
   options.flags = GIT_DIFF_INCLUDE_UNTRACKED |
                   GIT_DIFF_RECURSE_UNTRACKED_DIRS |
                   GIT_DIFF_INCLUDE_TYPECHANGE;
   options.notify_cb = [](const git_diff*, const git_diff_delta* delta,
-                         const char*, void* payload) {
+                         const char*, void* raw_payload) {
     if (delta->status != GIT_DELTA_DELETED ||
         delta->old_file.path == nullptr) return 0;
-    auto* index = static_cast<git_index*>(payload);
+    auto* index = static_cast<Payload*>(raw_payload)->index;
     const git_index_entry* entry =
         git_index_get_bypath(index, delta->old_file.path, 0);
     return entry != nullptr &&
@@ -264,11 +269,26 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree) const {
                ? 1
                : 0;
   };
-  options.payload = index.get();
+  // Checked before each file, so a large scan stops promptly.
+  options.progress_cb = [](const git_diff*, const char*, const char*,
+                           void* raw_payload) {
+    return static_cast<Payload*>(raw_payload)->repository->cancelled()
+               ? GIT_EUSER
+               : 0;
+  };
+  options.payload = &payload;
+  std::vector<char*> pathspec;
+  std::vector<std::string> owned_paths = paths;
+  for (std::string& path : owned_paths) pathspec.push_back(path.data());
+  options.pathspec = {pathspec.data(), pathspec.size()};
   git_diff* raw_diff = nullptr;
-  check(git_diff_tree_to_workdir(&raw_diff, repo_.get(), baseline.get(),
-                                 &options),
-        "compare working tree with active change");
+  const int status = git_diff_tree_to_workdir(&raw_diff, repo_.get(),
+                                              baseline.get(), &options);
+  if (status == GIT_EUSER && cancelled()) {
+    git_error_clear();
+    throw UserError("operation cancelled", GIT_EUSER);
+  }
+  check(status, "compare working tree with active change");
   return DiffPtr(raw_diff);
 }
 
