@@ -7,42 +7,42 @@
 namespace gg::test {
 
 TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("tracked.txt", "changed\n");
   write("added.txt", "new\n");
   std::filesystem::create_symlink("added.txt", path_ / "link");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  const Result patch = invoke({"diff"});
+  const Result patch = invoke({"diff", "-r", "@"});
   ASSERT_EQ(patch.code, 0) << patch.error;
   EXPECT_NE(patch.output.find("diff --git a/added.txt b/added.txt"),
             std::string::npos);
   EXPECT_NE(patch.output.find("-base"), std::string::npos);
   EXPECT_NE(patch.output.find("+changed"), std::string::npos);
-  EXPECT_EQ(invoke({"diff", "--summary"}).output,
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--summary"}).output,
             "A added.txt\nA link\nM tracked.txt\n");
-  EXPECT_EQ(invoke({"diff", "--types"}).output,
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--types"}).output,
             "-F added.txt\n-L link\nFF tracked.txt\n");
-  EXPECT_EQ(invoke({"diff", "--name-only"}).output,
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--name-only"}).output,
             "added.txt\nlink\ntracked.txt\n");
-  EXPECT_NE(invoke({"diff", "--stat"}).output.find("3 files changed"),
+  EXPECT_NE(invoke({"diff", "-r", "@", "--stat"}).output.find("3 files changed"),
             std::string::npos);
-  EXPECT_NE(invoke({"diff", "--summary", "--git"})
+  EXPECT_NE(invoke({"diff", "-r", "@", "--summary", "--git"})
                 .output.find("diff --git"),
             std::string::npos);
-  EXPECT_NE(invoke({"diff", "--color-words", "--context", "0"})
+  EXPECT_NE(invoke({"diff", "-r", "@", "--color-words", "--context", "0"})
                 .output.find("@@ -1 +1 @@"),
             std::string::npos);
 
   const Result colored_summary =
-      invoke({"--color", "always", "diff", "--summary"});
+      invoke({"--color", "always", "diff", "-r", "@", "--summary"});
   EXPECT_NE(colored_summary.output.find(
                 "\x1b[38;5;2mA added.txt\x1b[0m"),
             std::string::npos);
   EXPECT_NE(colored_summary.output.find(
                 "\x1b[38;5;3mM tracked.txt\x1b[0m"),
             std::string::npos);
-  const Result colored_patch = invoke({"--color", "always", "diff"});
+  const Result colored_patch = invoke({"--color", "always", "diff", "-r", "@"});
   EXPECT_NE(colored_patch.output.find(
                 "\x1b[1mdiff --git a/added.txt b/added.txt\x1b[0m"),
             std::string::npos);
@@ -62,7 +62,7 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
   EXPECT_NE(invoke({"diff", "-r", "@", "glob:*.txt"})
                 .output.find("tracked.txt"),
             std::string::npos);
-  EXPECT_NE(invoke({"diff", "."}).output.find("added.txt"),
+  EXPECT_NE(invoke({"diff", "-r", "@", "."}).output.find("added.txt"),
             std::string::npos);
   EXPECT_NE(invoke({"diff", "-r", "main"}).output.find("+base"),
             std::string::npos);
@@ -70,16 +70,16 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
   write("uneven.txt", "one\ntwo\n");
   write("more.txt", "old\n");
   write("empty.txt", "\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"new"}).code, 0);
   write("tracked.txt", "changed middle suffix\n");
   write("uneven.txt", "replacement\n");
   write("more.txt", "first\nsecond\n");
   write("empty.txt", "filled\n");
   write("second.txt", "second\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result words =
-      invoke({"--color", "always", "diff", "--color-words"});
+      invoke({"--color", "always", "diff", "-r", "@", "--color-words"});
   EXPECT_NE(words.output.find(
                 "+changed \x1b[38;5;2mmiddle \x1b[0msuffix"),
             std::string::npos)
@@ -91,13 +91,14 @@ TEST_F(RepositoryTest, DiffsRevisionTreesInSeveralFormats) {
   EXPECT_EQ(invoke({"diff", "-r", "main | @"}).code, 2);
   EXPECT_EQ(invoke({"diff", "-r", "none()"}).output, "");
   std::filesystem::remove(path_ / "uneven.txt");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result deleted_words =
-      invoke({"--color", "always", "diff", "--color-words"});
+      invoke({"--color", "always", "diff", "-r", "@", "--color-words"});
   EXPECT_NE(deleted_words.output.find("-one"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   std::filesystem::rename(path_ / "tracked.txt", path_ / "renamed.txt");
   EXPECT_EQ(invoke({"diff", "--summary"}).output,
             "R {tracked.txt => renamed.txt}\n");
@@ -116,7 +117,7 @@ TEST_F(RepositoryTest, DetectsRenamedAndDeletedFiles) {
 }
 
 TEST_F(RepositoryTest, IgnoresRequestedWhitespaceChanges) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("tracked.txt", " b a s e \n");
   EXPECT_EQ(invoke({"diff", "-w"}).output, "");
   write("tracked.txt", "base   \n");
@@ -124,27 +125,27 @@ TEST_F(RepositoryTest, IgnoresRequestedWhitespaceChanges) {
 }
 
 TEST_F(RepositoryTest, RunsBuiltinAndExternalDiffTools) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("tracked.txt", "changed\n");
   write("added.txt", "added\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  EXPECT_EQ(invoke({"diff", "--tool", ":summary"}).output,
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--tool", ":summary"}).output,
             "A added.txt\nM tracked.txt\n");
-  EXPECT_NE(invoke({"diff", "--tool", ":stat"}).output.find(
+  EXPECT_NE(invoke({"diff", "-r", "@", "--tool", ":stat"}).output.find(
                 "2 files changed"),
             std::string::npos);
-  EXPECT_NE(invoke({"diff", "--tool", ":types"}).output.find(
+  EXPECT_NE(invoke({"diff", "-r", "@", "--tool", ":types"}).output.find(
                 "FF tracked.txt"),
             std::string::npos);
-  EXPECT_EQ(invoke({"diff", "--tool", ":name-only"}).output,
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--tool", ":name-only"}).output,
             "added.txt\ntracked.txt\n");
-  EXPECT_NE(invoke({"diff", "--tool", ":git"}).output.find("diff --git"),
+  EXPECT_NE(invoke({"diff", "-r", "@", "--tool", ":git"}).output.find("diff --git"),
             std::string::npos);
-  EXPECT_NE(invoke({"diff", "--tool", ":color-words"})
+  EXPECT_NE(invoke({"diff", "-r", "@", "--tool", ":color-words"})
                 .output.find("+changed"),
             std::string::npos);
-  EXPECT_EQ(invoke({"diff", "--tool", ":missing"}).code, 2);
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--tool", ":missing"}).code, 2);
 
   const Result echoed = invoke({"diff", "tracked.txt", "--tool", "/bin/echo"});
   ASSERT_EQ(echoed.code, 0) << echoed.error;
@@ -159,13 +160,13 @@ TEST_F(RepositoryTest, RunsBuiltinAndExternalDiffTools) {
                     "/bin/echo L=$LOCAL R=$REMOTE"})
                 .code,
             0);
-  const Result named = invoke({"diff", "--tool", "named"});
+  const Result named = invoke({"diff", "-r", "@", "--tool", "named"});
   ASSERT_EQ(named.code, 0) << named.error;
   EXPECT_NE(named.output.find("L=/tmp/gg-diff-"), std::string::npos);
   EXPECT_NE(named.output.find(" R=/tmp/gg-diff-"), std::string::npos);
-  EXPECT_EQ(invoke({"diff", "--tool", "/bin/false"}).code, 2);
-  EXPECT_EQ(invoke({"diff", "--tool", "missing-gg-diff-tool"}).code, 2);
-  EXPECT_NE(invoke({"diff", "tracked.txt", "--tool", "diff"})
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--tool", "/bin/false"}).code, 2);
+  EXPECT_EQ(invoke({"diff", "-r", "@", "--tool", "missing-gg-diff-tool"}).code, 2);
+  EXPECT_NE(invoke({"diff", "-r", "@", "tracked.txt", "--tool", "diff"})
                 .output.find("tracked.txt"),
             std::string::npos);
 
@@ -182,12 +183,13 @@ TEST_F(RepositoryTest, RunsBuiltinAndExternalDiffTools) {
 }
 
 TEST_F(RepositoryTest, ReportsExecutableModeChanges) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   std::filesystem::permissions(
       path_ / "tracked.txt", std::filesystem::perms::owner_exec,
       std::filesystem::perm_options::add);
   EXPECT_NE(invoke({"diff"}).output.find("new mode 100755"),
             std::string::npos);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   ASSERT_EQ(invoke({"file", "chmod", "x", "-r", "main", "tracked.txt"})
                 .code,
@@ -200,8 +202,9 @@ TEST_F(RepositoryTest, ReportsExecutableModeChanges) {
 }
 
 TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
-  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "work", main_id()}).code, 0);
   write("tracked.txt", "changed\n");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   const Result shown = invoke({"show"});
   ASSERT_EQ(shown.code, 0) << shown.error;
@@ -211,13 +214,13 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   EXPECT_NE(shown.output.find("diff --git"), std::string::npos);
 
   const Result plain = invoke({"show", "main", "--no-patch"});
-  EXPECT_NE(plain.output.find("Bookmarks: main"), std::string::npos);
+  EXPECT_NE(plain.output.find("Branches: main"), std::string::npos);
   EXPECT_EQ(plain.output.find("diff --git"), std::string::npos);
   const Result colored =
       invoke({"--color", "debug", "show", "main", "--no-patch"});
   EXPECT_NE(colored.output.find("<<commit_id::"), std::string::npos);
   EXPECT_EQ(colored.output.find("Aliases:"), std::string::npos);
-  EXPECT_NE(colored.output.find("<<bookmark::main>>"), std::string::npos);
+  EXPECT_NE(colored.output.find("<<branch::main>>"), std::string::npos);
 
   const Result ordered = invoke({"show", "main | @", "--no-patch"});
   const Result reversed =
@@ -229,7 +232,7 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
   ASSERT_EQ(git_oid_fromstr(&main, main_oid.c_str(), GIT_OID_SHA1), 0);
   set_ref("refs/heads/also", main);
   const Result decorated = invoke({"show", "main", "--no-patch"});
-  EXPECT_NE(decorated.output.find("Bookmarks: also main"), std::string::npos);
+  EXPECT_NE(decorated.output.find("Branches: also main"), std::string::npos);
   EXPECT_EQ(invoke({"show", "-r", "main", "-r", "@", "--no-patch"}).code,
             0);
   EXPECT_NE(invoke({"show", "--summary"}).output.find("M tracked.txt"),
@@ -237,7 +240,7 @@ TEST_F(RepositoryTest, ShowsRevisionMetadataAndPatches) {
 }
 
 TEST_F(RepositoryTest, ValidatesDiffAndShowRequests) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   EXPECT_NE(invoke({"show", "--no-patch"})
                 .output.find("Description: (no description set)"),
             std::string::npos);

@@ -48,6 +48,7 @@ struct NewCommand {
   std::vector<std::string> insert_after;
   std::vector<std::string> insert_before;
   bool no_edit{false};
+  bool detach{false};
 };
 struct DescribeCommand {
   std::string message;
@@ -98,13 +99,16 @@ struct SquashCommand {
   std::string source;
   std::string destination;
   std::string message;
+  std::vector<std::string> paths;
+  std::string tool;
+  bool interactive{false};
   bool message_provided{false};
   bool entire_branch{false};
 };
 struct AbandonCommand {
   std::vector<std::string> revisions;
   std::vector<std::string> revision_options;
-  bool retain_bookmarks{false};
+  bool retain_branches{false};
   bool restore_descendants{false};
 };
 struct CommitCommand {
@@ -164,9 +168,8 @@ struct ShowCommand {
   bool no_patch{false};
 };
 
-enum class BookmarkAction {
+enum class BranchAction {
   list,
-  advance,
   create,
   set,
   move,
@@ -176,8 +179,8 @@ enum class BookmarkAction {
   track,
   untrack
 };
-struct BookmarkCommand {
-  BookmarkAction action{BookmarkAction::list};
+struct BranchCommand {
+  BranchAction action{BranchAction::list};
   std::string revision;
   std::vector<std::string> names;
   std::vector<std::string> from;
@@ -230,7 +233,7 @@ struct GitPullCommand {
   std::vector<std::string> arguments;
 };
 struct GitPushCommand {
-  std::vector<std::string> bookmarks;
+  std::vector<std::string> branches;
   std::vector<std::string> tags;
   std::vector<std::string> revisions;
   std::vector<std::string> options;
@@ -264,7 +267,6 @@ struct UtilGcCommand {
   std::string expire;
 };
 struct UtilOptimizeCommand {};
-struct UtilSnapshotCommand {};
 struct UtilInstallGitHooksCommand {};
 struct UtilCheckPushConflictsCommand {};
 
@@ -295,7 +297,6 @@ enum class MovementDirection { next, previous };
 struct MovementCommand {
   MovementDirection direction{MovementDirection::next};
   std::uint64_t offset{1};
-  bool edit{false};
   bool conflict{false};
 };
 
@@ -316,10 +317,10 @@ using RepositoryCommand =
                  SquashCommand,
                  AbandonCommand, CommitCommand, RestoreCommand,
                  SimplifyParentsCommand, FileCommand, DiffCommand, ShowCommand,
-                 BookmarkCommand, TagCommand,
+                 BranchCommand, TagCommand,
                  GitFetchCommand, GitPushCommand, UndoCommand, RedoCommand,
                  OperationLogCommand, OperationRestoreCommand,
-                 UtilGcCommand, UtilOptimizeCommand, UtilSnapshotCommand,
+                 UtilGcCommand, UtilOptimizeCommand,
                  UtilInstallGitHooksCommand, UtilCheckPushConflictsCommand,
                  WorkspaceCommand,
                  SparseCommand,

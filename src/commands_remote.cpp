@@ -271,7 +271,7 @@ void render_operation_patches(
   }
 }
 
-enum class TrackedRefKind { bookmark, tag };
+enum class TrackedRefKind { branch, tag };
 
 struct TrackingCandidate {
   std::string name;
@@ -282,8 +282,8 @@ struct TrackingCandidate {
 std::string tracking_reference(TrackedRefKind kind,
                                std::string_view remote,
                                std::string_view name) {
-  const std::string_view prefix = kind == TrackedRefKind::bookmark
-                                      ? kBookmarkTrackingPrefix
+  const std::string_view prefix = kind == TrackedRefKind::branch
+                                      ? kBranchTrackingPrefix
                                       : kTagTrackingPrefix;
   return std::string(prefix) + std::string(remote) + "/" + std::string(name);
 }
@@ -293,14 +293,14 @@ std::vector<TrackingCandidate> tracking_candidates(Repository& repo,
                                                    bool tracked) {
   std::vector<TrackingCandidate> candidates;
   const std::string_view prefix =
-      tracked ? (kind == TrackedRefKind::bookmark ? kBookmarkTrackingPrefix
+      tracked ? (kind == TrackedRefKind::branch ? kBranchTrackingPrefix
                                                    : kTagTrackingPrefix)
-              : (kind == TrackedRefKind::bookmark ? "refs/remotes/"
+              : (kind == TrackedRefKind::branch ? "refs/remotes/"
                                                    : kRemoteTagPrefix);
   for (const auto& [reference, oid] : repo.data_refs()) {
     if (!starts_with(reference, prefix)) continue;
     const std::string suffix = reference.substr(prefix.size());
-    if (kind == TrackedRefKind::bookmark) {
+    if (kind == TrackedRefKind::branch) {
       const std::size_t slash = suffix.find('/');
       if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
       const std::string remote = suffix.substr(0, slash);
@@ -365,7 +365,7 @@ void command_tracking(Repository& repo,
   }
   if (matches.empty()) {
     throw UserError(std::string("no remote ") +
-                    (kind == TrackedRefKind::bookmark ? "bookmarks" : "tags") +
+                    (kind == TrackedRefKind::branch ? "branches" : "tags") +
                     " matched");
   }
 
@@ -377,7 +377,7 @@ void command_tracking(Repository& repo,
     if (track) {
       updates.emplace(tracking, candidate.target);
       const std::string local =
-          std::string(kind == TrackedRefKind::bookmark ? "refs/heads/"
+          std::string(kind == TrackedRefKind::branch ? "refs/heads/"
                                                         : "refs/tags/") +
           candidate.name;
       if (!repo.ref_target(local).has_value()) {
@@ -393,42 +393,52 @@ void command_tracking(Repository& repo,
               track ? "gg track remote ref" : "gg untrack remote ref");
 }
 
-std::vector<std::pair<std::string, git_oid>> closest_bookmarks(
-    Repository& repo,
-    const std::vector<std::pair<std::string, git_oid>>& candidates) {
-  std::vector<std::pair<std::string, git_oid>> closest;
-  for (const auto& candidate : candidates) {
-    const bool shadowed =
-        std::ranges::any_of(candidates, [&](const auto& other) {
-          if (candidate.second == other.second) return false;
-          const int closer = git_graph_descendant_of(
-              repo.raw(), &other.second, &candidate.second);
-          check(closer, "select closest bookmarks");
-          return closer != 0;
-        });
-    if (!shadowed) closest.push_back(candidate);
-  }
-  return closest;
-}
-
 }  // namespace
 
-void command_bookmark(Repository& repo,
-                      const BookmarkCommand& options,
+void command_branch(Repository& repo,
+                      const BranchCommand& options,
                       std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const auto record_head_change = [&](std::map<std::string, git_oid> updates,
                                       std::set<std::string> deletes,
                                       HeadState head,
                                       std::string_view description) {
+    // Git refuses to move a branch another worktree has checked out.
+    std::set<std::string> touched(deletes.begin(), deletes.end());
+    for (const auto& [name, oid] : updates) {
+      (void)oid;
+      touched.insert(name);
+    }
+    for (const std::string& name : touched) {
+      if (!starts_with(name, "refs/heads/")) continue;
+      if (const auto other = repo.branch_checked_out_elsewhere(name)) {
+        throw UserError("branch " + name.substr(11) +
+                        " is checked out in workspace " + *other);
+      }
+    }
     const HeadState current_head = repo.head_state();
+    const auto original = repo.head_oid();
     if (head.symbolic && current_head.symbolic && head.value == current_head.value) {
       const auto replacement = updates.find(head.value);
-      const auto original = repo.head_oid();
       if (replacement != updates.end() && original.has_value() &&
           !(replacement->second == *original)) {
         head = {false, oid_string(*original)};
       }
+    }
+    // Detaching from a branch that moved away or was deleted must not hide
+    // the checked-out work: keep @ visible as an unnamed head.
+    if (current_head.symbolic && !head.symbolic && original.has_value()) {
+      bool named = false;
+      for (const auto& [reference, oid] : repo.refs_with_prefix("refs/heads/")) {
+        const auto updated = updates.find(reference);
+        const git_oid target =
+            updated != updates.end() ? updated->second : oid;
+        named |= !deletes.contains(reference) && target == *original;
+      }
+      for (const auto& [name, oid] : updates) {
+        named |= starts_with(name, "refs/heads/") && oid == *original;
+      }
+      if (!named) updates.emplace(user_head_ref(*original), *original);
     }
     const git_oid previous_operation = repo.ensure_operation();
     const auto previous_aliases = repo.data_refs();
@@ -436,26 +446,26 @@ void command_bookmark(Repository& repo,
     try {
       repo.set_head(head);
     } catch (const std::exception& error) {
-      const std::string original = error.what();
+      const std::string original_error = error.what();
       try {
         repo.restore_operation(previous_operation, "", true, true, false,
                              &previous_aliases);
       } catch (const std::exception& recovery) {
         repo.clear_checkout_recovery();
-        throw UserError(original + "; could not restore the previous operation: " +
+        throw UserError(original_error + "; could not restore the previous operation: " +
                         recovery.what());
       }
       throw;
     }
   };
-  if (options.action == BookmarkAction::track ||
-      options.action == BookmarkAction::untrack) {
+  if (options.action == BranchAction::track ||
+      options.action == BranchAction::untrack) {
     command_tracking(repo, options.names, options.remotes,
-                     TrackedRefKind::bookmark,
-                     options.action == BookmarkAction::track, output);
+                     TrackedRefKind::branch,
+                     options.action == BranchAction::track, output);
     return;
   }
-  if (options.action == BookmarkAction::list) {
+  if (options.action == BranchAction::list) {
     std::set<git_oid, OidLess> revisions;
     const std::vector<git_oid> resolved =
         resolve_revision_arguments(repo, options.revisions);
@@ -477,16 +487,16 @@ void command_bookmark(Repository& repo,
             options.remotes.empty()) {
           continue;
         }
-        const std::string remote_bookmark =
+        const std::string remote_branch =
             reference.substr(remote_prefix.size());
-        const std::size_t slash = remote_bookmark.find('/');
+        const std::size_t slash = remote_branch.find('/');
         if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
-        remote = remote_bookmark.substr(0, slash);
-        name = remote_bookmark.substr(slash + 1);
+        remote = remote_branch.substr(0, slash);
+        name = remote_branch.substr(slash + 1);
         if (name == "HEAD") continue;
         if (options.tracked &&
             !repo.ref_target(tracking_reference(
-                                 TrackedRefKind::bookmark, remote, name))
+                                 TrackedRefKind::branch, remote, name))
                  .has_value()) {
           continue;
         }
@@ -512,12 +522,12 @@ void command_bookmark(Repository& repo,
     }
     sort_refs(items, options.sort);
     for (const RefListItem& item : items) {
-      render_ref_list_item(repo, item, OutputStyle::bookmark, output);
+      render_ref_list_item(repo, item, OutputStyle::branch, output);
     }
     return;
   }
-  if (options.action == BookmarkAction::erase ||
-      options.action == BookmarkAction::forget) {
+  if (options.action == BranchAction::erase ||
+      options.action == BranchAction::forget) {
     std::set<std::string> deletes;
     std::set<std::string> matched_names;
     for (const std::string& pattern : options.names) {
@@ -532,7 +542,7 @@ void command_bookmark(Repository& repo,
         matched_names.insert(name);
         deletes.insert(reference);
       }
-      if (!matched) throw UserError("bookmark not found: " + pattern);
+      if (!matched) throw UserError("branch not found: " + pattern);
     }
     if (options.include_remotes) {
       for (const std::string& name : matched_names) {
@@ -546,12 +556,12 @@ void command_bookmark(Repository& repo,
         }
       }
     }
-    if (options.action == BookmarkAction::forget) {
+    if (options.action == BranchAction::forget) {
       for (const std::string& name : matched_names) {
         const std::string suffix = "/" + name;
         for (const auto& [reference, oid] : repo.data_refs()) {
           (void)oid;
-          if (starts_with(reference, kBookmarkTrackingPrefix) &&  // GG_COV_EXCL_BRANCH
+          if (starts_with(reference, kBranchTrackingPrefix) &&  // GG_COV_EXCL_BRANCH
               reference.ends_with(suffix)) {
             deletes.insert(reference);
           }
@@ -564,49 +574,47 @@ void command_bookmark(Repository& repo,
       head = {false, oid_string(*repo.head_oid())};
     }
     record_head_change({}, deletes, head,
-                options.action == BookmarkAction::erase ? "gg bookmark delete"
-                                                        : "gg bookmark forget");
-    output << (options.action == BookmarkAction::erase ? "Deleted " : "Forgot ")
-           << deletes.size() << " bookmark ref(s).\n";
+                options.action == BranchAction::erase ? "gg branch delete"
+                                                        : "gg branch forget");
+    output << (options.action == BranchAction::erase ? "Deleted " : "Forgot ")
+           << deletes.size() << " branch ref(s).\n";
     return;
   }
-  if (options.action == BookmarkAction::rename) {
+  if (options.action == BranchAction::rename) {
     if (options.names.size() != 2) {
-      throw UserError("bookmark rename requires two names");
+      throw UserError("branch rename requires two names");
     }
     if (options.names[0] == options.names[1]) {
-      throw UserError("bookmark names must differ");
+      throw UserError("branch names must differ");
     }
     const std::string old_reference = "refs/heads/" + options.names[0];
     const std::string new_reference = "refs/heads/" + options.names[1];
     const auto target = repo.ref_target(old_reference);
     if (!target.has_value()) {
-      throw UserError("bookmark not found: " + options.names[0]);
+      throw UserError("branch not found: " + options.names[0]);
     }
     int valid = 0;
     check(git_reference_name_is_valid(&valid, new_reference.c_str()),
-          "validate bookmark name");
+          "validate branch name");
     if (valid == 0) {
-      throw UserError("invalid bookmark name: " + options.names[1]);
+      throw UserError("invalid branch name: " + options.names[1]);
     }
     if (!options.overwrite_existing &&
         repo.ref_target(new_reference).has_value()) {
-      throw UserError("bookmark already exists: " + options.names[1]);
+      throw UserError("branch already exists: " + options.names[1]);
     }
     HeadState head = repo.head_state();
     const bool renames_head = head.symbolic && head.value == old_reference;
     if (renames_head) head.value = new_reference;
     record_head_change({{new_reference, *target}}, {old_reference}, head,
-                "gg bookmark rename");
+                "gg branch rename");
     output << "Renamed " << options.names[0] << " to " << options.names[1]
            << ".\n";
     return;
   }
-  if (options.action == BookmarkAction::advance ||
-      options.action == BookmarkAction::move) {
-    if (options.action == BookmarkAction::move && options.names.empty() &&
-        options.from.empty()) {
-      throw UserError("bookmark move requires a name or --from revision");
+  if (options.action == BranchAction::move) {
+    if (options.names.empty() && options.from.empty()) {
+      throw UserError("branch move requires a name or --from revision");
     }
     std::string target_expression = options.revision;
     if (target_expression.empty()) {
@@ -627,28 +635,19 @@ void command_bookmark(Repository& repo,
         continue;
       }
       if (!sources.empty() && !sources.contains(oid)) continue;
-      if (options.action == BookmarkAction::advance &&
-          options.names.empty()) {
-        const int ancestor = git_graph_descendant_of(repo.raw(), &target, &oid);
-        check(ancestor, "select bookmarks to advance");
-        if (ancestor == 0) continue;
-      }
       matches.emplace_back(name, oid);
     }
-    if (options.action == BookmarkAction::advance && options.names.empty()) {
-      matches = closest_bookmarks(repo, matches);
-    }
     if (matches.empty()) {
-      output << "No bookmarks to update.\n";
+      output << "No branches to update.\n";
       return;
     }
     if (!options.allow_backwards) {
       for (const auto& [name, oid] : matches) {
         const int forward =
             git_graph_descendant_of(repo.raw(), &target, &oid);
-        check(forward, "check bookmark movement");
+        check(forward, "check branch movement");
         if (forward == 0) {
-          throw UserError("refusing to move bookmark backwards or sideways: " +
+          throw UserError("refusing to move branch backwards or sideways: " +
                           name);
         }
       }
@@ -658,11 +657,10 @@ void command_bookmark(Repository& repo,
       (void)oid;
       updates.emplace("refs/heads/" + name, target);
     }
-    const bool advancing = options.action == BookmarkAction::advance;
     record_head_change(std::move(updates), {}, repo.head_state(),
-                advancing ? "gg bookmark advance" : "gg bookmark move");
-    output << (advancing ? "Advanced " : "Moved ") << matches.size()
-           << " bookmark(s) to " << repo.short_commit_id(target).value << '\n';
+                       "gg branch move");
+    output << "Moved " << matches.size()
+           << " branch(s) to " << repo.short_commit_id(target).value << '\n';
     return;
   }
   const git_oid target =
@@ -672,29 +670,42 @@ void command_bookmark(Repository& repo,
     const std::string reference = "refs/heads/" + name;
     int valid = 0;
     check(git_reference_name_is_valid(&valid, reference.c_str()),
-          "validate bookmark name");
+          "validate branch name");
     if (valid == 0) {
-      throw UserError("invalid bookmark name: " + name);
+      throw UserError("invalid branch name: " + name);
     }
-    if (options.action == BookmarkAction::create &&
+    if (options.action == BranchAction::create &&
         repo.ref_target(reference).has_value()) {
-      throw UserError("bookmark already exists: " + name);
+      throw UserError("branch already exists: " + name);
     }
     const auto current = repo.ref_target(reference);
-    if (options.action == BookmarkAction::set && current.has_value() &&
+    if (options.action == BranchAction::set && current.has_value() &&
         !(*current == target) && !options.allow_backwards) {
       const int is_descendant =
           git_graph_descendant_of(repo.raw(), &target, &*current);
-      check(is_descendant, "check bookmark movement");
+      check(is_descendant, "check branch movement");
       if (is_descendant == 0) {
-        throw UserError("refusing to move bookmark backwards: " + name);
+        throw UserError("refusing to move branch backwards: " + name);
       }
     }
     updates.emplace(reference, target);
   }
-  record_head_change(std::move(updates), {}, repo.head_state(), "gg bookmark");
+  HeadState head = repo.head_state();
+  std::set<std::string> deletes;
+  const auto checked_out = repo.head_oid();
+  if (options.action == BranchAction::create && options.names.size() == 1 &&
+      !head.symbolic && checked_out.has_value() && *checked_out == target) {
+    // Like `git switch -c`: naming the detached @ checks the new branch out.
+    head = {true, "refs/heads/" + options.names.front()};
+  }
+  if (options.action == BranchAction::create) {
+    // The branch now keeps the commit visible.
+    deletes.insert(user_head_ref(target));
+  }
+  record_head_change(std::move(updates), std::move(deletes), head,
+                     "gg branch");
   for (const std::string& name : options.names) {
-    output << (options.action == BookmarkAction::create ? "Created " : "Moved ")
+    output << (options.action == BranchAction::create ? "Created " : "Moved ")
            << name << " at " << repo.short_commit_id(target).value << '\n';
   }
 }
@@ -702,7 +713,7 @@ void command_bookmark(Repository& repo,
 void command_tag(Repository& repo,
                  const TagCommand& options,
                  std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   if (options.action == TagAction::track ||
       options.action == TagAction::untrack) {
     command_tracking(repo, options.names, options.remotes, TrackedRefKind::tag,
@@ -910,10 +921,39 @@ int create_clone_remote(git_remote** output,
   return git_remote_create(output, repository, name->c_str(), url);
 }
 
+void record_fetch(Repository& repo, std::map<std::string, git_oid> updates,
+                  std::set<std::string> deletes, bool advance_branches,
+                  std::ostream& output) {
+  std::optional<git_oid> current_target;
+  repo.add_remote_branch_updates(updates, advance_branches,
+                                 advance_branches ? &current_target : nullptr);
+  const auto current_branch = repo.current_branch();
+  if (current_target.has_value() && current_branch.has_value()) {
+    // The checked-out branch fast-forwards only together with the working
+    // tree, like `git pull --ff-only`; local edits keep it where it is.
+    const auto workspace = repo.workspace();
+    const std::string branch_name = current_branch->substr(11);
+    if (workspace.has_value() &&
+        !repo.worktree_tracked_dirty(
+            *git_commit_tree_id(repo.commit(*workspace).get()))) {
+      updates[*current_branch] = *current_target;
+      finish_workspace(repo, *current_target, std::move(updates),
+                       std::move(deletes), "gg fetch");
+      output << "Fast-forwarded " << branch_name << " to "
+             << repo.short_commit_id(*current_target).value << '\n';
+      return;
+    }
+    output << branch_name << " is behind its remote; commit or discard "
+              "working-tree changes, then fetch again\n";
+  }
+  repo.record(std::move(updates), std::move(deletes), repo.head_state(),
+              "gg fetch");
+}
+
 void command_fetch(Repository& repo,
                    const GitFetchCommand& options,
                    std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   git_strarray listed{};
   check(git_remote_list(&listed, repo.raw()), "list remotes");
   std::vector<std::string> available_remotes;
@@ -945,8 +985,8 @@ void command_fetch(Repository& repo,
     const std::string remote_prefix = "refs/remotes/" + name + "/";
     const std::string remote_tag_prefix =
         std::string(kRemoteTagPrefix) + name + "/tags/";
-    const std::string bookmark_tracking_prefix =
-        std::string(kBookmarkTrackingPrefix) + name + "/";
+    const std::string branch_tracking_prefix =
+        std::string(kBranchTrackingPrefix) + name + "/";
     const std::string tag_tracking_prefix =
         std::string(kTagTrackingPrefix) + name + "/";
     std::set<std::string> known_tags;
@@ -962,9 +1002,9 @@ void command_fetch(Repository& repo,
     if (options.tracked) {
       for (const auto& [reference, oid] : repo.data_refs()) {
         (void)oid;
-        if (!starts_with(reference, bookmark_tracking_prefix)) continue;
+        if (!starts_with(reference, branch_tracking_prefix)) continue;
         const std::string branch =
-            reference.substr(bookmark_tracking_prefix.size());
+            reference.substr(branch_tracking_prefix.size());
         if (std::ranges::find(advertised.branches, branch) !=
             advertised.branches.end()) {
           branches.push_back(branch);
@@ -1056,29 +1096,28 @@ void command_fetch(Repository& repo,
         }
       }
       for (const std::string& branch : fetched_branches) {
-        tracking_updates[bookmark_tracking_prefix + branch] =
+        tracking_updates[branch_tracking_prefix + branch] =
             *repo.ref_target(remote_prefix + branch);
       }
     } else {
       for (const std::string& branch : branches) {
-        tracking_updates[bookmark_tracking_prefix + branch] =
+        tracking_updates[branch_tracking_prefix + branch] =
             *repo.ref_target(remote_prefix + branch);
       }
     }
     output << "Fetched " << name << '\n';
   }
-  repo.add_remote_bookmark_updates(tracking_updates);
-  repo.record(std::move(tracking_updates), std::move(tracking_deletes),
-              repo.head_state(), "gg fetch");
+  record_fetch(repo, std::move(tracking_updates), std::move(tracking_deletes),
+               true, output);
 }
 
 void command_push(Repository& repo,
                   const GitPushCommand& options,
                   std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const bool default_selection =
       !options.all && !options.tracked && !options.deleted &&
-      options.bookmarks.empty() && options.tags.empty() &&
+      options.branches.empty() && options.tags.empty() &&
       options.revisions.empty();
   const std::string name = options.remote.empty() ? "origin" : options.remote;
   const auto refs = repo.data_refs();
@@ -1107,13 +1146,13 @@ void command_push(Repository& repo,
       }
     }
     const std::vector<std::string> selected = matching_names(
-        patterns, available, kind == "heads" ? "bookmark" : "tag");
+        patterns, available, kind == "heads" ? "branch" : "tag");
     for (const std::string& name : selected) {
       const std::string reference = prefix + name;
       updates.emplace(reference, reference);
     }
   };
-  add("heads", options.bookmarks);
+  add("heads", options.branches);
   add("tags", options.tags);
   std::set<git_oid, OidLess> revisions;
   const std::vector<git_oid> resolved_revisions =
@@ -1134,7 +1173,7 @@ void command_push(Repository& repo,
         });
     if (!named) {
       throw UserError(
-          "push revision is not named by a local bookmark or tag: " +
+          "push revision is not named by a local branch or tag: " +
           repo.short_commit_id(revision).value);
     }
   }
@@ -1150,58 +1189,28 @@ void command_push(Repository& repo,
   const std::string remote_prefix = "refs/remotes/" + name + "/";
   const std::string remote_tag_prefix =
       std::string(kRemoteTagPrefix) + name + "/tags/";
-  const std::string bookmark_tracking_prefix =
-      std::string(kBookmarkTrackingPrefix) + name + "/";
+  const std::string branch_tracking_prefix =
+      std::string(kBranchTrackingPrefix) + name + "/";
   const std::string tag_tracking_prefix =
       std::string(kTagTrackingPrefix) + name + "/";
   if (default_selection) {
-    git_oid target = repo.resolve("@");
-    const auto publishable = [&](const git_oid& oid) {
-      CommitPtr commit = repo.commit(oid);
-      return !first_line(git_commit_message(commit.get())).empty() &&
-             !(*git_commit_tree_id(commit.get()) ==
-               combined_tree(repo, repo.parents(oid)));
-    };
-    if (!publishable(target)) {
-      const std::vector<git_oid> parents = repo.parents(target);
-      if (parents.empty() || !publishable(parents.front())) {
-        throw UserError("no non-empty described change at @ or @-");
-      }
-      target = parents.front();
+    // Like `git push`: publish the checked-out branch.
+    const auto branch = repo.current_branch();
+    if (!branch.has_value()) {
+      throw UserError("HEAD is detached; pass --branch NAME or create a branch");
     }
-
-    std::vector<std::pair<std::string, git_oid>> bookmarks;
-    for (const auto& [reference, oid] : refs) {
-      constexpr std::string_view prefix = "refs/heads/";
-      if (!starts_with(reference, prefix)) continue;
-      if (!(oid == target)) {
-        const int ancestor =
-            git_graph_descendant_of(repo.raw(), &target, &oid);
-        check(ancestor, "select bookmark to push");
-        if (ancestor == 0) continue;
-      }
-      bookmarks.emplace_back(reference.substr(prefix.size()), oid);
-    }
-    bookmarks = closest_bookmarks(repo, bookmarks);
-    if (bookmarks.empty()) {
-      throw UserError("no bookmark found at or before the change to push");
-    }
-    for (const auto& [bookmark, oid] : bookmarks) {
-      const std::string reference = "refs/heads/" + bookmark;
-      updates.emplace(reference, oid_string(target));
-      if (!(oid == target)) local_updates.emplace(reference, target);
-    }
+    updates.emplace(*branch, *branch);
   }
   if (options.tracked || options.deleted) {
     for (const auto& [reference, oid] : refs) {
       (void)oid;
       std::string local;
       std::string remote_tracking;
-      if (starts_with(reference, bookmark_tracking_prefix)) {
-        const std::string bookmark =
-            reference.substr(bookmark_tracking_prefix.size());
-        local = "refs/heads/" + bookmark;
-        remote_tracking = remote_prefix + bookmark;
+      if (starts_with(reference, branch_tracking_prefix)) {
+        const std::string branch =
+            reference.substr(branch_tracking_prefix.size());
+        local = "refs/heads/" + branch;
+        remote_tracking = remote_prefix + branch;
       } else if (starts_with(reference, tag_tracking_prefix)) {
         const std::string tag = reference.substr(tag_tracking_prefix.size());
         local = "refs/tags/" + tag;
@@ -1250,13 +1259,6 @@ void command_push(Repository& repo,
     output << (options.dry_run ? "Would push " : "Pushing ") << destination
            << " to " << name << '\n';
   }
-  for (const auto& [reference, target] : local_updates) {
-    constexpr std::string_view prefix = "refs/heads/";
-    if (!starts_with(reference, prefix)) continue;
-    output << (options.dry_run ? "Would advance " : "Advancing ")
-           << reference.substr(prefix.size()) << " to "
-           << repo.short_commit_id(target).value << '\n';
-  }
   if (options.dry_run) return;
   UtilExecCommand push_command{
       "git", {"--git-dir=" + std::string(git_repository_path(repo.raw())),
@@ -1274,10 +1276,10 @@ void command_push(Repository& repo,
     constexpr std::string_view head_prefix = "refs/heads/";
     constexpr std::string_view tag_prefix = "refs/tags/";
     if (starts_with(destination, head_prefix)) {
-      const std::string bookmark = destination.substr(head_prefix.size());
+      const std::string branch = destination.substr(head_prefix.size());
       local_updates.emplace(
-          remote_prefix + bookmark, target);
-      local_updates.emplace(bookmark_tracking_prefix + bookmark, target);
+          remote_prefix + branch, target);
+      local_updates.emplace(branch_tracking_prefix + branch, target);
     } else {
       const std::string tag = destination.substr(tag_prefix.size());
       const git_oid tag_target = *repo.ref_target(destination);
@@ -1301,7 +1303,7 @@ void command_undo(Repository& repo, std::ostream& output) {
 }
 
 std::optional<git_oid> operation_undo_target(Repository& repo) {
-  repo.sync_for_command();
+  repo.prepare_command();
   if (!repo.operation().has_value()) {
     return std::nullopt;
   }
@@ -1327,7 +1329,7 @@ void command_redo(Repository& repo, std::ostream& output) {
 }
 
 std::optional<git_oid> operation_redo_target(Repository& repo) {
-  repo.sync_for_command();
+  repo.prepare_command();
   if (!repo.operation().has_value()) {
     return std::nullopt;
   }
@@ -1348,7 +1350,7 @@ std::optional<git_oid> operation_redo_target(Repository& repo) {
 void command_operation_log(Repository& repo,
                            const OperationLogCommand& options,
                            std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   auto current = repo.operation();
   if (!current.has_value()) {
     output << "No operations.\n";
@@ -1467,7 +1469,7 @@ void command_operation_log(Repository& repo,
 void command_operation_restore(Repository& repo,
                                const OperationRestoreCommand& options,
                                std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const git_oid operation = repo.resolve_operation(options.operation);
   const bool all = options.what.empty();
   const bool restore_repository =
@@ -1577,7 +1579,7 @@ int clone_command(const GitCloneCommand& options, std::ostream& output) {
       constexpr std::string_view tag_prefix = "refs/tags/";
       if (starts_with(reference, remote_prefix) &&  // GG_COV_EXCL_BRANCH
           reference != remote_prefix + "HEAD") {  // GG_COV_EXCL_BRANCH
-        tracked_refs.emplace(std::string(kBookmarkTrackingPrefix) +
+        tracked_refs.emplace(std::string(kBranchTrackingPrefix) +
                                  options.remote + "/" +
                                  reference.substr(remote_prefix.size()),
                              oid);

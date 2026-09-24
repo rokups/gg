@@ -32,10 +32,16 @@ inline constexpr std::string_view kOperationRef = "refs/gg/operations/current";
 inline constexpr std::string_view kRewriteRef = "refs/gg/rewrite";
 inline constexpr std::string_view kConflictPrefix = "refs/gg/conflicts/";
 inline constexpr std::string_view kRemoteTagPrefix = "refs/gg/remotes/";
-inline constexpr std::string_view kBookmarkTrackingPrefix =
+inline constexpr std::string_view kBranchTrackingPrefix =
+    "refs/gg/tracking/branches/";
+inline constexpr std::string_view kLegacyBranchTrackingPrefix =
     "refs/gg/tracking/bookmarks/";
 inline constexpr std::string_view kTagTrackingPrefix =
     "refs/gg/tracking/tags/";
+
+// A head the user created without naming it. Such heads stay visible until
+// they are abandoned, named, or built upon.
+std::string user_head_ref(const git_oid& oid);
 
 class UserError : public std::runtime_error {
  public:
@@ -133,6 +139,18 @@ bool starts_with(std::string_view value, std::string_view prefix);
 std::int64_t commit_alias_time();
 
 struct HeadState { bool symbolic = true; std::string value; };
+// What HEAD becomes when an operation moves @. Follow keeps an attached
+// branch attached when it ends at the new @ and detaches otherwise.
+struct HeadIntent {
+  enum class Kind { follow, attach, detach };
+  Kind kind = Kind::follow;
+  std::string branch;
+  static HeadIntent follow() { return {}; }
+  static HeadIntent detach() { return {Kind::detach, {}}; }
+  static HeadIntent attach(std::string branch) {
+    return {Kind::attach, std::move(branch)};
+  }
+};
 struct ShortId { std::string value; std::size_t prefix_length; };
 struct OperationState {
   HeadState head;
@@ -160,6 +178,8 @@ struct WorkspaceRecord {
   bool primary{false};
   bool locked{false};
   std::string lock_reason;
+  // The local branch this workspace's HEAD is attached to, if any.
+  std::string branch;
 };
 
 class Repository {
@@ -168,7 +188,7 @@ class Repository {
                       bool ignore_working_copy = false);
   explicit Repository(git_repository* repository,
                       bool ignore_working_copy = false,
-                      bool synchronize_commands = false);
+                      bool adopt_external_changes = false);
 
   git_repository* raw() const;
 
@@ -228,20 +248,20 @@ class Repository {
   git_oid snapshot_tree(const git_oid& baseline_tree) const;
   git_oid snapshot_tree(const git_oid& baseline_tree,
                         const std::vector<std::string>& paths) const;
+  // The working tree as a tree object, leaving Git's index untouched.
+  git_oid worktree_tree(const git_oid& baseline_tree) const;
   DiffPtr worktree_diff(const git_oid& baseline_tree) const;
   bool worktree_dirty(const git_oid& baseline_tree) const;
   bool worktree_tracked_dirty(const git_oid& baseline_tree) const;
-  bool synchronizes_commands() const;
-  bool projects_workspace_head() const;
-  std::optional<git_oid> expected_head() const;
   bool head_matches_workspace() const;
   void require_current_head() const;
-  // Explicit-commit mode only: follow a HEAD moved by Git without snapshotting.
+  // Follow a HEAD moved by Git; uncommitted edits stay in the working tree.
   bool adopt_external_head() const;
-
-  void record_workspace_snapshot(const git_oid& workspace,
-                                 std::map<std::string, git_oid> updates,
-                                 std::string_view description) const;
+  // The branch HEAD is attached to (refs/heads/...), if any.
+  std::optional<std::string> current_branch() const;
+  // The workspace that has the branch checked out, other than this one.
+  std::optional<std::string> branch_checked_out_elsewhere(
+      std::string_view branch) const;
 
   std::vector<std::string> untracked_paths() const;
   // Restrict the worktree traversal to the supplied Git pathspecs.  An empty
@@ -310,7 +330,12 @@ class Repository {
 
   void set_head(const HeadState& head) const;
 
-  HeadState head_for_workspace(const git_oid& workspace) const;
+  // Decide HEAD after @ moves to `workspace`. Attaching or following an
+  // unborn branch adds the branch update to `updates`.
+  HeadState head_after(const git_oid& workspace,
+                       std::map<std::string, git_oid>& updates,
+                       const std::set<std::string>& deletes,
+                       const HeadIntent& intent = HeadIntent::follow()) const;
 
   void checkout(std::optional<git_oid> oid) const;
 
@@ -383,23 +408,27 @@ class Repository {
 
   std::vector<git_oid> resolve_set(std::string_view revisions) const;
 
-  bool sync_workspace() const;
-  bool sync_workspace(const std::vector<std::string>& paths) const;
-
-  void add_remote_bookmark_updates(
+  // Fast-forward tracked local branches to their fetched remote targets.
+  // Branches checked out in a workspace are never moved behind its back; the
+  // proposal for this workspace's branch is reported through
+  // `current_branch_target` when requested.
+  void add_remote_branch_updates(
       std::map<std::string, git_oid>& updates,
-      bool advance_bookmarks = true) const;
+      bool advance_branches = true,
+      std::optional<git_oid>* current_branch_target = nullptr) const;
 
-  bool sync_remote_bookmarks(bool advance_bookmarks = true) const;
+  bool sync_remote_branches(bool advance_branches = true) const;
 
-  bool sync_for_command() const;
+  // Prepare a CLI command: adopt HEAD moves and remote-tracking updates made
+  // by Git itself. Library callers adopt Git history explicitly.
+  bool prepare_command() const;
 
   void track_paths(const std::vector<std::string>& paths,
                    bool include_ignored) const;
 
   void untrack_paths(const std::vector<std::string>& paths) const;
 
-  std::vector<std::string> bookmarks(const git_oid& oid) const;
+  std::vector<std::string> branches(const git_oid& oid) const;
 
  private:
   git_oid snapshot_tree(const git_oid& baseline_tree,
@@ -417,6 +446,9 @@ class Repository {
       const std::map<std::string, CommitAlias>& aliases) const;
 
   std::set<std::string> legacy_change_refs() const;
+  void migrate_legacy_branch_tracking() const;
+  bool migrate_legacy_workspace() const;
+  void migrate_alias_heads() const;
 
   std::set<std::string> expired_alias_refs() const;
 
@@ -424,7 +456,7 @@ class Repository {
 
   RepositoryPtr repo_;
   bool ignore_working_copy_{false};
-  bool synchronize_commands_{true};
+  bool adopt_external_changes_{true};
   std::optional<OperationState> operation_view_;
   std::optional<git_oid> viewed_operation_;
   mutable std::optional<std::map<std::string, git_oid>> data_refs_cache_;

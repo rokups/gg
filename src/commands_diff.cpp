@@ -589,11 +589,11 @@ void render_revision_header(Repository& repo,
     }
     output << '\n';
   }
-  const std::vector<std::string> bookmarks = repo.bookmarks(revision);
-  if (!bookmarks.empty()) {
-    output << "Bookmarks:";
-    for (const std::string& bookmark : bookmarks) {
-      output << ' ' << styled(output, bookmark, OutputStyle::bookmark);
+  const std::vector<std::string> branches = repo.branches(revision);
+  if (!branches.empty()) {
+    output << "Branches:";
+    for (const std::string& branch : branches) {
+      output << ' ' << styled(output, branch, OutputStyle::branch);
     }
     output << '\n';
   }
@@ -677,10 +677,15 @@ git_oid select_diff_tree(Repository& repo,
 void command_diff(Repository& repo,
                   const DiffCommand& options,
                   std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   git_oid from_tree{};
   git_oid to_tree{};
-  if (!options.from.empty() || !options.to.empty()) {
+  if (options.revisions.empty() && options.to.empty()) {
+    // Like `git diff`: compare @ (or --from) with the working tree.
+    from_tree =
+        tree_id(repo, repo.resolve(options.from.empty() ? "@" : options.from));
+    to_tree = repo.worktree_tree(tree_id(repo, repo.resolve("@")));
+  } else if (!options.from.empty() || !options.to.empty()) {
     from_tree =
         tree_id(repo, repo.resolve(options.from.empty() ? "@" : options.from));
     to_tree =
@@ -702,7 +707,7 @@ void command_diff(Repository& repo,
 void command_show(Repository& repo,
                   const ShowCommand& options,
                   std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());

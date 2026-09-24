@@ -203,7 +203,7 @@ std::vector<LogReference> log_references(Repository& repo,
 void command_new(Repository& repo,
                  const NewCommand& options,
                  std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const auto old_workspace = repo.workspace();
   std::vector<git_oid> parents;
   const std::vector<git_oid> after =
@@ -237,6 +237,23 @@ void command_new(Repository& repo,
       }
     }
     if (!revisions.empty()) parents = commit_parents(repo, revisions);
+  }
+  // Git-like: a new change on the tip of the current branch (or on a branch
+  // named explicitly) continues that branch; anything else forks detached.
+  std::optional<std::string> continued;
+  if (!options.detach && !options.no_edit && after.empty() && before.empty() &&
+      parents.size() == 1) {
+    if (options.parents.empty() ||
+        (options.parents.size() == 1 && options.parents.front() == "@")) {
+      if (auto branch = repo.current_branch(); branch.has_value()) {
+        const auto target = repo.ref_target(*branch);
+        if (target.has_value() && *target == parents.front()) {
+          continued = std::move(branch);
+        }
+      }
+    } else if (options.parents.size() == 1) {
+      continued = local_branch_named(repo, options.parents.front());
+    }
   }
   const auto visible = repo.resolve_set("all()");
   const std::set<git_oid, OidLess> existing(visible.begin(), visible.end());
@@ -313,34 +330,52 @@ void command_new(Repository& repo,
     }
     repo.add_alias_updates(plan);
   }
-  plan.updates[std::string(kAliasPrefix) + oid_string(change)] = change;
+  std::set<std::string> deletes;
+  if (continued.has_value()) {
+    plan.updates[*continued] = change;
+  } else if (after.empty() && before.empty() &&
+             !(options.parents.empty() && parents.empty() &&
+               repo.current_branch().has_value())) {
+    // Unless an unborn branch is being born, the change is a new unnamed head
+    // the user created; keep it visible.
+    plan.updates[user_head_ref(change)] = change;
+  }
+  // A marked parent is no longer a head once the new change sits on it.
+  if (after.empty() && before.empty()) {
+    for (const git_oid& parent : parents) deletes.insert(user_head_ref(parent));
+  }
   if (!options.no_edit) {
-    finish_workspace(repo, change, std::move(plan.updates), {}, "gg new");
+    finish_workspace(repo, change, std::move(plan.updates), std::move(deletes),
+                     "gg new",
+                     continued.has_value() ? HeadIntent::attach(*continued)
+                     : options.detach      ? HeadIntent::detach()
+                                           : HeadIntent::follow());
   } else if (old_workspace.has_value()) {
     const git_oid workspace = plan.commits.contains(*old_workspace)
                                   ? plan.commits.at(*old_workspace)
                                   : *old_workspace;
-    finish_workspace(repo, workspace, std::move(plan.updates), {}, "gg new");
+    finish_workspace(repo, workspace, std::move(plan.updates),
+                     std::move(deletes), "gg new");
   } else {
-    finish_without_workspace(repo, std::move(plan), {}, "gg new");
+    finish_without_workspace(repo, std::move(plan), std::move(deletes),
+                             "gg new");
   }
   output << (options.no_edit ? "Created change: " : "Working copy now at: ")
          << repo.short_commit_id(change).value << ' '
-         << (options.message.empty() ? "(no description set)" : options.message)
-         << '\n';
+         << (options.message.empty() ? "(no description set)" : options.message);
+  if (continued.has_value()) {
+    output << " (on branch " << continued->substr(11) << ')';
+  }
+  output << '\n';
 }
 
-void command_commit(Repository& repo,
-                    const CommitCommand& options,
-                    std::ostream& output) {
-  repo.sync_for_command();
-  const auto workspace = repo.workspace();
-  if (!workspace.has_value()) {
-    throw UserError("this command requires a working-copy change");
-  }
+namespace {
+
+std::vector<std::string> normalized_worktree_paths(
+    const std::vector<std::string>& values, bool& select_all) {
   std::vector<std::string> paths;
-  bool select_all = false;
-  for (const std::string& path : options.paths) {
+  select_all = values.empty();
+  for (const std::string& path : values) {
     const std::filesystem::path parsed_path(path);
     if (path.empty() || path.front() == '/') {
       throw UserError("commit paths must be repository-relative");
@@ -357,68 +392,120 @@ void command_commit(Repository& repo,
       paths.push_back(normalized);
     }
   }
+  return paths;
+}
 
-  CommitPtr current = repo.commit(*workspace);
-  const std::vector<git_oid> parents = repo.parents(*workspace);
-  const git_oid base_tree = combined_tree(repo, parents);
-  const git_oid full_tree = *git_commit_tree_id(current.get());
+struct WorktreeSelection {
+  git_oid full;
+  git_oid selected;
+};
+
+// Snapshot the working tree relative to `base_tree` and select the part the
+// caller asked for. The index is left matching the selected tree so Git
+// reports the unselected edits as unstaged.
+WorktreeSelection select_worktree(Repository& repo,
+                                  const git_oid& base_tree,
+                                  const std::vector<std::string>& values,
+                                  bool interactive,
+                                  std::string_view tool) {
+  bool select_all = false;
+  const std::vector<std::string> paths =
+      normalized_worktree_paths(values, select_all);
+  const git_oid full_tree = repo.snapshot_tree(base_tree);
   git_oid selected_tree =
-      options.paths.empty() || select_all
-          ? full_tree
-          : repo.selected_tree(base_tree, full_tree, paths);
-  if (options.interactive || !options.tool.empty()) {
+      select_all ? full_tree : repo.selected_tree(base_tree, full_tree, paths);
+  if (interactive || !tool.empty()) {
     selected_tree = select_diff_tree(
         repo, base_tree, selected_tree,
-        options.paths.empty() || select_all ? std::vector<std::string>{}
-                                            : paths,
-        options.tool);
+        select_all ? std::vector<std::string>{} : paths, tool);
   }
-  const char* old_message = git_commit_message(current.get());
-  std::string message = options.message_provided
-                            ? options.message
-                            : (old_message == nullptr ? "" : old_message);  // GG_COV_EXCL_BRANCH
+  return {full_tree, selected_tree};
+}
+
+void stage_tree(Repository& repo, const git_oid& tree_oid) {
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo.raw()), "open index");
+  IndexPtr index(raw_index);
+  TreePtr tree = repo.tree(tree_oid);
+  check(git_index_read_tree(index.get(), tree.get()), "stage committed tree");
+  check(git_index_write(index.get()), "write index");
+}
+
+std::optional<git_oid> active_commit(Repository& repo) {
+  return repo.workspace().has_value() ? repo.workspace() : repo.head_oid();
+}
+
+}  // namespace
+
+void command_commit(Repository& repo,
+                    const CommitCommand& options,
+                    std::ostream& output) {
+  repo.prepare_command();
+  repo.require_current_head();
+  const auto active = active_commit(repo);
+  const git_oid base_tree = active.has_value()
+                                ? *git_commit_tree_id(repo.commit(*active).get())
+                                : repo.empty_tree();
+  const WorktreeSelection selection = select_worktree(
+      repo, base_tree, options.paths, options.interactive, options.tool);
+  if (selection.selected == base_tree) {
+    throw UserError("no working-tree changes to commit");
+  }
+  std::string message = options.message;
   if (options.editor) message = edit_text(repo, message);
-  const git_oid committed =
-      repo.rewrite_commit(*workspace, parents, selected_tree, message);
-  const git_oid new_workspace = repo.create_commit(full_tree, {committed}, "");
-  RewritePlan plan = repo.descendants({{*workspace, committed}});
-  finish_workspace(repo, new_workspace, std::move(plan.updates), {},
-                   "gg commit");
-  output << "Committed as " << repo.short_commit_id(committed).value << '\n'
-         << "Working copy now at: " << repo.short_commit_id(new_workspace).value
+  const std::vector<git_oid> parents = active.has_value()
+                                           ? std::vector<git_oid>{*active}
+                                           : std::vector<git_oid>{};
+  const git_oid created = repo.create_commit(selection.selected, parents, message);
+  std::map<std::string, git_oid> updates;
+  if (const auto branch = repo.current_branch(); branch.has_value()) {
+    const auto target = repo.ref_target(*branch);
+    if (!target.has_value() || (active.has_value() && *target == *active)) {
+      updates.emplace(*branch, created);
+    }
+  }
+  // A commit on a detached HEAD extends an unnamed head; keep it visible.
+  if (updates.empty()) updates.emplace(user_head_ref(created), created);
+  finish_workspace_preserving_worktree(repo, created, std::move(updates),
+                                       "gg commit");
+  if (!(selection.selected == selection.full)) {
+    stage_tree(repo, selection.selected);
+  }
+  output << "Committed as " << repo.short_commit_id(created).value << ' '
+         << (message.empty() ? "(no description set)" : first_line(message.c_str()))
          << '\n';
 }
 
-void command_commit_worktree(Repository& repo,
-                             std::string_view message,
+void command_squash_worktree(Repository& repo,
+                             const std::vector<std::string>& paths,
+                             bool interactive,
+                             std::string_view tool,
+                             std::optional<std::string_view> message,
                              std::ostream& output) {
+  repo.prepare_command();
   repo.require_current_head();
-  const auto active = repo.workspace().has_value() ? repo.workspace()
-                                                    : repo.head_oid();
-  const git_oid old_tree = active.has_value()
-                               ? *git_commit_tree_id(repo.commit(*active).get())
-                               : repo.empty_tree();
-  const git_oid new_tree = repo.snapshot_tree(old_tree);
-  if (new_tree == old_tree) {
-    throw UserError("no working-tree changes to commit");
+  const auto active = active_commit(repo);
+  if (!active.has_value()) {
+    throw UserError("no active commit to amend");
   }
-  const std::vector<git_oid> parents = active.has_value()
-                                            ? std::vector<git_oid>{*active}
-                                            : std::vector<git_oid>{};
-  const git_oid created = repo.create_commit(new_tree, parents, message);
-  std::map<std::string, git_oid> updates;
-  if (active.has_value()) {
-    const HeadState head = repo.head_state();
-    const auto attached = head.symbolic ? repo.ref_target(head.value)
-                                        : std::nullopt;
-    if (head.symbolic && head.value.starts_with("refs/heads/") &&
-        attached.has_value() && *attached == *active) {
-      updates.emplace(head.value, created);
-    }
+  CommitPtr original = repo.commit(*active);
+  const git_oid old_tree = *git_commit_tree_id(original.get());
+  const WorktreeSelection selection =
+      select_worktree(repo, old_tree, paths, interactive, tool);
+  const git_oid rewritten = repo.rewrite_commit(
+      *active, repo.parents(*active), selection.selected, message);
+  if (rewritten == *active) {
+    output << "Nothing changed.\n";
+    return;
   }
-  finish_workspace_preserving_worktree(repo, created, std::move(updates),
-                                       "gg commit working tree");
-  output << "Committed as " << repo.short_commit_id(created).value << '\n';
+  RewritePlan plan = repo.descendants({{*active, rewritten}});
+  finish_workspace_preserving_worktree(repo, rewritten,
+                                       std::move(plan.updates),
+                                       "gg squash working tree");
+  if (!(selection.selected == selection.full)) {
+    stage_tree(repo, selection.selected);
+  }
+  output << "Amended as " << repo.short_commit_id(rewritten).value << '\n';
 }
 
 void command_amend_worktree(Repository& repo,
@@ -492,37 +579,50 @@ void command_amend_tree_worktree(Repository& repo,
   output << "Amended as " << repo.short_commit_id(rewritten).value << '\n';
 }
 
-void command_edit_worktree(Repository& repo,
-                           std::string_view revision,
-                           std::ostream& output) {
-  repo.require_current_head();
-  const auto current = repo.workspace().has_value() ? repo.workspace()
-                                                     : repo.head_oid();
-  const git_oid tree = current.has_value()
-                           ? *git_commit_tree_id(repo.commit(*current).get())
-                           : repo.empty_tree();
-  if (repo.worktree_dirty(tree)) {
-    throw UserError("working tree has uncommitted changes; commit or amend before switching changes");
+std::optional<std::string> local_branch_named(Repository& repo,
+                                              std::string_view revision) {
+  if (revision.empty() || revision == "@") return std::nullopt;
+  std::string name = "refs/heads/" + std::string(revision);
+  int valid = 0;
+  if (git_reference_name_is_valid(&valid, name.c_str()) != 0 || valid == 0) {
+    git_error_clear();
+    return std::nullopt;
   }
-  const git_oid target = repo.resolve(revision);
-  finish_workspace(repo, target, {}, {}, "gg edit working tree", true);
-  output << "Working copy now at: " << repo.short_commit_id(target).value
-         << '\n';
+  if (!repo.ref_target(name).has_value()) return std::nullopt;
+  return name;
 }
+
+HeadIntent checkout_intent(Repository& repo, std::string_view revision) {
+  if (revision == "@") return HeadIntent::follow();
+  if (auto branch = local_branch_named(repo, revision)) {
+    return HeadIntent::attach(std::move(*branch));
+  }
+  return HeadIntent::detach();
+}
+
 
 void command_status(Repository& repo,
                     const StatusCommand& options,
                     std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   std::vector<std::string> paths;
   for (const std::string& value : options.paths) {
     (void)fileset_matches(value, "");
     paths.push_back(value);
   }
-  const auto workspace = repo.workspace();
+  const auto branch = repo.current_branch();
+  const auto workspace = active_commit(repo);
   if (!workspace.has_value()) {
-    output << "No working-copy change. Run `gg new` to create one.\n";
+    output << "On branch " << (branch.has_value() ? branch->substr(11) : "")
+           << "\nNo commits yet.\n";
     return;
+  }
+  if (branch.has_value()) {
+    output << "On branch " << styled(output, branch->substr(11), OutputStyle::branch)
+           << '\n';
+  } else {
+    output << "HEAD detached at "
+           << styled_short_commit_id(repo, output, *workspace, true) << '\n';
   }
   CommitPtr change = repo.commit(*workspace);
   output << "Working copy (@): "
@@ -531,58 +631,54 @@ void command_status(Repository& repo,
   const std::string description = first_line(git_commit_message(change.get()));
   output << (description.empty() ? "(no description set)" : description) << '\n';
   const auto parents = repo.parents(*workspace);
-  git_oid base_tree_oid{};
   if (!parents.empty()) {
     CommitPtr parent = repo.commit(parents.front());
     output << "Parent commit (@-): "
            << styled_short_commit_id(repo, output, parents.front())
            << ' '
            << first_line(git_commit_message(parent.get())) << '\n';
-    base_tree_oid = *git_commit_tree_id(parent.get());
-  } else {
-    output << "Root working-copy change.\n";
-    base_tree_oid = repo.empty_tree();
   }
 
-  git_diff* raw_diff = nullptr;
+  const auto selected = [&](const char* raw_path) {
+    if (paths.empty()) return true;
+    const std::string_view path = raw_path == nullptr ? "" : raw_path;
+    return std::ranges::any_of(paths, [&](const auto& fileset) {
+      return fileset_matches(fileset, path);
+    });
+  };
+  // Report what `gg commit` would record: the working tree as gg snapshots
+  // it (honoring tracking rules and size limits), plus files it would skip.
+  const git_oid base_tree_oid = *git_commit_tree_id(change.get());
+  const git_oid current_tree_oid = repo.worktree_tree(base_tree_oid);
   TreePtr base_tree = repo.tree(base_tree_oid);
-  TreePtr change_tree = repo.tree(*git_commit_tree_id(change.get()));
+  TreePtr current_tree = repo.tree(current_tree_oid);
+  git_diff* raw_diff = nullptr;
   check(git_diff_tree_to_tree(&raw_diff, repo.raw(), base_tree.get(),
-                              change_tree.get(), nullptr),
-        "compare working change");
+                              current_tree.get(), nullptr),
+        "compare working tree");
   DiffPtr diff(raw_diff);
   git_diff_find_options find_options = GIT_DIFF_FIND_OPTIONS_INIT;
   check(git_diff_find_similar(diff.get(), &find_options), "find renamed files");
   std::vector<const git_diff_delta*> deltas;
   for (std::size_t index = 0; index < git_diff_num_deltas(diff.get()); ++index) {
     const git_diff_delta* delta = git_diff_get_delta(diff.get(), index);
-    const auto selected = [&](const char* raw_path) {
-      const std::string_view path = raw_path;
-      if (paths.empty()) {
-        return true;
-      }
-      return std::ranges::any_of(paths, [&](const auto& fileset) {
-        return fileset_matches(fileset, path);
-      });
-    };
-    const bool old_selected = selected(delta->old_file.path);
-    const bool new_selected = selected(delta->new_file.path);
-    if (old_selected | new_selected) {
+    if (selected(delta->old_file.path) || selected(delta->new_file.path)) {
       deltas.push_back(delta);
     }
   }
   std::vector<std::string> untracked = repo.untracked_paths();
-  if (!paths.empty()) {
-    std::erase_if(untracked, [&](const std::string& path) {
-      return std::ranges::none_of(paths, [&](const auto& fileset) {
-        return fileset_matches(fileset, path);
-      });
-    });
-  }
+  std::erase_if(untracked, [&](const std::string& path) {
+    git_tree_entry* raw_entry = nullptr;
+    const int found =
+        git_tree_entry_bypath(&raw_entry, current_tree.get(), path.c_str());
+    git_tree_entry_free(raw_entry);
+    if (found != 0) git_error_clear();
+    return found == 0 || !selected(path.c_str());
+  });
   if (deltas.empty() && untracked.empty()) {
-    output << "The working copy has no changes.\n";
+    output << "The working tree has no changes.\n";
   } else {
-    output << "Working copy changes:\n";
+    output << "Working tree changes:\n";
     for (const git_diff_delta* delta : deltas) {
       const char status = delta->status == GIT_DELTA_ADDED      ? 'A'
                           : delta->status == GIT_DELTA_DELETED  ? 'D'
@@ -603,25 +699,20 @@ void command_status(Repository& repo,
     }
   }
   std::vector<std::string> conflicts = repo.conflict_paths(*workspace);
-  if (!paths.empty()) {  // GG_COV_EXCL_BRANCH
-    std::erase_if(conflicts, [&](const std::string& path) {
-      return std::ranges::none_of(paths, [&](const auto& fileset) {
-        return fileset_matches(fileset, path);  // GG_COV_EXCL_BRANCH
-      });
-    });
-  }
+  std::erase_if(conflicts, [&](const std::string& path) {
+    return !selected(path.c_str());
+  });
   if (!conflicts.empty()) {
     output << "Unresolved conflicts:\n";
     for (const std::string& path : conflicts) output << "C " << path << '\n';
-    output << "Edit the files to resolve them, then run any gg command to "
-              "snapshot the result.\n";
+    output << "Edit the files to resolve them, then amend @ with `gg squash`.\n";
   }
 }
 
 void command_log(Repository& repo,
                  const LogCommand& options,
                  std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   if (options.limit == 0) {
     if (options.count) output << "0\n";
     return;
@@ -639,7 +730,7 @@ void command_log(Repository& repo,
     return options.paths.empty()
         || revision_matches_paths(repo, oid, options.paths, options.format);
   };
-  std::vector<LogReference> local_bookmarks;
+  std::vector<LogReference> local_branches;
   if (!options.revision.empty()) {
     const std::vector<git_oid> selected = repo.resolve_set(options.revision);
     const std::set<git_oid, OidLess> selected_revisions(selected.begin(),
@@ -659,7 +750,7 @@ void command_log(Repository& repo,
       }
     }
   } else {
-    local_bookmarks = log_references(repo, "refs/heads/");
+    local_branches = log_references(repo, "refs/heads/");
     std::priority_queue<Candidate> frontier;
     std::set<git_oid, OidLess> queued;
     std::uint64_t queue_order = 0;
@@ -669,11 +760,19 @@ void command_log(Repository& repo,
       frontier.push({git_commit_committer(value.get())->when.time,
                      ++queue_order, oid});
     };
-    for (const LogReference& bookmark : local_bookmarks) {
-      queue(bookmark.oid);
+    for (const LogReference& branch : local_branches) {
+      queue(branch.oid);
     }
     const auto workspace = repo.workspace();
     if (workspace.has_value()) queue(*workspace);
+    for (const auto& [name, oid] : repo.refs_with_prefix(kVisibleHeadPrefix)) {
+      (void)name;
+      queue(oid);
+    }
+    for (const auto& [name, oid] : repo.refs_with_prefix(kWorkspacePrefix)) {
+      (void)name;
+      queue(oid);
+    }
     while (revisions.size() < options.limit && !frontier.empty()) {
       const git_oid oid = frontier.top().oid;
       frontier.pop();
@@ -687,7 +786,7 @@ void command_log(Repository& repo,
   }
   if (revisions.empty()) return;
   if (!options.revision.empty()) {
-    local_bookmarks = log_references(repo, "refs/heads/");
+    local_branches = log_references(repo, "refs/heads/");
   }
   if (options.reversed) {
     std::reverse(revisions.begin(), revisions.end());
@@ -707,10 +806,10 @@ void command_log(Repository& repo,
   std::map<git_oid, std::vector<std::string>, OidLess> tags;
   constexpr std::string_view tag_prefix = "refs/tags/";
   const std::set<git_oid, OidLess> loaded(revisions.begin(), revisions.end());
-  std::map<git_oid, std::vector<std::string>, OidLess> bookmarks;
-  for (const LogReference& reference : local_bookmarks) {
+  std::map<git_oid, std::vector<std::string>, OidLess> branches;
+  for (const LogReference& reference : local_branches) {
     if (loaded.contains(reference.oid)) {
-      bookmarks[reference.oid].push_back(reference.name);
+      branches[reference.oid].push_back(reference.name);
     }
   }
   for (const LogReference& reference : log_references(repo, tag_prefix)) {
@@ -726,9 +825,9 @@ void command_log(Repository& repo,
     set_output_color_mode(content, output_color_mode(output));
     const bool working = workspace.has_value() && *workspace == oid;
     content << styled_short_commit_id(repo, content, oid, working);
-    if (const auto named = bookmarks.find(oid); named != bookmarks.end()) {
-      for (const std::string& bookmark : named->second) {
-        content << " " << styled(content, bookmark, OutputStyle::bookmark);
+    if (const auto named = branches.find(oid); named != branches.end()) {
+      for (const std::string& branch : named->second) {
+        content << " " << styled(content, branch, OutputStyle::branch);
       }
     }
     if (const auto tagged = tags.find(oid); tagged != tags.end()) {
@@ -751,7 +850,7 @@ void command_log(Repository& repo,
 void command_metaedit(Repository& repo,
                       const MetaeditCommand& options,
                       std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());
@@ -903,17 +1002,22 @@ void command_metaedit(Repository& repo,
 void command_edit(Repository& repo,
                   const EditCommand& options,
                   std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
+  repo.require_current_head();
   const git_oid target = repo.resolve(options.revision);
-  finish_workspace(repo, target, {}, {}, "gg edit");
-  output << "Working copy now at: " << repo.short_commit_id(target).value
-         << '\n';
+  const HeadIntent intent = checkout_intent(repo, options.revision);
+  finish_workspace(repo, target, {}, {}, "gg edit", intent);
+  output << "Working copy now at: " << repo.short_commit_id(target).value;
+  if (intent.kind == HeadIntent::Kind::attach) {
+    output << " (on branch " << intent.branch.substr(11) << ')';
+  }
+  output << '\n';
 }
 
 void command_describe(Repository& repo,
                       const DescribeCommand& options,
                       std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());
@@ -1018,25 +1122,13 @@ void command_describe(Repository& repo,
 void command_move(Repository& repo,
                   const MovementCommand& options,
                   std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
   }
-  const bool edit = options.edit;
-  const bool direct_next = options.direction == MovementDirection::next &&
-                           !edit && !repo.children(*workspace).empty();
-  const bool skip_current = options.direction == MovementDirection::next &&
-                            !edit && !direct_next;
-
-  std::set<git_oid, OidLess> frontier;
-  if (edit || options.direction == MovementDirection::previous ||
-      direct_next) {
-    frontier.insert(*workspace);
-  } else {
-    const auto parents = repo.parents(*workspace);
-    frontier.insert(parents.begin(), parents.end());
-  }
+  repo.require_current_head();
+  std::set<git_oid, OidLess> frontier{*workspace};
   for (std::uint64_t step = 0; step < options.offset; ++step) {
     std::set<git_oid, OidLess> next;
     for (const git_oid& oid : frontier) {
@@ -1047,10 +1139,7 @@ void command_move(Repository& repo,
         if (options.conflict && !repo.commit_has_conflicts(candidate)) {  // GG_COV_EXCL_BRANCH
           continue;
         }
-        if (!(skip_current &&  // GG_COV_EXCL_BRANCH
-              step == 0 && candidate == *workspace)) {
-          next.insert(candidate);
-        }
+        next.insert(candidate);
       }
     }
     frontier = std::move(next);
@@ -1065,12 +1154,7 @@ void command_move(Repository& repo,
   }
   const git_oid target = *frontier.begin();
 
-  git_oid destination = target;
-  if (!edit) {
-    CommitPtr target_commit = repo.commit(target);
-    destination = repo.create_commit(*git_commit_tree_id(target_commit.get()),
-                                     {target}, "");
-  }
+  const git_oid destination = target;
   finish_workspace(repo, destination, {}, {},
                    options.direction == MovementDirection::next ? "gg next"
                                                                 : "gg prev");

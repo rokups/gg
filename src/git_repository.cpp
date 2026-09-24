@@ -144,10 +144,10 @@ Repository::Repository(const std::filesystem::path& path,
 
 Repository::Repository(git_repository* repository,
                        bool ignore_working_copy,
-                       bool synchronize_commands)
+                       bool adopt_external_changes)
     : repo_(repository, RepositoryDeleter{false}),
       ignore_working_copy_(ignore_working_copy),
-      synchronize_commands_(synchronize_commands) {
+      adopt_external_changes_(adopt_external_changes) {
   if (repository == nullptr) {
     throw UserError("repository must not be null");
   }
@@ -210,6 +210,7 @@ void Repository::initialize() {
     }
     set_workspace_name(candidate);
   }
+  migrate_legacy_branch_tracking();
 }
 
 git_repository* Repository::raw() const { return repo_.get(); }
@@ -265,6 +266,10 @@ std::optional<git_oid> Repository::ref_target(std::string_view name) const {
   return *git_reference_target(reference.get());
 }
 
+std::string user_head_ref(const git_oid& oid) {
+  return std::string(kVisibleHeadPrefix) + oid_string(oid);
+}
+
 HeadState Repository::head_state() const {
   if (operation_view_.has_value()) return operation_view_->head;
   git_reference* head = nullptr;
@@ -311,7 +316,7 @@ std::map<std::string, git_oid> Repository::data_refs() const {
         starts_with(name, "refs/tags/") ||
         starts_with(name, "refs/remotes/") ||
         starts_with(name, kRemoteTagPrefix) ||
-        starts_with(name, kBookmarkTrackingPrefix) ||
+        starts_with(name, kBranchTrackingPrefix) ||
         starts_with(name, kTagTrackingPrefix) ||  // GG_COV_EXCL_BRANCH
         starts_with(name, kWorkspacePrefix) ||  // GG_COV_EXCL_BRANCH
         starts_with(name, kVisibleHeadPrefix) || starts_with(name, kAliasPrefix)) {
@@ -500,6 +505,17 @@ std::vector<WorkspaceRecord> Repository::workspaces() const {
       record.current = false;
       continue;
     }
+    git_reference* raw_symbolic = nullptr;
+    if (git_reference_lookup(&raw_symbolic, worktree.get(), "HEAD") == GIT_OK) {
+      ReferencePtr symbolic(raw_symbolic);
+      if (git_reference_type(symbolic.get()) == GIT_REFERENCE_SYMBOLIC &&
+          starts_with(git_reference_symbolic_target(symbolic.get()),
+                      "refs/heads/")) {
+        record.branch = git_reference_symbolic_target(symbolic.get());
+      }
+    } else {
+      git_error_clear();  // GG_COV_EXCL_LINE
+    }
     if (record.managed) continue;
     git_object* raw_head = nullptr;
     if (git_revparse_single(&raw_head, worktree.get(), "HEAD") == GIT_OK) {
@@ -586,7 +602,7 @@ std::map<std::string, git_oid> Repository::rewrite_refs() const {
     if (starts_with(iterator->first, "refs/remotes/") ||
         starts_with(iterator->first, kRemoteTagPrefix) ||
         starts_with(iterator->first,  // GG_COV_EXCL_BRANCH
-                    kBookmarkTrackingPrefix) ||  // GG_COV_EXCL_BRANCH
+                    kBranchTrackingPrefix) ||  // GG_COV_EXCL_BRANCH
         starts_with(iterator->first,  // GG_COV_EXCL_BRANCH
                     kTagTrackingPrefix)) {  // GG_COV_EXCL_BRANCH
       iterator = refs.erase(iterator);

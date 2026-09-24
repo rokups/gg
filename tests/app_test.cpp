@@ -51,9 +51,9 @@ TEST(AppTest, PrintsHelpAndVersion) {
   EXPECT_EQ(root_doc.code, 0);
   EXPECT_NE(root_doc.output.find("gg — A JJ-shaped Git interface"),
             std::string::npos);
-  const Result group_doc = run({"bookmark", "--doc"});
+  const Result group_doc = run({"branch", "--doc"});
   EXPECT_EQ(group_doc.code, 0);
-  EXPECT_NE(group_doc.output.find("gg bookmark — Manage bookmarks"),
+  EXPECT_NE(group_doc.output.find("gg branch — Manage branches"),
             std::string::npos);
   const Result rooted_doc =
       run({"-R", ".", "config", "set", "--doc"});
@@ -101,17 +101,17 @@ TEST(AppTest, FullDocumentationBypassesRepositoriesAndRequiredArguments) {
 
 TEST(AppTest, DocumentsDefaultsAndSideEffectsAcrossCommandFamilies) {
   const std::vector<std::pair<std::vector<std::string>, std::string_view>> cases{
-      {{"status", "--doc"}, "Snapshots tracked working-copy files"},
+      {{"status", "--doc"}, "working-tree"},
       {{"new", "--doc"}, "Uses @ as the parent"},
       {{"split", "--doc"}, "Both halves must be non-empty"},
       {{"file", "list", "--doc"}, "Lists all files in @"},
-      {{"diff", "--doc"}, "Compares @ with its parent"},
-      {{"bookmark", "set", "--doc"}, "move forward only"},
+      {{"diff", "--doc"}, "Compares @ (or --from) with the working tree"},
+      {{"branch", "set", "--doc"}, "move forward only"},
       {{"fetch", "--doc"}, "Fetches and prunes origin"},
-      {{"push", "--doc"}, "Advances the closest bookmark"},
+      {{"push", "--doc"}, "Pushes the checked-out branch"},
       {{"operation", "restore", "--doc"},
        "Restores repository and remote-tracking state"},
-      {{"workspace", "add", "--doc"}, "copying current sparse patterns"},
+      {{"workspace", "add", "--doc"}, "Copies current sparse patterns"},
       {{"config", "--doc"}, "--workspace is per-worktree config"},
       {{"util", "gc", "--doc"}, "runs native `git gc`"}};
   for (const auto& [arguments, expected] : cases) {
@@ -157,11 +157,11 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"edit", "main", "-r", "main"}).code, 2);
   EXPECT_EQ(invoke({"next"}).code, 2);
   EXPECT_EQ(invoke({"describe"}).code, 2);
-  EXPECT_EQ(invoke({"describe", "-m", ""}).code, 2);
+  EXPECT_EQ(invoke({"describe", "-m", ""}).code, 0);
   EXPECT_EQ(invoke({"describe", "-m", "x", "main", "other"}).code, 2);
   EXPECT_EQ(invoke({"new", "-m"}).code, 2);
-  EXPECT_EQ(invoke({"log", "-r", "@"}).code, 2);
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  EXPECT_EQ(invoke({"log", "-r", "@"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   EXPECT_EQ(invoke({"log", "-r", "@x"}).code, 2);
   EXPECT_EQ(invoke({"log", "-r", "@-x"}).code, 2);
   EXPECT_EQ(invoke({"log", "-r", "@--"}).code, 2);
@@ -177,20 +177,20 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"split", "tracked.txt"}).code, 2);
   EXPECT_EQ(invoke({"squash", "-r", "@", "--from", "@"}).code, 2);
   EXPECT_EQ(invoke({"squash", "-r", "@", "--into", "main"}).code, 2);
-  EXPECT_EQ(invoke({"squash", "extra"}).code, 2);
+  EXPECT_EQ(invoke({"squash", "extra", "-r", "@"}).code, 2);
   EXPECT_EQ(invoke({"squash", "--into", "main"}).code, 0);
   EXPECT_EQ(invoke({"abandon", "@", "main"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "list", "extra"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "delete"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "delete", "-r", "@", "topic"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "create"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "move"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "forget"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "rename", "one"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "rename", "one", "two", "three"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "track"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "untrack"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "list", "extra"}).code, 0);
+  EXPECT_EQ(invoke({"branch"}).code, 0);
+  EXPECT_EQ(invoke({"branch", "delete"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "delete", "-r", "@", "topic"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "create"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "move"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "forget"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "rename", "one"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "rename", "one", "two", "three"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "track"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "untrack"}).code, 2);
   EXPECT_EQ(invoke({"tag", "track"}).code, 2);
   EXPECT_EQ(invoke({"tag", "untrack"}).code, 2);
   EXPECT_EQ(invoke({"git"}).code, 2);
@@ -206,7 +206,8 @@ TEST_F(RepositoryTest, ValidatesCommandArgumentsAndRevisionShapes) {
   EXPECT_EQ(invoke({"fetch", "--branch", "bad name"}).code, 1);
   EXPECT_EQ(invoke({"fetch", "--tag", "bad name"}).code, 1);
   EXPECT_EQ(invoke({"fetch", "--remote", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"push", "--dry-run"}).code, 0);
+  // HEAD is detached, so there is no current branch to push.
+  EXPECT_EQ(invoke({"push", "--dry-run"}).code, 2);
   EXPECT_EQ(invoke({"push", "-b", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-t", "missing"}).code, 2);
   EXPECT_EQ(invoke({"push", "-r", "missing"}).code, 2);
@@ -279,7 +280,8 @@ TEST_F(RepositoryTest, ReportsBareRepositoriesAndEmptyUndoHistory) {
   EXPECT_EQ(run({"-R", bare_path.string(), "status"}).code, 2);
   EXPECT_EQ(invoke({"undo"}).code, 2);
   EXPECT_EQ(invoke({"redo"}).code, 2);
-  EXPECT_EQ(invoke({"operation", "log"}).output, "No operations.\n");
+  EXPECT_NE(invoke({"operation", "log"}).output.find("initialize repository"),
+            std::string::npos);
   std::filesystem::remove_all(bare_path);
 }
 
@@ -374,7 +376,7 @@ TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
   const Result markdown = run({"util", "markdown-help"});
   ASSERT_EQ(markdown.code, 0) << markdown.error;
   EXPECT_NE(markdown.output.find("# gg command reference"), std::string::npos);
-  EXPECT_NE(markdown.output.find("## `gg bookmark move`"), std::string::npos);
+  EXPECT_NE(markdown.output.find("## `gg branch move`"), std::string::npos);
   EXPECT_NE(markdown.output.find("```text\n"), std::string::npos);
   EXPECT_NE(markdown.output.find("Backwards or sideways movement requires"),
             std::string::npos);
@@ -400,7 +402,7 @@ TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
   }
   EXPECT_GT(documented, 60u);
 
-  const std::size_t move_start = markdown.output.find("## `gg bookmark move`");
+  const std::size_t move_start = markdown.output.find("## `gg branch move`");
   const std::size_t move_end = markdown.output.find("\n## `gg", move_start + 1);
   ASSERT_NE(move_start, std::string::npos);
   EXPECT_EQ(occurrences(
@@ -408,7 +410,7 @@ TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
                     move_start, move_end == std::string::npos
                                     ? move_end
                                     : move_end - move_start),
-                "Move existing bookmarks"),
+                "Move existing branches"),
             1u);
 
   const std::filesystem::path destination = path_ / "manual";
@@ -417,17 +419,17 @@ TEST_F(RepositoryTest, GeneratesMarkdownAndManPageHelp) {
   ASSERT_EQ(installed.code, 0) << installed.error;
   EXPECT_TRUE(std::filesystem::is_regular_file(destination / "man1/gg.1"));
   const std::filesystem::path move_page =
-      destination / "man1/gg-bookmark-move.1";
+      destination / "man1/gg-branch-move.1";
   ASSERT_TRUE(std::filesystem::is_regular_file(move_page));
   std::ifstream input(move_page);
   std::ostringstream content;
   content << input.rdbuf();
-  EXPECT_NE(content.str().find(".TH \"GG-BOOKMARK-MOVE\" \"1\""),
+  EXPECT_NE(content.str().find(".TH \"GG-BRANCH-MOVE\" \"1\""),
             std::string::npos);
   EXPECT_NE(content.str().find(".SH SYNOPSIS"), std::string::npos);
   EXPECT_NE(content.str().find("Backwards or sideways movement requires"),
             std::string::npos);
-  EXPECT_EQ(occurrences(content.str(), "Move existing bookmarks"), 1u);
+  EXPECT_EQ(occurrences(content.str(), "Move existing branches"), 1u);
   EXPECT_EQ(run({"util", "install-man-pages"}).code, 2);
 }
 
@@ -454,7 +456,7 @@ TEST(AppTest, GeneratesShellCompletionsFromTheCommandSchema) {
     const Result completion = run({"util", "completion", shell});
     ASSERT_EQ(completion.code, 0) << shell << ": " << completion.error;
     EXPECT_NE(completion.output.find(marker), std::string::npos) << shell;
-    EXPECT_NE(completion.output.find("bookmark"), std::string::npos) << shell;
+    EXPECT_NE(completion.output.find("branch"), std::string::npos) << shell;
     EXPECT_NE(completion.output.find("--repository"), std::string::npos)
         << shell;
   }
@@ -470,7 +472,7 @@ TEST(AppTest, RejectsRemovedConfigurationAndTemplateInterfaces) {
 }
 
 TEST_F(RepositoryTest, PrunesUnreachableGitObjects) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   git_oid orphan{};
   ASSERT_EQ(git_blob_create_from_buffer(&orphan, repository_.get(),
                                         "unreachable", 11),

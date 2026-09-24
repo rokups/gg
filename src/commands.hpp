@@ -24,7 +24,7 @@ enum class OutputStyle {
   working_commit_id,
   working_commit_id_prefix,
   working_commit_id_rest,
-  bookmark,
+  branch,
   tag,
   operation_id,
   current_operation_id,
@@ -71,11 +71,13 @@ void finish_workspace(Repository& repo, const git_oid& workspace,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation,
-                      bool captured_worktree = false);
+                      const HeadIntent& intent = HeadIntent::follow());
+// Move @ without touching the working tree (commit and amend).
 void finish_workspace_preserving_worktree(
     Repository& repo, const git_oid& workspace,
     std::map<std::string, git_oid> updates,
-    std::string_view operation);
+    std::string_view operation,
+    const HeadIntent& intent = HeadIntent::follow());
 void finish_without_workspace(Repository& repo, RewritePlan plan,
                               std::set<std::string> deletes,
                               std::string_view operation,
@@ -86,6 +88,11 @@ std::string edit_text(Repository&, std::string_view);
 int credentials(git_credential** output, const char* url, const char* username,
                 unsigned int allowed, void* payload);
 
+// Record fetched remote-tracking updates, fast-forwarding tracked local
+// branches (the checked-out one only with a clean working tree).
+void record_fetch(Repository&, std::map<std::string, git_oid> updates,
+                  std::set<std::string> deletes, bool advance_branches,
+                  std::ostream&);
 void command_new(Repository&, const NewCommand&, std::ostream&);
 void command_status(Repository&, const StatusCommand&, std::ostream&);
 void command_log(Repository&, const LogCommand&, std::ostream&);
@@ -99,12 +106,18 @@ void command_split(Repository&, const SplitCommand&, std::ostream&);
 void command_squash(Repository&, const SquashCommand&, std::ostream&);
 void command_abandon(Repository&, const AbandonCommand&, std::ostream&);
 void command_commit(Repository&, const CommitCommand&, std::ostream&);
-void command_commit_worktree(Repository&, std::string_view, std::ostream&);
+void command_squash_worktree(Repository&, const std::vector<std::string>& paths,
+                             bool interactive, std::string_view tool,
+                             std::optional<std::string_view> message,
+                             std::ostream&);
+// The local branch ref named exactly by `revision`, if one exists.
+std::optional<std::string> local_branch_named(Repository&, std::string_view revision);
+// Git checkout semantics: a branch name attaches, anything else detaches.
+HeadIntent checkout_intent(Repository&, std::string_view revision);
 void command_amend_worktree(Repository&, std::optional<std::string_view>,
                             std::optional<std::string_view>, std::ostream&);
 void command_amend_tree_worktree(Repository&, std::string_view,
                                  const git_oid&, std::ostream&);
-void command_edit_worktree(Repository&, std::string_view, std::ostream&);
 void command_restore(Repository&, const RestoreCommand&, std::ostream&);
 void command_move_files(Repository&, const MoveFilesCommand&, std::ostream&);
 void command_simplify_parents(Repository&, const SimplifyParentsCommand&,
@@ -112,7 +125,7 @@ void command_simplify_parents(Repository&, const SimplifyParentsCommand&,
 void command_file(Repository&, const FileCommand&, std::ostream&);
 void command_diff(Repository&, const DiffCommand&, std::ostream&);
 void command_show(Repository&, const ShowCommand&, std::ostream&);
-void command_bookmark(Repository&, const BookmarkCommand&, std::ostream&);
+void command_branch(Repository&, const BranchCommand&, std::ostream&);
 void command_tag(Repository&, const TagCommand&, std::ostream&);
 void command_fetch(Repository&, const GitFetchCommand&, std::ostream&);
 void command_push(Repository&, const GitPushCommand&, std::ostream&);
@@ -127,7 +140,6 @@ void command_operation_restore(Repository&, const OperationRestoreCommand&,
 int command_util_exec(const UtilExecCommand&, const std::filesystem::path&);
 void command_util_gc(Repository&, const UtilGcCommand&, std::ostream&);
 void command_util_optimize(Repository&, std::ostream&);
-void command_util_snapshot(Repository&, std::ostream&);
 void command_util_install_git_hooks(Repository&, std::ostream&);
 void command_util_check_push_conflicts(Repository&, std::istream&);
 void command_workspace(Repository&, const WorkspaceCommand&, std::ostream&);

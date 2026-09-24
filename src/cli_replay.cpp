@@ -80,6 +80,7 @@ std::vector<std::string> repository_replay_arguments(
               add_option(result, "--insert-before", revision);
             }
             if (value.no_edit) result.emplace_back("--no-edit");
+            if (value.detach) result.emplace_back("--detach");
             return result;
           },
           [](const DescribeCommand& value) {
@@ -152,6 +153,9 @@ std::vector<std::string> repository_replay_arguments(
               result.push_back(value.message);
             }
             if (value.entire_branch) result.emplace_back("--entire-branch");
+            if (value.interactive) result.emplace_back("--interactive");
+            add_option(result, "--tool", value.tool);
+            result.insert(result.end(), value.paths.begin(), value.paths.end());
             return result;
           },
           [](const AbandonCommand& value) {
@@ -160,8 +164,8 @@ std::vector<std::string> repository_replay_arguments(
                           value.revisions.end());
             result.insert(result.end(), value.revision_options.begin(),
                           value.revision_options.end());
-            if (value.retain_bookmarks) {
-              result.emplace_back("--retain-bookmarks");
+            if (value.retain_branches) {
+              result.emplace_back("--retain-branches");
             }
             if (value.restore_descendants) {
               result.emplace_back("--restore-descendants");
@@ -266,37 +270,34 @@ std::vector<std::string> repository_replay_arguments(
             if (value.no_patch) result.emplace_back("--no-patch");
             return result;
           },
-          [](const BookmarkCommand& value) {
-            std::vector<std::string> result{"bookmark"};
+          [](const BranchCommand& value) {
+            std::vector<std::string> result{"branch"};
             switch (value.action) {
-              case BookmarkAction::list:
+              case BranchAction::list:
                 result.emplace_back("list");
                 break;
-              case BookmarkAction::advance:
-                result.emplace_back("advance");
-                break;
-              case BookmarkAction::create:
+              case BranchAction::create:
                 result.emplace_back("create");
                 break;
-              case BookmarkAction::set:
+              case BranchAction::set:
                 result.emplace_back("set");
                 break;
-              case BookmarkAction::move:
+              case BranchAction::move:
                 result.emplace_back("move");
                 break;
-              case BookmarkAction::erase:
+              case BranchAction::erase:
                 result.emplace_back("delete");
                 break;
-              case BookmarkAction::forget:
+              case BranchAction::forget:
                 result.emplace_back("forget");
                 break;
-              case BookmarkAction::rename:
+              case BranchAction::rename:
                 result.emplace_back("rename");
                 break;
-              case BookmarkAction::track:
+              case BranchAction::track:
                 result.emplace_back("track");
                 break;
-              case BookmarkAction::untrack:
+              case BranchAction::untrack:
                 result.emplace_back("untrack");
                 break;
             }
@@ -314,8 +315,7 @@ std::vector<std::string> repository_replay_arguments(
               result.push_back(key);
             }
             add_option(result,
-                       value.action == BookmarkAction::advance ||
-                               value.action == BookmarkAction::move
+                       value.action == BranchAction::move
                            ? "-t"
                            : "-r",
                        value.revision);
@@ -390,9 +390,9 @@ std::vector<std::string> repository_replay_arguments(
           },
           [](const GitPushCommand& value) {
             std::vector<std::string> result{"push"};
-            for (const std::string& bookmark : value.bookmarks) {
-              result.emplace_back("--bookmark");
-              result.push_back(bookmark);
+            for (const std::string& branch : value.branches) {
+              result.emplace_back("--branch");
+              result.push_back(branch);
             }
             for (const std::string& tag : value.tags) {
               result.emplace_back("--tag");
@@ -448,9 +448,6 @@ std::vector<std::string> repository_replay_arguments(
           },
           [](const UtilOptimizeCommand&) {
             return std::vector<std::string>{"util", "optimize"};
-          },
-          [](const UtilSnapshotCommand&) {
-            return std::vector<std::string>{"util", "snapshot"};
           },
           [](const UtilInstallGitHooksCommand&) {
             return std::vector<std::string>{"util", "install-git-hooks"};
@@ -516,9 +513,6 @@ std::vector<std::string> repository_replay_arguments(
                 value.direction == MovementDirection::next ? "next" : "prev"};
             if (value.offset != 1) {
               result.push_back(std::to_string(value.offset));
-            }
-            if (value.edit) {
-              result.emplace_back("--edit");
             }
             if (value.conflict) {
               result.emplace_back("--conflict");

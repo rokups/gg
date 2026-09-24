@@ -1,108 +1,95 @@
 # gg
 
-`gg` brings a change-oriented, Jujutsu-inspired workflow to ordinary Git
-repositories. Its primary purpose is to make local history easy to build,
-rearrange, and revise: the working copy is a mutable change, old changes can be
-edited directly, descendants are restacked automatically, and repository
-changes can be undone.
+`gg` brings Jujutsu-inspired history editing to ordinary Git repositories
+while keeping Git's everyday model: `@` is `HEAD`, the current branch is the
+branch `HEAD` is attached to, and edits in the working tree are uncommitted
+changes to `@`. Old changes can be edited directly, descendants are restacked
+automatically, and repository changes can be undone.
 
 `gg` does not require a new repository format or server support. Changes are Git
-commits, local branches are exposed as **bookmarks**, and remotes receive no
-custom objects, headers, notes, or refs. By default, use `gg` for change and
-history editing and use Git for familiar operations such as clone, status,
-diff, fetch, and push.
+commits, branches are native local Git branches, and remotes receive no custom
+objects, headers, notes, or refs. Git and gg can be used side by side: gg
+follows whatever `HEAD`, branches, and remote-tracking refs Git leaves behind.
 
 ## What changes compared with Git
 
-Git normally asks you to stage files, create a commit, and use a separate
-history-editing workflow when an earlier commit needs to change. With `gg`:
-
-- The working copy is a mutable change. Content-sensitive commands reconcile it
-  automatically; history and ref-only commands leave filesystem edits untouched.
+- There is no staging step. `gg commit` records working-tree changes (or only
+  selected filesets) as a new child of `@` and advances the current branch;
+  `gg squash` amends them into `@`, like `git commit --amend`.
+- `gg new` creates an empty change on `@` and advances the current branch to it.
+  `gg new -d` (`--detach`) creates it without moving any branch; `HEAD` is then
+  detached and the change is an unnamed head. Name it with `gg branch create` or
+  leave it unnamed; unnamed heads you create stay visible until abandoned.
+- `gg edit BRANCH` checks a branch out; `gg edit COMMIT_ID` detaches, and any
+  commit can be edited in place. Rewrites keep the branch checked out and
+  restack descendants.
 - Each change is identified by its current Git commit ID. When a rewrite
   changes that ID, its previous commit IDs remain usable as aliases.
-- `gg edit` can make any change the working copy. Further edits rewrite that
-  change and automatically restack its descendants.
-- `gg new`, `gg split`, `gg squash`, `gg rebase`, and `gg abandon` operate on
-  the change graph directly.
-- `gg undo` and `gg redo` provide editor-style history for repository
-  operations.
+- `gg split`, `gg squash`, `gg rebase`, and `gg abandon` operate on the change
+  graph directly, and `gg undo`/`gg redo` provide editor-style history for
+  repository operations.
 
-Revisions use `@` for the working-copy change and `@-` for its parent. Commands
-also accept current or retained historical commit-ID prefixes, bookmarks, and
-Git object IDs.
+Revisions use `@` for `HEAD`'s commit and `@-` for its parent. Commands also
+accept current or retained historical commit-ID prefixes, branches, and Git
+object IDs.
 
 ## Workflows
 
-### Mutable changes
-
-This is the main `gg` workflow. Start a named change, edit files normally, and
-start the next change when you are ready. There is no commit step:
+### Git-like commits
 
 ```sh
 git clone URL project
 cd project
 
-gg new -m "Add the parser"
-gg bookmark create topic
+gg edit main              # check out a branch (HEAD attached)
 # edit files
-gg log                    # displays up to 256 changes without scanning files or rendering a graph
-gg util snapshot          # explicitly synchronize filesystem edits into @
-
-gg new -m "Add parser tests"
-# edit files
-gg bookmark advance topic
-git push -u origin topic
-```
-
-Descriptions are editable metadata rather than a finalization boundary. Use
-`gg describe -m "New description"` at any time. To revise an earlier change,
-copy its commit ID from `gg log`, run `gg edit COMMIT_ID`, edit the files, and
-run another `gg` command to snapshot the result. Descendant changes and affected
-local refs are updated together; the copied ID remains an alias for the
-rewritten commit.
-
-### Commit-oriented changes
-
-`gg commit` provides a more familiar boundary while retaining automatic
-snapshotting, historical commit-ID aliases, restacking, and undo:
-
-```sh
-gg new
-gg bookmark create topic
-
-# edit files
-gg commit -m "Add the parser"
-
+gg status                 # working-tree changes relative to @
+gg commit -m "Add the parser"          # new commit; main advances
 # edit more files
-gg commit -m "Add parser tests"
-
-gg bookmark advance topic --to @-
-git push -u origin topic
+gg commit -m "Add parser tests" src/parser_test.cpp   # only selected files
+gg push                   # pushes the checked-out branch
 ```
 
-Each `gg commit` describes the current change and creates a new empty working
-change. Filesets may be supplied to commit only part of the working change; the
-remaining edits stay in the new working change:
+Filesets may be supplied to commit only part of the working tree; unselected
+edits stay uncommitted:
 
 ```sh
-gg commit -m "Add the parser" src/parser.cpp include/parser.hpp
 gg commit -m "Commit sources except generated files" \
   "glob('src/*') ~ root('src/generated')"
 ```
 
+### Changes first, then content
+
+Start a described change, edit, and amend the edits into it:
+
+```sh
+gg new -m "Add the parser"        # empty change on main; main advances
+# edit files
+gg squash                         # amend working-tree edits into @
+gg new -d -m "Try another parser" # experiment without moving main
+# edit files
+gg squash
+gg branch create parser-experiment    # optionally name the detached head
+```
+
+Descriptions are editable metadata. Use `gg describe -m "New description"` at
+any time. To revise an earlier change, run `gg edit COMMIT_ID`, edit the files,
+and `gg squash`. Descendant changes and affected local refs are updated
+together; the copied ID remains an alias for the rewritten commit.
+
 ### Using only `gg` commands
 
 All implemented commands are available by default, including the complete
-bookmark, file, util, and workspace families:
+branch, file, util, and workspace families:
 
 ```sh
 gg clone URL project
 cd project
-gg new -m "Add the parser"
+gg branch create topic -r main
+gg edit topic
 # edit files
-gg bookmark create topic
-gg push --bookmark topic
+gg commit -m "Add the parser"
+gg push
 ```
 
 Every command and command group prints its complete help with `--doc`, without
@@ -126,13 +113,16 @@ markdown-help` for the complete schema-derived reference.
 
 ## Storage model
 
-Each working copy is represented by a commit under
+Each working copy records `@` (always Git's `HEAD` commit) under
 `refs/gg/workspaces/<name>`. The primary checkout starts as `default`; linked
 Git worktrees have their own names, working changes, and operation histories
-while sharing commits, commit aliases, bookmarks, and tags. Historical commit
+while sharing commits, commit aliases, branches, and tags. Historical commit
 IDs are stored together under `refs/gg/commit-aliases` so repositories do not
-expose one Git reference for every alias. Git `HEAD` stays at the working
-change's parent so existing tooling continues to see normal working-tree
+expose one Git reference for every alias. Unnamed heads created with
+`gg new -d`, detached commits, or duplication are marked under
+`refs/gg/visible-heads/`; heads that only aliases or Git internals reference are
+not shown. Git `HEAD` is `@`, attached to a branch or detached exactly as Git
+would have it, so existing tooling continues to see normal working-tree
 changes.
 
 Use `gg workspace add` when creating another checkout so the Git worktree and
@@ -153,8 +143,8 @@ from silently moving another. A worktree created directly with `git worktree
 add` is adopted automatically on its first revision-facing gg command.
 
 `gg workspace rename NEW --workspace OLD` renames any managed workspace.
-`gg workspace remove NAME` snapshots recoverable tracked changes before safely
-removing a linked worktree, or prunes stale worktree administration and gg
+`gg workspace remove NAME` refuses uncommitted changes, then safely removes a
+linked worktree, or prunes stale worktree administration and gg
 metadata. It refuses files that cannot be preserved, locked worktrees, the
 primary checkout, and the checkout running the command. Operation history keeps
 the final working change for recovery, but deletion of the directory itself is
@@ -194,17 +184,18 @@ The following is the full implemented command surface shown by `gg --help`.
 ```text
 gg status [FILESET...]
 gg log [-r REVSET] [-n LIMIT | --all] [--reversed] [--count] [FILESET...]
-gg new [-m DESCRIPTION] [--no-edit] [PARENT...]
+gg new [-m DESCRIPTION] [-d | --no-edit] [PARENT...]
 gg new [-m DESCRIPTION] [--no-edit] (--insert-after REV | --insert-before REV)
 gg describe [-m DESCRIPTION | --stdin | --editor] [REV]
 gg edit [REV | -r REV]
 gg metaedit [REV...] [-m DESCRIPTION] [--author 'NAME <EMAIL>']
+gg squash [-m DESCRIPTION] [-i] [FILESET...]
 gg squash [-r REV | --from REV --into REV]
 gg split [-r REV] [-m DESCRIPTION] FILESET...
-gg abandon [--retain-bookmarks] [--restore-descendants] [REV]
+gg abandon [--retain-branches] [--restore-descendants] [REV]
 gg rebase -s REV -d REV
-gg commit [-m DESCRIPTION] [--editor] [FILESET...]
-gg restore [--from REV] [--into REV] [FILESET...]
+gg commit [-m DESCRIPTION] [--editor] [-i] [FILESET...]
+gg restore [--from REV] [--into REV | -c REV] [FILESET...]
 gg simplify-parents [-s REV]... [-r REV]...
 gg file list [-r REV] [FILESET...]
 gg file show [-r REV] FILESET...
@@ -212,14 +203,13 @@ gg file search [-r REV] -p PATTERN [--name-only | --line-number] [FILESET...]
 gg file chmod [-r REV] (n|normal|x|executable) FILESET...
 gg diff [-r REVSET | --from REV] [--to REV] [FILESET...]
 gg show [--no-patch] [REV...]
-gg bookmark advance [NAME...] [-t REV]
-gg bookmark create NAME... [-r REV]
-gg bookmark set NAME... [-r REV]
-gg bookmark move [NAME...] [-f REV]... [-t REV] [-B]
-gg bookmark delete NAME...
-gg bookmark forget [--include-remotes] NAME...
-gg bookmark rename [--overwrite-existing] OLD NEW
-gg bookmark list [NAMES...] [--all-remotes | --remote REMOTE...] [-r REVISION...] [--sort KEY...]
+gg branch create NAME... [-r REV]
+gg branch set NAME... [-r REV]
+gg branch move [NAME...] [-f REV]... [-t REV] [-B]
+gg branch delete NAME...
+gg branch forget [--include-remotes] NAME...
+gg branch rename [--overwrite-existing] OLD NEW
+gg branch list [NAMES...] [--all-remotes | --remote REMOTE...] [-r REVISION...] [--sort KEY...]
 gg tag set [--allow-move] NAME... [-r REV]
 gg tag delete NAME...
 gg tag list [NAME...] [-r REVISION...] [--sort KEY...]
@@ -227,7 +217,7 @@ gg init [DESTINATION]
 gg clone URL [DESTINATION]
 gg fetch [-b BRANCH...] [-t TAG...] [--remote REMOTE... | --all-remotes]
 gg pull [GIT_ARGUMENT...]
-gg push [-b BOOKMARK...] [-t TAG...] [-r REVSET...] [--all | --tracked | --deleted] [--remote REMOTE] [--dry-run]
+gg push [-b BRANCH...] [-t TAG...] [-r REVSET...] [--all | --tracked | --deleted] [--remote REMOTE] [--dry-run]
 gg undo
 gg redo
 gg operation log
@@ -239,7 +229,6 @@ gg util optimize
 gg util install-git-hooks
 gg util install-man-pages PATH
 gg util markdown-help
-gg util snapshot
 gg util check-push-conflicts
 gg workspace add DESTINATION [--name NAME] [-r REVISION] [-m DESCRIPTION] [--sparse-patterns copy|full|empty]
 gg workspace forget [NAME...]
@@ -252,8 +241,8 @@ gg workspace unlock NAME
 gg workspace prune [--dry-run] [--expire DATE]
 gg workspace repair [PATH...]
 gg workspace root [--name default]
-gg next [--edit] [OFFSET]
-gg prev [--edit] [OFFSET]
+gg next [OFFSET]
+gg prev [OFFSET]
 gg config get NAME
 gg config list [--user|--repo|--workspace] [NAME]
 gg config path (--user|--repo|--workspace)
@@ -266,7 +255,7 @@ Filesets support literal files/directories, `file:`, `root:`, `cwd:`, and
 `glob:` selectors (or their function forms), with `|` union, `&`
 intersection, and `~` difference. Revision selection supports graph ranges,
 set operators, ancestor/descendant traversal, heads/roots, refs, IDs, metadata
-patterns, conflict/empty predicates, and remote-bookmark predicates.
+patterns, conflict/empty predicates, and remote-branch predicates.
 
 `gg config` is a thin wrapper over native Git configuration. Repository values
 live in `.git/config`, workspace values use Git's per-worktree config, and user
@@ -277,21 +266,22 @@ uses standard keys such as `core.editor`, `difftool.<name>.*`, and
 `gg pull` is a direct wrapper over `git pull`; every trailing argument is
 forwarded unchanged and Git's exit status is returned. After `gg pull`, or on
 the next `gg` command after a native Git fetch or pull, fetched tracked
-bookmarks fast-forward local bookmarks that are their ancestors. Diverged local
-bookmarks are left untouched.
+branches fast-forward local branches that are their ancestors. Branches checked
+out in a workspace are never moved behind its back; `gg fetch` fast-forwards the
+current branch together with the working tree when it has no uncommitted
+changes. Diverged local branches are left untouched.
 
-With no selectors, `gg push` advances the closest bookmark to a non-empty,
-described `@` (or `@-` when `@` is not publishable) and sends it in one atomic
-`git push`. Explicit selection modes retain their selected-ref behavior; a
-revision selector must resolve to an existing local bookmark or tag.
+With no selectors, `gg push` pushes the checked-out branch in one atomic
+`git push`; a detached `HEAD` requires `--branch`. Explicit selection modes retain their selected-ref behavior; a
+revision selector must resolve to an existing local branch or tag.
 
 Rewrites restack descendants and move affected local refs together. Conflicts
 are recorded as local logical merge terms, so operations still succeed and
 conflicted descendants can be rewritten again without nesting marker text.
 Editing a conflicted change materializes its sides in the working tree. Resolve
 the files normally; standard or gg conflict markers keep the file conflicted,
-and graph rewrites preserve that state until the markers are removed. The next
-gg command snapshots the resolution. `gg push`
+and graph rewrites preserve that state until the markers are removed. Amend the
+resolution into the change with `gg squash`. `gg push`
 refuses any selection whose reachable history contains a conflict. Run
 `gg util install-git-hooks` to install a managed `pre-push` hook that applies
 the same check to native `git push`; an existing hook is preserved and chained.
@@ -332,32 +322,33 @@ gg_repository_free(gg);
 ```
 
 Synchronization is explicit: call `gg_repository_adopt_git_history()` after
-native Git history changes. The legacy working-change workflow uses
-`gg_repository_snapshot_working_copy()` after filesystem or index changes.
-Queries do not modify repository state. Fetch and
-push use plan/complete pairs so a GUI can perform transport itself and record gg
-tracking state only after success. Long calls accept synchronous progress and
-cancellation callbacks through `gg_operation_options`.
+native Git history changes; `@` then follows Git's `HEAD`. Queries do not modify
+repository state. Fetch and push use plan/complete pairs so a GUI can perform
+transport itself and record gg tracking state only after success. Long calls
+accept synchronous progress and cancellation callbacks through
+`gg_operation_options`.
 
-For a GUI with an explicit virtual Working tree, call
-`gg_repository_worktree_status()` to compare disk contents with the active
-commit without recording a snapshot. `gg_repository_commit_worktree()` captures
-all eligible disk changes in one new child; `gg_repository_amend_worktree()`
-captures them into the active commit and restacks its descendants. Both leave
-Git `HEAD` at the active committed change. The amend revision, when supplied,
-must still identify that active change. These operations use the filesystem as
-the source of file contents, including when the Git index holds staged data.
-They retain snapshot rules for ignored files, sparse checkouts, large new files,
-and conflict metadata. Do not call `gg_repository_snapshot_working_copy()`
-before either operation: it is the separate legacy synchronization path.
+`gg_repository_head()` reports whether `HEAD` is attached and to which branch;
+`gg_repository_named_refs()` marks the current branch and branches checked out
+in other workspaces. `gg_repository_new_change()` continues the current branch
+(or a branch named as the only parent) unless `gg_new_options.detach` is set.
 
-Use `gg_repository_edit_worktree()` to switch active commits; it refuses a
-switch while the disk has uncommitted changes. For selected file or hunk
-transfers, construct a Git tree and pass its OID to
-`gg_repository_amend_tree_worktree()`. That operation rewrites the active commit
-and descendants while leaving the filesystem and index untouched. A native Git
-commit that moves `HEAD` outside gg is rejected by the explicit Commit/Amend
-calls until `gg_repository_snapshot_working_copy()` explicitly imports it.
+`gg_repository_worktree_status()` compares disk contents with `@`.
+`gg_repository_commit()` records eligible disk changes (optionally selected
+filesets) in one new child and advances the current branch;
+`gg_repository_amend()` amends them into `@` and restacks its descendants. The
+amend revision, when supplied, must still identify `@`. These operations use the
+filesystem as the source of file contents, including when the Git index holds
+staged data, and apply the rules for ignored files, sparse checkouts, large new
+files, and conflict metadata.
+
+`gg_repository_edit()` checks out a revision with Git semantics (a branch name
+attaches `HEAD`) and refuses a switch that would overwrite uncommitted changes.
+For selected file or hunk transfers, construct a Git tree and pass its OID to
+`gg_repository_amend_tree()`, which rewrites `@` and descendants while leaving
+the filesystem and index untouched. A native Git commit that moves `HEAD`
+outside gg is rejected by these calls until `gg_repository_adopt_git_history()`
+adopts it.
 
 Install the project and consume it from CMake with
 `find_package(gg CONFIG REQUIRED)` and `target_link_libraries(app PRIVATE

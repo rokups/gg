@@ -18,11 +18,11 @@ detail::CommitPtr lookup(detail::Repository& repo, std::string_view revision) {
 }  // namespace
 
 TEST_F(RepositoryTest, EditsMetadataAndRestacksDescendants) {
-  ASSERT_EQ(invoke({"new", "-m", "old", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "old", main_id()}).code, 0);
   detail::Repository repo(path_);
   const git_oid old = repo.resolve("@");
-  ASSERT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
-  ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "topic"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-d", "-m", "child"}).code, 0);
 
   const Result edited =
       invoke({"metaedit", "@-", "-m", "changed", "--author",
@@ -97,12 +97,13 @@ TEST_F(RepositoryTest, EditsExternalCommitMetadataWithoutAWorkspace) {
   const git_oid resolved_old = repo.resolve(detail::oid_string(old, 8));
   const git_oid current = repo.resolve("main");
   EXPECT_NE(git_oid_equal(&resolved_old, &current), 0);
-  EXPECT_NE(invoke({"workspace", "list"}).output.find("(unmanaged)"),
-            std::string::npos);
+  // main was checked out, so @ follows the rewritten commit.
+  const git_oid workspace = repo.resolve("@");
+  EXPECT_NE(git_oid_equal(&workspace, &current), 0);
 }
 
 TEST_F(RepositoryTest, ValidatesMetadataValues) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   EXPECT_EQ(invoke({"metaedit", "--author", ""}).code, 2);
   EXPECT_EQ(invoke({"metaedit", "--author", "broken"}).code, 2);
   EXPECT_EQ(invoke({"metaedit", "--author", " <a@example.test>"}).code, 2);

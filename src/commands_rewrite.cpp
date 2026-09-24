@@ -35,7 +35,7 @@ git_oid replacement_workspace(Repository& repo, const git_oid& tree,
 void command_rebase(Repository& repo,
                     const RebaseCommand& options,
                     std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const git_oid old = repo.resolve(options.source);
   const git_oid parent = repo.resolve(options.destination);
   const int destination_is_descendant =
@@ -80,7 +80,7 @@ void command_rebase(Repository& repo,
 void command_duplicate(Repository& repo,
                        const DuplicateCommand& options,
                        std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const git_oid root = repo.resolve(options.revision.empty() ? "@" : options.revision);
   const std::vector<git_oid> values = options.descendants
       ? repo.resolve_set("descendants(" + oid_string(root) + ")")
@@ -141,7 +141,7 @@ void command_duplicate(Repository& repo,
 void command_reorder(Repository& repo,
                      const ReorderCommand& options,
                      std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const git_oid source = repo.resolve(options.source);
   const git_oid target = repo.resolve(options.target);
   if (source == target) {
@@ -294,7 +294,7 @@ void command_reorder(Repository& repo,
 void command_split(Repository& repo,
                    const SplitCommand& options,
                    std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const git_oid old =
       repo.resolve(options.revision.empty() ? "@" : options.revision);
   const auto old_parents = repo.parents(old);
@@ -348,7 +348,16 @@ void command_split(Repository& repo,
 void command_squash(Repository& repo,
                     const SquashCommand& options,
                     std::ostream& output) {
-  repo.sync_for_command();
+  if (options.revision.empty() && options.source.empty() &&
+      options.destination.empty()) {
+    command_squash_worktree(
+        repo, options.paths, options.interactive, options.tool,
+        options.message_provided ? std::optional<std::string_view>(options.message)
+                                 : std::nullopt,
+        output);
+    return;
+  }
+  repo.prepare_command();
   std::string source = options.source;
   if (!options.revision.empty()) {
     source = options.revision;
@@ -494,7 +503,7 @@ void command_squash(Repository& repo,
 void command_abandon(Repository& repo,
                      const AbandonCommand& options,
                      std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   std::vector<std::string> revisions = options.revisions;
   revisions.insert(revisions.end(), options.revision_options.begin(),
                    options.revision_options.end());
@@ -588,6 +597,9 @@ void command_abandon(Repository& repo,
   }
 
   std::set<std::string> deletes;
+  // Abandoning the checked-out commit keeps its branch checked out on the
+  // parent, like `git reset --hard HEAD~`.
+  const auto current_branch = repo.current_branch();
   for (const auto& [name, target] : refs) {
     const auto rewritten = plan.commits.find(target);
     if (rewritten != plan.commits.end()) {
@@ -597,8 +609,12 @@ void command_abandon(Repository& repo,
     if (!selected.contains(target) || starts_with(name, kWorkspacePrefix)) {
       continue;
     }
+    const bool keeps_checkout = current_branch.has_value() &&
+                                name == *current_branch &&
+                                replacements.at(target).size() == 1;
     if (starts_with(name, kAliasPrefix) ||
-        (!options.retain_bookmarks && starts_with(name, "refs/heads/"))) {
+        (!options.retain_branches && !keeps_checkout &&
+         starts_with(name, "refs/heads/"))) {
       deletes.insert(name);
     } else {
       plan.updates[name] = replacements.at(target).front();
@@ -613,7 +629,7 @@ void command_abandon(Repository& repo,
       // An explicit Working tree sits directly on the active commit, so its
       // parent becomes active instead of a new empty change. A merge still
       // needs a commit that joins its parents.
-      new_workspace = !repo.synchronizes_commands() && parents.size() == 1
+      new_workspace = parents.size() == 1
                           ? parents.front()
                           : replacement_workspace(repo, combined_tree(repo, parents), parents);
     } else if (plan.commits.contains(*workspace)) {
@@ -633,13 +649,87 @@ void command_abandon(Repository& repo,
   output << "Abandoned " << selected.size() << " revision(s).\n";
 }
 
+namespace {
+
+// Like `git restore`: discard working-tree edits back to @ without rewriting
+// any commit. The discarded content is kept in an unreferenced commit so it
+// can still be recovered by ID.
+void restore_worktree(Repository& repo, const git_oid& workspace,
+                      const RestoreCommand& options, std::ostream& output) {
+  repo.require_current_head();
+  std::vector<std::string> paths;
+  bool select_all = options.paths.empty();
+  for (const std::string& path : options.paths) {
+    const std::filesystem::path parsed_path(path);
+    if (path.empty() || path.front() == '/') {
+      throw UserError("restore paths must be repository-relative");
+    }
+    for (const auto& component : parsed_path) {
+      if (component == "..") {
+        throw UserError("restore paths must not contain '..'");
+      }
+    }
+    const std::string normalized = parsed_path.lexically_normal().generic_string();
+    if (normalized == ".") {
+      select_all = true;
+    } else {
+      paths.push_back(normalized);
+    }
+  }
+  const git_oid base_tree = *git_commit_tree_id(repo.commit(workspace).get());
+  const git_oid current_tree = repo.worktree_tree(base_tree);
+  git_oid restored_tree =
+      select_all ? base_tree
+                 : repo.selected_tree(current_tree, base_tree, paths);
+  if (options.interactive || !options.tool.empty()) {
+    restored_tree = select_diff_tree(
+        repo, current_tree, restored_tree,
+        select_all ? std::vector<std::string>{} : paths, options.tool);
+  }
+  if (restored_tree == current_tree) {
+    output << "Nothing changed.\n";
+    return;
+  }
+  const git_oid saved = repo.create_commit(
+      current_tree, {workspace}, "gg restore: discarded working-tree changes");
+  // Check out against the recorded working tree so restored additions are
+  // removed while unrelated local files stay untouched.
+  TreePtr baseline = repo.tree(current_tree);
+  TreePtr target = repo.tree(restored_tree);
+  git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+  checkout.baseline = baseline.get();
+  checkout.checkout_strategy = GIT_CHECKOUT_FORCE |
+                               GIT_CHECKOUT_DONT_OVERWRITE_IGNORED |
+                               GIT_CHECKOUT_DONT_UPDATE_INDEX;
+  check(git_checkout_tree(repo.raw(),
+                          reinterpret_cast<const git_object*>(target.get()),
+                          &checkout),
+        "restore working tree");
+  // Leave the index at @ so remaining edits show as unstaged.
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo.raw()), "open index");
+  IndexPtr index(raw_index);
+  TreePtr tree = repo.tree(base_tree);
+  check(git_index_read_tree(index.get(), tree.get()), "reset index");
+  check(git_index_write(index.get()), "write index");
+  output << "Discarded working-tree changes; saved them as "
+         << oid_string(saved) << ".\n";
+}
+
+}  // namespace
+
 void command_restore(Repository& repo,
                      const RestoreCommand& options,
                      std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
+  }
+  if (options.from.empty() && options.into.empty() &&
+      options.changes_in.empty()) {
+    restore_worktree(repo, *workspace, options, output);
+    return;
   }
 
   git_oid destination{};
@@ -705,7 +795,7 @@ void command_restore(Repository& repo,
 void command_move_files(Repository& repo,
                         const MoveFilesCommand& options,
                         std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");
@@ -766,7 +856,7 @@ void command_move_files(Repository& repo,
 void command_simplify_parents(Repository& repo,
                               const SimplifyParentsCommand& options,
                               std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   const auto workspace = repo.workspace();
   if (!workspace.has_value()) {
     throw UserError("this command requires a working-copy change");

@@ -22,7 +22,7 @@ std::string oid_text(const git_oid& oid) { return git_oid_tostr_s(&oid); }
 }  // namespace
 
 TEST_F(RepositoryTest, SimplifiesSelectedParentsAndPreservesContents) {
-  ASSERT_EQ(invoke({"new", "-m", "a", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "a", main_id()}).code, 0);
   const git_oid a = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "-m", "b"}).code, 0);
   const git_oid b = ref("refs/gg/workspaces/default");
@@ -70,8 +70,8 @@ TEST_F(RepositoryTest, SourceSimplifiesDescendantsAndReparentsTheirChildren) {
 }
 
 TEST_F(RepositoryTest, DefaultsToReachableParentsAndHandlesNoChanges) {
-  ASSERT_EQ(invoke({"simplify-parents"}).code, 2);
-  ASSERT_EQ(invoke({"new", "-m", "a", "main"}).code, 0);
+  ASSERT_EQ(invoke({"simplify-parents"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "a", main_id()}).code, 0);
   const git_oid a = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "-m", "b"}).code, 0);
   const git_oid b = ref("refs/gg/workspaces/default");
@@ -85,7 +85,7 @@ TEST_F(RepositoryTest, DefaultsToReachableParentsAndHandlesNoChanges) {
 }
 
 TEST_F(RepositoryTest, SimplifiesAnUnrelatedStackAndDuplicateParents) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
   const git_oid base = ref("HEAD");
   const git_oid a = raw_commit("a", {base});

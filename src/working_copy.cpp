@@ -173,42 +173,6 @@ bool explicitly_tracked(const FileTrackingState& tracking,
 
 }  // namespace
 
-void Repository::record_workspace_snapshot(const git_oid& workspace,
-                                           std::map<std::string, git_oid> updates,
-                                           std::string_view description) const {
-  const HeadState previous_head = head_state();
-  const HeadState head = head_for_workspace(workspace);
-  const bool head_changed = head.symbolic != previous_head.symbolic ||
-                            head.value != previous_head.value;
-  if (!head_changed) {
-    record(std::move(updates), {}, head, description);
-    return;
-  }
-  const git_oid previous_operation = ensure_operation();
-  const auto previous_refs = data_refs();
-  record(std::move(updates), {}, head, description);
-  try {
-    set_head(head);
-  } catch (const std::exception& error) {
-    const std::string original = error.what();
-    try {
-      auto restore = previous_refs;
-      restore[operation_ref_name()] = previous_operation;
-      std::set<std::string> deletes;
-      for (const auto& [name, target] : data_refs()) {
-        (void)target;
-        if (!previous_refs.contains(name)) deletes.insert(name);
-      }
-      apply_refs(restore, deletes, "gg restore failed snapshot");
-      set_head(previous_head);
-    } catch (const std::exception& recovery) {
-      throw UserError(original + "; could not restore the previous snapshot: " + recovery.what());
-    }
-    // Preserve dirty files and their index snapshot when recording fails.
-    throw;
-  }
-}
-
 std::optional<std::uint64_t> parse_file_size(std::string_view value) {
   const std::size_t suffix_begin = value.find_first_not_of("0123456789");
   const std::string_view number = value.substr(0, suffix_begin);
@@ -246,6 +210,36 @@ std::optional<std::uint64_t> parse_file_size(std::string_view value) {
 
 git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
   return snapshot_tree(baseline_tree, true);
+}
+
+git_oid Repository::worktree_tree(const git_oid& baseline_tree) const {
+  if (ignore_working_copy_) return baseline_tree;
+  git_index* raw_index = nullptr;
+  check(git_repository_index(&raw_index, repo_.get()), "open index");
+  const std::filesystem::path path = git_index_path(raw_index);
+  git_index_free(raw_index);
+  std::optional<std::string> saved;
+  if (std::ifstream input(path, std::ios::binary); input) {
+    saved.emplace(std::istreambuf_iterator<char>(input),
+                  std::istreambuf_iterator<char>());
+  }
+  const auto restore = [&] {
+    std::error_code error;
+    if (!saved.has_value()) {
+      std::filesystem::remove(path, error);
+      return;
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << *saved;
+  };
+  try {
+    const git_oid result = snapshot_tree(baseline_tree);
+    restore();
+    return result;
+  } catch (...) {
+    restore();
+    throw;
+  }
 }
 
 DiffPtr Repository::worktree_diff(const git_oid& baseline_tree) const {
@@ -308,38 +302,11 @@ bool Repository::worktree_tracked_dirty(const git_oid& baseline_tree) const {
   return false;
 }
 
-bool Repository::synchronizes_commands() const {
-  return synchronize_commands_;
-}
-
-bool Repository::projects_workspace_head() const {
-  const auto current_operation = operation();
-  if (!current_operation.has_value()) return false;
-  const OperationState recorded = parse_operation(*current_operation);
-  const auto it = recorded.refs.find(workspace_ref_name());
-  if (it == recorded.refs.end()) return false;
-  if (!recorded.head.symbolic) {
-    return recorded.head.value == oid_string(it->second);
-  }
-  // A branch checked out at the active commit projects it as well.
-  const auto branch = recorded.refs.find(recorded.head.value);
-  return branch != recorded.refs.end() && branch->second == it->second;
-}
-
-std::optional<git_oid> Repository::expected_head() const {
-  const auto current = workspace();
-  if (!current.has_value() || projects_workspace_head()) return current;
-  const auto current_parents = parents(*current);
-  return current_parents.empty() ? current
-                                 : std::optional<git_oid>(current_parents.front());
-}
-
 bool Repository::head_matches_workspace() const {
-  if (!workspace().has_value()) return true;
-  const auto expected = expected_head();
+  const auto current = workspace();
+  if (!current.has_value()) return true;
   const auto actual = head_oid();
-  return actual.has_value() == expected.has_value() &&
-         (!actual.has_value() || *actual == *expected);
+  return actual.has_value() && *actual == *current;
 }
 
 void Repository::require_current_head() const {
@@ -349,13 +316,42 @@ void Repository::require_current_head() const {
 }
 
 bool Repository::adopt_external_head() const {
-  if (synchronize_commands_ || head_matches_workspace()) return false;
+  if (head_matches_workspace()) return false;
   const auto head = head_oid();
   if (!head.has_value()) return false;
-  // Project the workspace onto Git's HEAD without snapshotting the disk.
-  // Uncommitted edits stay in the working tree, relative to the new commit.
+  // Git is in the middle of a multi-step operation (rebase, merge, ...);
+  // adopt only its final result.
+  if (git_repository_state(repo_.get()) != GIT_REPOSITORY_STATE_NONE) {
+    return false;
+  }
+  // Follow Git's HEAD without touching the disk. Uncommitted edits stay in
+  // the working tree, relative to the new commit.
   record({{workspace_ref_name(), *head}}, {}, head_state(), "gg adopt Git HEAD");
   return true;
+}
+
+std::optional<std::string> Repository::current_branch() const {
+  const HeadState head = head_state();
+  if (!head.symbolic || !starts_with(head.value, "refs/heads/")) {
+    return std::nullopt;
+  }
+  return head.value;
+}
+
+std::optional<std::string> Repository::branch_checked_out_elsewhere(
+    std::string_view branch) const {
+  if (git_repository_is_worktree(repo_.get()) == 0 &&
+      !std::filesystem::exists(
+          std::filesystem::path(git_repository_commondir(repo_.get())) /
+          "worktrees")) {
+    return std::nullopt;
+  }
+  for (const WorkspaceRecord& record : workspaces()) {
+    if (!record.current && !record.stale && record.branch == branch) {
+      return record.name;
+    }
+  }
+  return std::nullopt;
 }
 
 git_oid Repository::snapshot_tree(const git_oid& baseline_tree,
@@ -642,7 +638,7 @@ std::vector<std::string> Repository::untracked_paths() const {
 
 std::vector<std::string> Repository::untracked_paths(
     const std::vector<std::string>& pathspecs) const {
-  if (operation_view_.has_value()) return {};
+  if (operation_view_.has_value() || ignore_working_copy_) return {};
   git_status_options options = GIT_STATUS_OPTIONS_INIT;
   options.show = GIT_STATUS_SHOW_WORKDIR_ONLY;
   options.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
@@ -836,16 +832,43 @@ void Repository::set_head(const HeadState& head) const {
   check(git_repository_set_head_detached(repo_.get(), &oid), "detach HEAD");
 }
 
-HeadState Repository::head_for_workspace(const git_oid& workspace) const {
-  if (projects_workspace_head()) {
-    return {false, oid_string(workspace)};
+HeadState Repository::head_after(const git_oid& workspace,
+                                 std::map<std::string, git_oid>& updates,
+                                 const std::set<std::string>& deletes,
+                                 const HeadIntent& intent) const {
+  const auto target_of = [&](const std::string& name) {
+    const auto updated = updates.find(name);
+    return updated != updates.end() ? std::optional<git_oid>(updated->second)
+           : deletes.contains(name) ? std::nullopt
+                                    : ref_target(name);
+  };
+  const HeadState detached{false, oid_string(workspace)};
+  if (intent.kind == HeadIntent::Kind::detach) return detached;
+  if (intent.kind == HeadIntent::Kind::attach) {
+    const auto target = target_of(intent.branch);
+    if (!target.has_value()) {
+      updates[intent.branch] = workspace;
+    } else if (!(*target == workspace)) {
+      throw GitError("attached branch must point at the working copy");  // GG_COV_EXCL_LINE
+    }
+    if (const auto other = branch_checked_out_elsewhere(intent.branch)) {
+      throw UserError("branch " + intent.branch.substr(11) +
+                      " is checked out in workspace " + *other);
+    }
+    return {true, intent.branch};
   }
-  const auto workspace_parents = parents(workspace);
-  if (workspace_parents.empty()) {
-    // A root has no parent to check out. Anchor detached HEAD to the root itself.
-    return {false, oid_string(workspace)};
+  const HeadState current = head_state();
+  if (!current.symbolic || !starts_with(current.value, "refs/heads/") ||
+      deletes.contains(current.value)) {
+    return detached;
   }
-  return {false, oid_string(workspace_parents.front())};
+  const auto target = target_of(current.value);
+  if (!target.has_value()) {
+    // An unborn branch is born by the first commit made on it.
+    updates[current.value] = workspace;
+    return current;
+  }
+  return *target == workspace ? current : detached;
 }
 
 void Repository::clear_checkout_recovery() const {
@@ -953,82 +976,21 @@ void Repository::checkout(std::optional<git_oid> oid) const {
   failed_checkout_tree_.reset();
 }
 
-bool Repository::sync_workspace() const {
-  return sync_workspace({});
-}
-
-bool Repository::sync_workspace(const std::vector<std::string>& paths) const {
-  if (ignore_working_copy_) return false;
-  const auto snapshot = [&](const git_oid& baseline) {
-    return paths.empty() ? snapshot_tree(baseline)
-                         : snapshot_tree(baseline, paths);
-  };
-  const auto workspace_reference = workspace_ref();
-  if (!workspace_reference.has_value()) {
-    const auto head = head_oid();
-    const git_oid base_tree = head.has_value()
-                                  ? *git_commit_tree_id(commit(*head).get())
-                                  : empty_tree();
-    const git_oid tree_oid = snapshot(base_tree);
-    if (tree_oid == base_tree) return false;
-    const std::vector<git_oid> parents =
-        head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
-    const git_oid imported = create_commit(tree_oid, parents, "");
-    record_workspace_snapshot(imported, {{workspace_ref_name(), imported}},
-                    "gg import working copy");
-    return true;
-  }
-  const auto workspace = ref_target(*workspace_reference);
-  CommitPtr current = commit(*workspace);
-  const auto current_parents = parents(*workspace);
-  const auto head = head_oid();
-  const bool projected = projects_workspace_head();
-  const bool head_mismatch = projected
-      ? (!head.has_value() || !(*head == *workspace))
-      : ((!current_parents.empty() &&
-          (!head.has_value() || !(*head == current_parents.front()))) ||
-         (current_parents.empty() && head.has_value() &&
-          !(*head == *workspace)));
-  if (head_mismatch) {
-    const git_oid base_tree = head.has_value()
-                                  ? *git_commit_tree_id(commit(*head).get())
-                                  : empty_tree();
-    const git_oid tree_oid = snapshot(base_tree);
-    const std::vector<git_oid> parent_oids =
-        head.has_value() ? std::vector<git_oid>{*head} : std::vector<git_oid>{};
-    const git_oid imported = create_commit(tree_oid, parent_oids, "");
-    record_workspace_snapshot(imported, {{*workspace_reference, imported}},
-                    "gg import state");
-    return true;
-  }
-
-  const git_oid old_tree = *git_commit_tree_id(current.get());
-  const git_oid new_tree = snapshot(old_tree);
-  if (old_tree == new_tree) {
-    return false;
-  }
-  const git_oid rewritten =
-      rewrite_commit(*workspace, current_parents, new_tree);
-  RewritePlan plan = descendants({{*workspace, rewritten}});
-  record_workspace_snapshot(rewritten, std::move(plan.updates),
-                  "gg snapshot working copy");
-  return true;
-}
-
-void Repository::add_remote_bookmark_updates(
+void Repository::add_remote_branch_updates(
     std::map<std::string, git_oid>& updates,
-    bool advance_bookmarks) const {
+    bool advance_branches,
+    std::optional<git_oid>* current_branch_target) const {
   constexpr std::string_view remote_prefix = "refs/remotes/";
   std::set<std::string> tracking_refs;
   for (const auto& [reference, oid] : data_refs()) {
     (void)oid;
-    if (starts_with(reference, kBookmarkTrackingPrefix)) {
+    if (starts_with(reference, kBranchTrackingPrefix)) {
       tracking_refs.insert(reference);
     }
   }
   for (const auto& [reference, oid] : updates) {
     (void)oid;
-    if (starts_with(reference, kBookmarkTrackingPrefix)) {
+    if (starts_with(reference, kBranchTrackingPrefix)) {
       tracking_refs.insert(reference);
     }
   }
@@ -1036,7 +998,7 @@ void Repository::add_remote_bookmark_updates(
   std::map<std::string, std::set<git_oid, OidLess>> proposals;
   for (const std::string& tracking : tracking_refs) {
     const std::string suffix =
-        tracking.substr(kBookmarkTrackingPrefix.size());
+        tracking.substr(kBranchTrackingPrefix.size());
     const std::string remote_ref = std::string(remote_prefix) + suffix;
     const auto remote = ref_target(remote_ref);
     if (!remote.has_value()) continue;
@@ -1045,7 +1007,7 @@ void Repository::add_remote_bookmark_updates(
     if (previous_remote.has_value() && !(*previous_remote == *remote)) {
       updates[tracking] = *remote;
     }
-    if (!advance_bookmarks) continue;
+    if (!advance_branches) continue;
 
     const std::size_t slash = suffix.find('/');
     if (slash == std::string::npos) continue;  // GG_COV_EXCL_BRANCH
@@ -1053,40 +1015,56 @@ void Repository::add_remote_bookmark_updates(
     const auto local = ref_target(local_ref);
     if (!local.has_value() || *local == *remote) continue;
     const int forward = git_graph_descendant_of(raw(), &*remote, &*local);
-    check(forward, "reconcile remote bookmark");
+    check(forward, "reconcile remote branch");
     if (forward != 0) proposals[local_ref].insert(*remote);
   }
+  if (proposals.empty()) return;
+  std::set<std::string> checked_out;
+  for (const WorkspaceRecord& workspace : workspaces()) {
+    if (!workspace.branch.empty()) checked_out.insert(workspace.branch);
+  }
+  const auto current = current_branch();
   for (const auto& [local, targets] : proposals) {
-    if (targets.size() == 1) updates[local] = *targets.begin();
+    if (targets.size() != 1) continue;
+    if (current.has_value() && local == *current) {
+      if (current_branch_target != nullptr) {
+        *current_branch_target = *targets.begin();
+      }
+      continue;
+    }
+    if (!checked_out.contains(local)) updates[local] = *targets.begin();
   }
 }
 
-bool Repository::sync_remote_bookmarks(bool advance_bookmarks) const {
+bool Repository::sync_remote_branches(bool advance_branches) const {
   if (operation_view_.has_value()) return false;
   std::map<std::string, git_oid> updates;
   const auto current_operation = operation();
   if (!current_operation.has_value() ||
-      operation_description(*current_operation) == "gg import history") {
+      operation_description(*current_operation) == "gg import history" ||
+      operation_description(*current_operation) == "initialize repository") {
     constexpr std::string_view remote_prefix = "refs/remotes/";
     for (const auto& [reference, oid] : data_refs()) {
       if (starts_with(reference, remote_prefix) &&
           !reference.ends_with("/HEAD")) {
-        updates.emplace(std::string(kBookmarkTrackingPrefix) +
+        updates.emplace(std::string(kBranchTrackingPrefix) +
                             reference.substr(remote_prefix.size()),
                         oid);
       }
     }
   }
-  add_remote_bookmark_updates(updates, advance_bookmarks);
+  add_remote_branch_updates(updates, advance_branches);
   if (updates.empty()) return false;
-  record(std::move(updates), {}, head_state(), "gg import remote bookmarks");
+  record(std::move(updates), {}, head_state(), "gg import remote branches");
   return true;
 }
 
-bool Repository::sync_for_command() const {
-  if (!synchronize_commands_) return false;
-  const bool bookmarks_changed = sync_remote_bookmarks();
-  return sync_workspace() || bookmarks_changed;
+bool Repository::prepare_command() const {
+  if (!adopt_external_changes_ || operation_view_.has_value()) return false;
+  // Follow what Git did since the last gg command (commits, checkouts,
+  // fetches) before changing anything.
+  import_git_history();
+  return sync_remote_branches();
 }
 
 void Repository::track_paths(const std::vector<std::string>& paths,

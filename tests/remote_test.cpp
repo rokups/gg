@@ -10,178 +10,179 @@
 
 namespace gg::test {
 
-TEST_F(RepositoryTest, ManagesBookmarksAndRejectsInvalidRequests) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "create", "forward", "-r", "main"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "set", "forward", "-r", "@"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "set", "forward", "-r", "@"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "create", "one", "two", "--to", "main"})
+TEST_F(RepositoryTest, ManagesBranchesAndRejectsInvalidRequests) {
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
+  EXPECT_EQ(invoke({"branch", "create", "topic"}).code, 0);
+  EXPECT_EQ(invoke({"branch", "create", "forward", "-r", "main"}).code, 0);
+  EXPECT_EQ(invoke({"branch", "set", "forward", "-r", "@"}).code, 0);
+  EXPECT_EQ(invoke({"branch", "set", "forward", "-r", "@"}).code, 0);
+  EXPECT_EQ(invoke({"branch", "create", "one", "two", "--to", "main"})
                 .code,
             0);
   EXPECT_TRUE(has_ref("refs/heads/one"));
   EXPECT_TRUE(has_ref("refs/heads/two"));
-  EXPECT_NE(invoke({"bookmark", "list"}).output.find("topic:"),
+  EXPECT_NE(invoke({"branch", "list"}).output.find("topic:"),
             std::string::npos);
-  EXPECT_EQ(invoke({"bookmark", "create", "topic"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "create", "bad name"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "create", "valid", "bad name"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "create", "topic"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "create", "bad name"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "create", "valid", "bad name"}).code, 2);
   EXPECT_FALSE(has_ref("refs/heads/valid"));
-  EXPECT_EQ(invoke({"bookmark", "set", "topic", "three", "-r", "main"})
+  EXPECT_EQ(invoke({"branch", "set", "topic", "three", "-r", "main"})
                 .code,
             2);
-  EXPECT_EQ(invoke({"bookmark", "set", "topic", "three", "-B", "-r", "main"})
+  EXPECT_EQ(invoke({"branch", "set", "topic", "three", "-B", "-r", "main"})
                 .code,
             0);
   EXPECT_TRUE(has_ref("refs/heads/three"));
-  EXPECT_EQ(invoke({"bookmark", "delete", "missing"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "delete", "glob:t*", "one", "forward"})
+  EXPECT_EQ(invoke({"branch", "delete", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "delete", "glob:t*", "one", "forward"})
                 .code,
             0);
 }
 
-TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBookmarks) {
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "alpha"}).code, 0);
+TEST_F(RepositoryTest, ListsFilteredRemoteAndSortedBranches) {
+  ASSERT_EQ(invoke({"new", "-m", "first", main_id()}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "alpha"}).code, 0);
   const git_oid first = ref("refs/heads/alpha");
-  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "beta"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-d", "-m", "second"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "beta"}).code, 0);
   const git_oid second = ref("refs/heads/beta");
   set_ref("refs/remotes/origin/alpha", first);
   set_ref("refs/remotes/origin/HEAD", second);
   set_ref("refs/remotes/origin/remote-only", second);
   set_ref("refs/remotes/backup/beta", second);
 
-  const Result local = invoke({"bookmark", "list"});
+  const Result local = invoke({"branch", "list"});
   ASSERT_EQ(local.code, 0) << local.error;
   EXPECT_NE(local.output.find("alpha:"), std::string::npos);
   EXPECT_NE(local.output.find("beta:"), std::string::npos);
   EXPECT_EQ(local.output.find("@origin"), std::string::npos);
   const Result colored =
-      invoke({"--color", "debug", "bookmark", "list", "alpha"});
-  EXPECT_NE(colored.output.find("<<bookmark::alpha>>"), std::string::npos);
+      invoke({"--color", "debug", "branch", "list", "alpha"});
+  EXPECT_NE(colored.output.find("<<branch::alpha>>"), std::string::npos);
   EXPECT_NE(colored.output.find("<<commit_id::"), std::string::npos);
 
-  const Result named = invoke({"bookmark", "list", "alpha"});
+  const Result named = invoke({"branch", "list", "alpha"});
   EXPECT_NE(named.output.find("alpha:"), std::string::npos);
   EXPECT_EQ(named.output.find("beta:"), std::string::npos);
-  EXPECT_NE(invoke({"bookmark", "list", "glob:a*"})
+  EXPECT_NE(invoke({"branch", "list", "glob:a*"})
                 .output.find("alpha:"),
             std::string::npos);
-  EXPECT_NE(invoke({"bookmark", "list", "exact:beta"})
+  EXPECT_NE(invoke({"branch", "list", "exact:beta"})
                 .output.find("beta:"),
             std::string::npos);
-  EXPECT_NE(invoke({"bookmark", "list", "substring:lph"})
+  EXPECT_NE(invoke({"branch", "list", "substring:lph"})
                 .output.find("alpha:"),
             std::string::npos);
-  EXPECT_NE(invoke({"bookmark", "list", "regex:^be"})
+  EXPECT_NE(invoke({"branch", "list", "regex:^be"})
                 .output.find("beta:"),
             std::string::npos);
-  EXPECT_EQ(invoke({"bookmark", "list", "regex:["}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "list", "unknown:alpha"}).code, 2);
-  const Result revised = invoke({"bookmark", "list", "-r", "alpha"});
+  EXPECT_EQ(invoke({"branch", "list", "regex:["}).code, 2);
+  EXPECT_EQ(invoke({"branch", "list", "unknown:alpha"}).code, 2);
+  const Result revised = invoke({"branch", "list", "-r", "alpha"});
   EXPECT_NE(revised.output.find("alpha:"), std::string::npos);
   EXPECT_EQ(revised.output.find("beta:"), std::string::npos);
   const Result unioned =
-      invoke({"bookmark", "list", "beta", "-r", "alpha"});
+      invoke({"branch", "list", "beta", "-r", "alpha"});
   EXPECT_NE(unioned.output.find("alpha:"), std::string::npos);
   EXPECT_NE(unioned.output.find("beta:"), std::string::npos);
   const Result revision_set =
-      invoke({"bookmark", "list", "-r", "alpha | beta"});
+      invoke({"branch", "list", "-r", "alpha | beta"});
   EXPECT_NE(revision_set.output.find("alpha:"), std::string::npos);
   EXPECT_NE(revision_set.output.find("beta:"), std::string::npos);
-  const Result all = invoke({"bookmark", "list", "--all-remotes"});
+  const Result all = invoke({"branch", "list", "--all-remotes"});
   EXPECT_NE(all.output.find("alpha@origin:"), std::string::npos);
   EXPECT_NE(all.output.find("beta@backup:"), std::string::npos);
   EXPECT_EQ(all.output.find("HEAD@origin"), std::string::npos);
   const Result origin =
-      invoke({"bookmark", "list", "--remote", "origin"});
+      invoke({"branch", "list", "--remote", "origin"});
   EXPECT_NE(origin.output.find("alpha@origin:"), std::string::npos);
   EXPECT_EQ(origin.output.find("beta@backup:"), std::string::npos);
   EXPECT_EQ(origin.output.find("alpha:"), std::string::npos);
-  EXPECT_NE(invoke({"bookmark", "list", "--remote", "glob:ori*"})
+  EXPECT_NE(invoke({"branch", "list", "--remote", "glob:ori*"})
                 .output.find("alpha@origin:"),
             std::string::npos);
   const Result remotes = invoke(
-      {"bookmark", "list", "--remote", "origin", "--remote", "backup"});
+      {"branch", "list", "--remote", "origin", "--remote", "backup"});
   EXPECT_NE(remotes.output.find("alpha@origin:"), std::string::npos);
   EXPECT_NE(remotes.output.find("beta@backup:"), std::string::npos);
-  EXPECT_TRUE(invoke({"bookmark", "list", "--remote", "missing"})
+  EXPECT_TRUE(invoke({"branch", "list", "--remote", "missing"})
                   .output.empty());
 
   const Result descending =
-      invoke({"bookmark", "list", "--sort", "name-"});
+      invoke({"branch", "list", "--sort", "name-"});
   EXPECT_LT(descending.output.find("beta:"), descending.output.find("alpha:"));
   const std::string all_sort_keys =
       "name,name-,author-name,author-name-,author-email,author-email-,"
       "author-date,author-date-,committer-name,committer-name-,"
       "committer-email,committer-email-,committer-date,committer-date-";
-  EXPECT_EQ(invoke({"bookmark", "list", "--sort", all_sort_keys}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "list", "--sort", "unknown"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "list", "--sort", all_sort_keys}).code, 0);
+  EXPECT_EQ(invoke({"branch", "list", "--sort", "unknown"}).code, 2);
 
-  ASSERT_EQ(invoke({"bookmark", "track", "alpha@origin"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "track", "glob:b*", "--remote",
+  ASSERT_EQ(invoke({"branch", "track", "alpha@origin"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "track", "glob:b*", "--remote",
                     "glob:back*"})
                 .code,
             0);
-  ASSERT_EQ(invoke({"bookmark", "track", "glob:remote-*"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "track", "glob:remote-*"}).code, 0);
   EXPECT_TRUE(has_ref("refs/heads/remote-only"));
-  const Result tracked = invoke({"bookmark", "list", "--tracked"});
+  const Result tracked = invoke({"branch", "list", "--tracked"});
   ASSERT_EQ(tracked.code, 0) << tracked.error;
   EXPECT_NE(tracked.output.find("alpha@origin:"), std::string::npos);
   EXPECT_NE(tracked.output.find("beta@backup:"), std::string::npos);
   EXPECT_EQ(tracked.output.find("alpha:"), std::string::npos);
   const Result tracked_origin =
-      invoke({"bookmark", "list", "--tracked", "--remote", "origin"});
+      invoke({"branch", "list", "--tracked", "--remote", "origin"});
   EXPECT_NE(tracked_origin.output.find("alpha@origin:"), std::string::npos);
   EXPECT_EQ(tracked_origin.output.find("beta@backup:"), std::string::npos);
-  const Result conflicted = invoke({"bookmark", "list", "--conflicted"});
+  const Result conflicted = invoke({"branch", "list", "--conflicted"});
   EXPECT_EQ(conflicted.code, 0);
   EXPECT_TRUE(conflicted.output.empty());
-  EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--remote",
+  EXPECT_EQ(invoke({"branch", "list", "--all-remotes", "--remote",
                     "origin"})
                 .code,
             2);
-  EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--tracked"})
+  EXPECT_EQ(invoke({"branch", "list", "--all-remotes", "--tracked"})
                 .code,
             2);
-  EXPECT_EQ(invoke({"bookmark", "list", "--all-remotes", "--conflicted"})
+  EXPECT_EQ(invoke({"branch", "list", "--all-remotes", "--conflicted"})
                 .code,
             2);
 
-  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/origin/alpha"));
-  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/backup/beta"));
-  const Result explicitly_tracked = invoke({"bookmark", "list", "--tracked"});
+  EXPECT_TRUE(has_ref("refs/gg/tracking/branches/origin/alpha"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/branches/backup/beta"));
+  const Result explicitly_tracked = invoke({"branch", "list", "--tracked"});
   EXPECT_NE(explicitly_tracked.output.find("alpha@origin:"),
             std::string::npos);
   EXPECT_NE(explicitly_tracked.output.find("beta@backup:"),
             std::string::npos);
-  ASSERT_EQ(invoke({"bookmark", "untrack", "alpha@origin"}).code, 0);
-  EXPECT_FALSE(has_ref("refs/gg/tracking/bookmarks/origin/alpha"));
-  EXPECT_EQ(invoke({"bookmark", "list", "--tracked", "--remote", "origin"})
+  ASSERT_EQ(invoke({"branch", "untrack", "alpha@origin"}).code, 0);
+  EXPECT_FALSE(has_ref("refs/gg/tracking/branches/origin/alpha"));
+  EXPECT_EQ(invoke({"branch", "list", "--tracked", "--remote", "origin"})
                 .output.find("alpha@origin:"),
             std::string::npos);
-  EXPECT_EQ(invoke({"bookmark", "untrack", "alpha@origin"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "track", "@origin"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "track", "alpha@"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "track", "alpha@origin", "glob:b*"}).code,
+  EXPECT_EQ(invoke({"branch", "untrack", "alpha@origin"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "track", "@origin"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "track", "alpha@"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "track", "alpha@origin", "glob:b*"}).code,
             2);
-  EXPECT_EQ(invoke({"bookmark", "track", "alpha@origin", "--remote",
+  EXPECT_EQ(invoke({"branch", "track", "alpha@origin", "--remote",
                     "origin"})
                 .code,
             2);
 }
 
-TEST_F(RepositoryTest, FailedAttachedBookmarkMutationPreservesExistingAliases) {
+TEST_F(RepositoryTest, FailedAttachedBranchMutationPreservesExistingAliases) {
   const git_oid original = ref("HEAD");
   const git_oid alias_source = raw_commit("previous identity");
   const std::string alias = std::string(detail::kAliasPrefix) + detail::oid_string(alias_source);
   set_ref(alias, original);
+  ASSERT_EQ(invoke({"status"}).code, 0);
   detail::Repository before(path_);
   const git_oid operation = before.ensure_operation();
   write(".git/HEAD.lock", "held by another process\n");
-  for (const auto& command : {std::vector<std::string>{"bookmark", "rename", "main", "renamed"},
-                              std::vector<std::string>{"bookmark", "delete", "main"}}) {
+  for (const auto& command : {std::vector<std::string>{"branch", "rename", "main", "renamed"},
+                              std::vector<std::string>{"branch", "delete", "main"}}) {
     SCOPED_TRACE(command[1]);
     const Result failed = invoke(command);
     EXPECT_NE(failed.code, 0);
@@ -199,14 +200,15 @@ TEST_F(RepositoryTest, FailedAttachedBookmarkMutationPreservesExistingAliases) {
   }
 }
 
-TEST_F(RepositoryTest, LockedHeadRejectsBookmarkRenameAndDeletionWithoutChangingState) {
+TEST_F(RepositoryTest, LockedHeadRejectsBranchRenameAndDeletionWithoutChangingState) {
+  ASSERT_EQ(invoke({"status"}).code, 0);
   detail::Repository before(path_);
   const git_oid operation = before.ensure_operation();
   const git_oid original = ref("HEAD");
   write(".git/HEAD.lock", "held by another process\n");
-  for (const auto& command : {std::vector<std::string>{"bookmark", "rename", "main", "renamed"},
-                              std::vector<std::string>{"bookmark", "delete", "main"},
-                              std::vector<std::string>{"bookmark", "forget", "main"}}) {
+  for (const auto& command : {std::vector<std::string>{"branch", "rename", "main", "renamed"},
+                              std::vector<std::string>{"branch", "delete", "main"},
+                              std::vector<std::string>{"branch", "forget", "main"}}) {
     SCOPED_TRACE(command[1]);
     const Result failed = invoke(command);
     EXPECT_NE(failed.code, 0);
@@ -226,19 +228,20 @@ TEST_F(RepositoryTest, LockedHeadRejectsBookmarkRenameAndDeletionWithoutChanging
   }
 }
 
-TEST_F(RepositoryTest, MovingAttachedBookmarkPreservesCheckoutAndUndoState) {
+TEST_F(RepositoryTest, MovingAttachedBranchPreservesCheckoutAndUndoState) {
   const git_oid original = ref("HEAD");
   write("tracked.txt", "target contents\n");
   ASSERT_EQ(invoke_git({"commit", "-am", "target"}).code, 0);
   const git_oid target = ref("HEAD");
   ASSERT_EQ(invoke_git({"branch", "target"}).code, 0);
   ASSERT_EQ(invoke_git({"reset", "--hard", detail::oid_string(original)}).code, 0);
-  for (const char* action : {"move", "set", "advance"}) {
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  for (const char* action : {"move", "set"}) {
     SCOPED_TRACE(action);
     detail::Repository before(path_);
     const git_oid previous_operation = before.ensure_operation();
     write(".git/HEAD.lock", "held by another process\n");
-    const Result rejected = invoke({"bookmark", action, "main", "--to", "target"});
+    const Result rejected = invoke({"branch", action, "main", "--to", "target"});
     EXPECT_NE(rejected.code, 0);
     EXPECT_NE(rejected.error.find("HEAD.lock"), std::string::npos);
     EXPECT_EQ(rejected.error.find("could not restore"), std::string::npos) << rejected.error;
@@ -254,21 +257,22 @@ TEST_F(RepositoryTest, MovingAttachedBookmarkPreservesCheckoutAndUndoState) {
     }
     std::filesystem::remove(path_ / ".git/HEAD.lock");
 
-    const Result moved = invoke({"bookmark", action, "main", "--to", "target"});
+    const Result moved = invoke({"branch", action, "main", "--to", "target"});
     ASSERT_EQ(moved.code, 0) << moved.error;
-    const git_oid bookmark = ref("refs/heads/main");
-    EXPECT_NE(git_oid_equal(&bookmark, &target), 0);
+    const git_oid branch = ref("refs/heads/main");
+    EXPECT_NE(git_oid_equal(&branch, &target), 0);
     const git_oid head = ref("HEAD");
     EXPECT_NE(git_oid_equal(&head, &original), 0);
     {
       detail::Repository after(path_);
       EXPECT_FALSE(after.head_state().symbolic);
-      EXPECT_FALSE(after.workspace().has_value());
+      // @ stays checked out and remains visible as an unnamed head.
+      EXPECT_EQ(detail::oid_string(*after.workspace()), detail::oid_string(original));
+      EXPECT_TRUE(after.ref_target(detail::user_head_ref(original)).has_value());
     }
     EXPECT_EQ(file(), "base\n");
     EXPECT_EQ(invoke_git({"diff", "--quiet"}).code, 0);
-    ASSERT_EQ(invoke({"status"}).code, 0);
-    EXPECT_FALSE(has_ref("refs/gg/workspaces/default"));
+    ASSERT_EQ(invoke({"squash"}).code, 0);
     ASSERT_EQ(invoke({"undo"}).code, 0);
     const git_oid restored = ref("refs/heads/main");
     EXPECT_NE(git_oid_equal(&restored, &original), 0);
@@ -283,7 +287,7 @@ TEST_F(RepositoryTest, MovingAttachedBookmarkPreservesCheckoutAndUndoState) {
   }
 }
 
-TEST_F(RepositoryTest, RenamesAttachedHeadBookmarkAndRestoresItThroughUndo) {
+TEST_F(RepositoryTest, RenamesAttachedHeadBranchAndRestoresItThroughUndo) {
   const git_oid original = ref("HEAD");
   const auto expect_head = [&](bool symbolic, const std::string& value) {
     detail::Repository repository(path_);
@@ -293,11 +297,11 @@ TEST_F(RepositoryTest, RenamesAttachedHeadBookmarkAndRestoresItThroughUndo) {
     const auto target = repository.head_oid();
     ASSERT_TRUE(target.has_value());
     EXPECT_NE(git_oid_equal(&*target, &original), 0);
-    EXPECT_FALSE(repository.workspace().has_value());
+    EXPECT_EQ(detail::oid_string(*repository.workspace()), detail::oid_string(original));
     EXPECT_EQ(file(), "base\n");
   };
 
-  ASSERT_EQ(invoke({"bookmark", "rename", "main", "renamed"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "rename", "main", "renamed"}).code, 0);
   EXPECT_FALSE(has_ref("refs/heads/main"));
   EXPECT_TRUE(has_ref("refs/heads/renamed"));
   expect_head(true, "refs/heads/renamed");
@@ -309,11 +313,11 @@ TEST_F(RepositoryTest, RenamesAttachedHeadBookmarkAndRestoresItThroughUndo) {
   expect_head(true, "refs/heads/renamed");
 }
 
-TEST_F(RepositoryTest, DetachesHeadWhenDeletingOrForgettingItsBookmark) {
+TEST_F(RepositoryTest, DetachesHeadWhenDeletingOrForgettingItsBranch) {
   const git_oid original = ref("HEAD");
   for (const char* action : {"delete", "forget"}) {
     SCOPED_TRACE(action);
-    ASSERT_EQ(invoke({"bookmark", action, "main"}).code, 0);
+    ASSERT_EQ(invoke({"branch", action, "main"}).code, 0);
     EXPECT_FALSE(has_ref("refs/heads/main"));
     {
       detail::Repository repository(path_);
@@ -323,7 +327,9 @@ TEST_F(RepositoryTest, DetachesHeadWhenDeletingOrForgettingItsBookmark) {
       const auto target = repository.head_oid();
       ASSERT_TRUE(target.has_value());
       EXPECT_NE(git_oid_equal(&*target, &original), 0);
-      EXPECT_FALSE(repository.workspace().has_value());
+      EXPECT_EQ(detail::oid_string(*repository.workspace()), detail::oid_string(original));
+      EXPECT_TRUE(repository.ref_target(detail::user_head_ref(original))
+                      .has_value());
     }
     EXPECT_EQ(file(), "base\n");
     ASSERT_EQ(invoke({"undo"}).code, 0);
@@ -341,16 +347,16 @@ TEST_F(RepositoryTest, DetachesHeadWhenDeletingOrForgettingItsBookmark) {
   }
 }
 
-TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "old", "occupied", "plain"}).code,
+TEST_F(RepositoryTest, RenamesAndForgetsBranches) {
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "old", "occupied", "plain"}).code,
             0);
-  ASSERT_EQ(invoke({"bookmark", "rename", "plain", "renamed"}).code, 0);
-  EXPECT_EQ(invoke({"bookmark", "rename", "old", "old"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "rename", "missing", "new"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "rename", "old", "bad name"}).code, 2);
-  EXPECT_EQ(invoke({"bookmark", "rename", "old", "occupied"}).code, 2);
-  ASSERT_EQ(invoke({"bookmark", "rename", "old", "occupied",
+  ASSERT_EQ(invoke({"branch", "rename", "plain", "renamed"}).code, 0);
+  EXPECT_EQ(invoke({"branch", "rename", "old", "old"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "rename", "missing", "new"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "rename", "old", "bad name"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "rename", "old", "occupied"}).code, 2);
+  ASSERT_EQ(invoke({"branch", "rename", "old", "occupied",
                     "--overwrite-existing"})
                 .code,
             0);
@@ -360,63 +366,63 @@ TEST_F(RepositoryTest, RenamesAndForgetsBookmarks) {
   const git_oid target = ref("refs/heads/occupied");
   set_ref("refs/remotes/origin/occupied", target);
   set_ref("refs/remotes/origin/other", target);
-  set_ref("refs/gg/tracking/bookmarks/origin/occupied", target);
-  ASSERT_EQ(invoke({"bookmark", "forget", "glob:occup*"}).code, 0);
+  set_ref("refs/gg/tracking/branches/origin/occupied", target);
+  ASSERT_EQ(invoke({"branch", "forget", "glob:occup*"}).code, 0);
   EXPECT_FALSE(has_ref("refs/heads/occupied"));
   EXPECT_TRUE(has_ref("refs/remotes/origin/occupied"));
-  EXPECT_FALSE(has_ref("refs/gg/tracking/bookmarks/origin/occupied"));
+  EXPECT_FALSE(has_ref("refs/gg/tracking/branches/origin/occupied"));
 
   set_ref("refs/heads/occupied", target);
-  ASSERT_EQ(invoke({"bookmark", "forget", "occupied", "--include-remotes"})
+  ASSERT_EQ(invoke({"branch", "forget", "occupied", "--include-remotes"})
                 .code,
             0);
   EXPECT_FALSE(has_ref("refs/heads/occupied"));
   EXPECT_FALSE(has_ref("refs/remotes/origin/occupied"));
   EXPECT_TRUE(has_ref("refs/remotes/origin/other"));
-  EXPECT_EQ(invoke({"bookmark", "forget", "missing"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "forget", "missing"}).code, 2);
 }
 
-TEST_F(RepositoryTest, MovesBookmarksByNameAndSourceRevision) {
+TEST_F(RepositoryTest, MovesBranchesByNameAndSourceRevision) {
   const auto points_to = [&](std::string_view name, const git_oid& target) {
     const git_oid actual = ref(name);
     return git_oid_equal(&actual, &target) != 0;
   };
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "first", main_id()}).code, 0);
   const git_oid first = ref("refs/gg/workspaces/default");
-  ASSERT_EQ(invoke({"bookmark", "create", "one", "two"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "one", "two"}).code, 0);
   ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
   const git_oid second = ref("refs/gg/workspaces/default");
-  ASSERT_EQ(invoke({"bookmark", "create", "tip"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "tip"}).code, 0);
 
-  ASSERT_EQ(invoke({"bookmark", "move", "glob:o*", "--to", "@"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "move", "glob:o*", "--to", "@"}).code, 0);
   EXPECT_TRUE(points_to("refs/heads/one", second));
   EXPECT_TRUE(points_to("refs/heads/two", first));
 
   ASSERT_EQ(
-      invoke({"bookmark", "move", "--from", "two", "--to", "@"}).code,
+      invoke({"branch", "move", "--from", "two", "--to", "@"}).code,
       0);
   EXPECT_TRUE(points_to("refs/heads/two", second));
-  EXPECT_NE(invoke({"bookmark", "move", "one", "--to", "@"})
-                .output.find("No bookmarks to update."),
+  EXPECT_NE(invoke({"branch", "move", "one", "--to", "@"})
+                .output.find("No branches to update."),
             std::string::npos);
-  EXPECT_NE(invoke({"bookmark", "move", "one"})
-                .output.find("No bookmarks to update."),
+  EXPECT_NE(invoke({"branch", "move", "one"})
+                .output.find("No branches to update."),
             std::string::npos);
-  EXPECT_NE(invoke({"bookmark", "move", "missing", "--to", "@"})
-                .output.find("No bookmarks to update."),
+  EXPECT_NE(invoke({"branch", "move", "missing", "--to", "@"})
+                .output.find("No branches to update."),
             std::string::npos);
 
-  EXPECT_EQ(invoke({"bookmark", "move", "one", "--to",
+  EXPECT_EQ(invoke({"branch", "move", "one", "--to",
                     git_oid_tostr_s(&first)})
                 .code,
             2);
-  ASSERT_EQ(invoke({"bookmark", "move", "one", "--to",
+  ASSERT_EQ(invoke({"branch", "move", "one", "--to",
                     git_oid_tostr_s(&first), "--allow-backwards"})
                 .code,
             0);
   EXPECT_TRUE(points_to("refs/heads/one", first));
 
-  ASSERT_EQ(invoke({"bookmark", "move", "--from", "one | two",
+  ASSERT_EQ(invoke({"branch", "move", "--from", "one | two",
                     "--to", "main", "-B"})
                 .code,
             0);
@@ -426,59 +432,68 @@ TEST_F(RepositoryTest, MovesBookmarksByNameAndSourceRevision) {
   EXPECT_TRUE(points_to("refs/heads/tip", main));
 }
 
-TEST_F(RepositoryTest, AdvancesTheClosestBookmarks) {
-  const auto points_to = [&](std::string_view name, const git_oid& target) {
-    const git_oid actual = ref(name);
-    return git_oid_equal(&actual, &target) != 0;
-  };
-  ASSERT_EQ(invoke({"new", "-m", "old", "main"}).code, 0);
-  const git_oid old = ref("refs/gg/workspaces/default");
-  ASSERT_EQ(invoke({"bookmark", "create", "old"}).code, 0);
-  ASSERT_EQ(invoke({"new", "-m", "near"}).code, 0);
-  const git_oid near = ref("refs/gg/workspaces/default");
-  ASSERT_EQ(invoke({"bookmark", "create", "near", "alias"}).code, 0);
-  ASSERT_EQ(invoke({"new", "-m", "target"}).code, 0);
-  const git_oid target = ref("refs/gg/workspaces/default");
-  const git_oid side = raw_commit("side", {ref("refs/heads/main")});
-  set_ref("refs/heads/side", side);
+TEST_F(RepositoryTest, CheckedOutBranchesAdvanceWithNewChangesAndCommits) {
+  const git_oid base = ref("refs/heads/main");
+  // gg new continues the branch HEAD is attached to.
+  ASSERT_EQ(invoke({"new", "-m", "first"}).code, 0);
+  const git_oid first = ref("refs/gg/workspaces/default");
+  EXPECT_EQ(git_oid_equal(&first, &base), 0);
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/main")), detail::oid_string(first));
+  write("tracked.txt", "committed\n");
+  ASSERT_EQ(invoke({"commit", "-m", "second"}).code, 0);
+  const git_oid second = ref("refs/gg/workspaces/default");
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/main")), detail::oid_string(second));
 
-  const Result advanced = invoke({"bookmark", "advance"});
-  ASSERT_EQ(advanced.code, 0) << advanced.error;
-  EXPECT_NE(advanced.output.find("Advanced 2 bookmark(s)"),
-            std::string::npos);
-  EXPECT_TRUE(points_to("refs/heads/near", target));
-  EXPECT_TRUE(points_to("refs/heads/alias", target));
-  EXPECT_TRUE(points_to("refs/heads/old", old));
-  EXPECT_TRUE(points_to("refs/heads/side", side));
+  // --detach forks an unnamed head and leaves the branch in place.
+  const Result detached = invoke({"new", "-d", "-m", "experiment"});
+  ASSERT_EQ(detached.code, 0) << detached.error;
+  EXPECT_EQ(detached.output.find("on branch"), std::string::npos);
+  const git_oid experiment = ref("refs/gg/workspaces/default");
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/main")), detail::oid_string(second));
+  EXPECT_FALSE(detail::Repository(path_).head_state().symbolic);
+  EXPECT_TRUE(has_ref(detail::user_head_ref(experiment)));
+  // A new change on the unnamed head moves its marker forward.
+  ASSERT_EQ(invoke({"new", "-m", "more"}).code, 0);
+  const git_oid more = ref("refs/gg/workspaces/default");
+  EXPECT_FALSE(has_ref(detail::user_head_ref(experiment)));
+  EXPECT_TRUE(has_ref(detail::user_head_ref(more)));
+  EXPECT_NE(invoke({"log"}).output.find("more"), std::string::npos);
 
-  ASSERT_EQ(invoke({"bookmark", "advance", "glob:o*", "--to", "@"}).code,
-            0);
-  EXPECT_TRUE(points_to("refs/heads/old", target));
-  ASSERT_EQ(invoke({"bookmark", "create", "configured", "-r", "@-"}).code,
-            0);
-  const Result configured =
-      invoke({"bookmark", "advance", "configured"});
-  ASSERT_EQ(configured.code, 0) << configured.error;
-  EXPECT_TRUE(points_to("refs/heads/configured", target));
+  // Naming a branch checks it out and continues it.
+  const Result continued = invoke({"new", "-m", "third", "main"});
+  ASSERT_EQ(continued.code, 0) << continued.error;
+  EXPECT_NE(continued.output.find("(on branch main)"), std::string::npos);
+  const git_oid third = ref("refs/gg/workspaces/default");
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/main")), detail::oid_string(third));
+  EXPECT_TRUE(detail::Repository(path_).head_state().symbolic);
+  // The detached line stays visible without a name.
+  const Result log = invoke({"log"});
+  EXPECT_NE(log.output.find("more"), std::string::npos);
+  EXPECT_NE(log.output.find("experiment"), std::string::npos);
 
-  ASSERT_EQ(invoke({"bookmark", "create", "configured-target", "-r",
-                    git_oid_tostr_s(&old)})
-                .code,
-            0);
-  const Result configured_target = invoke(
-      {"bookmark", "advance", "configured-target", "--to", "@-"});
-  ASSERT_EQ(configured_target.code, 0) << configured_target.error;
-  EXPECT_TRUE(points_to("refs/heads/configured-target", near));
-  EXPECT_NE(invoke({"bookmark", "advance", "near"})
-                .output.find("No bookmarks to update."),
-            std::string::npos);
-  EXPECT_EQ(invoke({"bookmark", "advance", "near", "--to",
-                    git_oid_tostr_s(&near)})
-                .code,
-            2);
+  // A commit ID forks detached even when a branch points there.
+  ASSERT_EQ(invoke({"new", "-m", "fork", detail::oid_string(third)}).code, 0);
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/main")), detail::oid_string(third));
+  EXPECT_FALSE(detail::Repository(path_).head_state().symbolic);
+
+  // Creating a branch at a detached @ checks it out.
+  ASSERT_EQ(invoke({"branch", "create", "topic"}).code, 0);
+  EXPECT_EQ(detail::Repository(path_).head_state().value, "refs/heads/topic");
+  ASSERT_EQ(invoke({"new", "-m", "on topic"}).code, 0);
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/topic")),
+            detail::oid_string(ref("refs/gg/workspaces/default")));
+  EXPECT_EQ(invoke({"branch", "advance"}).code, 2);
+
+  // Abandoning the checked-out commit keeps its branch checked out.
+  ASSERT_EQ(invoke({"abandon"}).code, 0);
+  EXPECT_EQ(detail::Repository(path_).head_state().value, "refs/heads/topic");
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/topic")),
+            detail::oid_string(ref("refs/gg/workspaces/default")));
+  ASSERT_EQ(invoke({"undo"}).code, 0);
+  EXPECT_EQ(detail::Repository(path_).head_state().value, "refs/heads/topic");
 }
 
-TEST_F(RepositoryTest, DefaultPushAdvancesTheClosestBookmark) {
+TEST_F(RepositoryTest, DefaultPushPublishesTheCheckedOutBranch) {
   const auto points_to = [&](std::string_view reference,
                              const git_oid& target) {
     const git_oid actual = ref(reference);
@@ -496,47 +511,39 @@ TEST_F(RepositoryTest, DefaultPushAdvancesTheClosestBookmark) {
             0);
   git_remote_free(remote);
 
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "first", main_id()}).code, 0);
   write("first.txt", "first\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "near"}).code, 0);
-  const git_oid near = ref("refs/heads/near");
-  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  const Result detached = invoke({"push", "--dry-run"});
+  EXPECT_EQ(detached.code, 2);
+  EXPECT_NE(detached.error.find("HEAD is detached"), std::string::npos);
+
+  ASSERT_EQ(invoke({"branch", "create", "near"}).code, 0);
   write("second.txt", "second\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"commit", "-m", "second"}).code, 0);
   const git_oid second = ref("refs/gg/workspaces/default");
+  EXPECT_TRUE(points_to("refs/heads/near", second));
 
   const Result dry_run = invoke({"push", "--dry-run"});
   ASSERT_EQ(dry_run.code, 0) << dry_run.error;
   EXPECT_NE(dry_run.output.find("Would push refs/heads/near"),
             std::string::npos);
-  EXPECT_NE(dry_run.output.find("Would advance near"), std::string::npos);
-  EXPECT_TRUE(points_to("refs/heads/near", near));
   EXPECT_FALSE(has_ref("refs/remotes/origin/near"));
 
   const Result pushed = invoke({"push"});
   ASSERT_EQ(pushed.code, 0) << pushed.error;
-  EXPECT_TRUE(points_to("refs/heads/near", second));
   EXPECT_TRUE(points_to("refs/remotes/origin/near", second));
   EXPECT_FALSE(has_ref("refs/remotes/origin/main"));
 
-  ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
-  write("third.txt", "third\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  const git_oid third = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new"}).code, 0);
-  const git_oid empty = ref("refs/gg/workspaces/default");
-
-  const Result parent_push = invoke({"push"});
-  ASSERT_EQ(parent_push.code, 0) << parent_push.error;
-  EXPECT_TRUE(points_to("refs/heads/near", third));
-  EXPECT_TRUE(points_to("refs/remotes/origin/near", third));
-  EXPECT_TRUE(points_to("refs/gg/workspaces/default", empty));
+  const Result empty = invoke({"push", "--dry-run"});
+  EXPECT_EQ(empty.code, 2);
+  EXPECT_NE(empty.error.find("empty description"), std::string::npos);
 
   std::filesystem::remove_all(remote_path);
 }
 
-TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
+TEST_F(RepositoryTest, PushesFetchesAndClonesBranches) {
   const auto remote_path = path_.parent_path() / (path_.filename().string() + "-bare");
   const auto clone_path = path_.parent_path() / (path_.filename().string() + "-clone");
   std::filesystem::remove_all(remote_path);
@@ -550,17 +557,17 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
             0);
   git_remote_free(remote);
 
-  ASSERT_EQ(invoke({"new", "-m", "publish", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "publish", main_id()}).code, 0);
   write("published.txt", "published\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
-  ASSERT_EQ(invoke({"push", "--bookmark", "topic"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "topic"}).code, 0);
+  ASSERT_EQ(invoke({"push", "--branch", "topic"}).code, 0);
   EXPECT_TRUE(has_ref("refs/remotes/origin/topic"));
-  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/origin/topic"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/branches/origin/topic"));
   const git_oid topic_target = ref("refs/heads/topic");
   set_ref("refs/remotes/origin/HEAD", topic_target);
   set_ref("refs/remotes/origin/ghost", topic_target);
-  set_ref("refs/gg/tracking/bookmarks/origin/ghost", topic_target);
+  set_ref("refs/gg/tracking/branches/origin/ghost", topic_target);
   const Result tracked = invoke({"push", "--tracked", "--dry-run"});
   EXPECT_NE(tracked.output.find("refs/heads/topic"), std::string::npos);
   EXPECT_EQ(tracked.output.find("refs/heads/ghost"), std::string::npos);
@@ -609,11 +616,11 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   EXPECT_EQ(fetched_default.code, 0) << fetched_default.error;
   const Result fetched_origin = invoke({"fetch", "--remote", "origin"});
   EXPECT_EQ(fetched_origin.code, 0) << fetched_origin.error;
-  EXPECT_EQ(invoke({"push", "--bookmark", "topic", "--remote", "origin"})
+  EXPECT_EQ(invoke({"push", "--branch", "topic", "--remote", "origin"})
                 .code,
             0);
 
-  ASSERT_EQ(invoke({"bookmark", "create", "second", "dry"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "second", "dry"}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "release"}).code, 0);
   const Result multi_push =
       invoke({"push", "-b", "glob:to*", "-b", "regex:^second$", "-t",
@@ -624,9 +631,9 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   EXPECT_NE(tracked_tag.output.find("refs/tags/release"), std::string::npos);
   EXPECT_EQ(invoke({"push", "-t", "release"}).code, 0);
   EXPECT_EQ(invoke({"push", "-b", "topic", "--option", "ci=1"}).code, 2);
-  ASSERT_EQ(invoke({"bookmark", "create", "gone"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "gone"}).code, 0);
   ASSERT_EQ(invoke({"push", "-b", "gone"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "delete", "gone"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "delete", "gone"}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "gone-tag"}).code, 0);
   ASSERT_EQ(invoke({"push", "-t", "gone-tag"}).code, 0);
   ASSERT_TRUE(has_ref("refs/gg/remotes/origin/tags/gone-tag"));
@@ -634,7 +641,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   ASSERT_EQ(invoke({"push", "--deleted"}).code, 0);
   EXPECT_FALSE(has_ref("refs/remotes/origin/gone"));
   EXPECT_FALSE(has_ref("refs/gg/remotes/origin/tags/gone-tag"));
-  EXPECT_FALSE(has_ref("refs/gg/tracking/bookmarks/origin/gone"));
+  EXPECT_FALSE(has_ref("refs/gg/tracking/branches/origin/gone"));
   EXPECT_FALSE(has_ref("refs/gg/tracking/tags/origin/gone-tag"));
   EXPECT_NE(invoke({"push", "--deleted"}).output.find("No refs to push."),
             std::string::npos);
@@ -660,7 +667,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
   git_repository_free(bare_check);
 
   ASSERT_EQ(invoke({"new", "-m", ""}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "empty"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "empty"}).code, 0);
   EXPECT_EQ(invoke({"push", "-b", "empty"}).code, 2);
   ASSERT_EQ(invoke({"push", "--all", "--allow-empty-description"}).code, 0);
   ASSERT_EQ(git_repository_open(&bare_check, remote_path.string().c_str()), 0);
@@ -701,7 +708,7 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBookmarks) {
                     .ref_target("refs/gg/remotes/upstream/tags/release")
                     .has_value());
     EXPECT_TRUE(cloned_repo
-                    .ref_target("refs/gg/tracking/bookmarks/upstream/topic")
+                    .ref_target("refs/gg/tracking/branches/upstream/topic")
                     .has_value());
     EXPECT_TRUE(cloned_repo
                     .ref_target("refs/gg/tracking/tags/upstream/release")
@@ -797,12 +804,12 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
     git_remote_free(remote);
   }
 
-  ASSERT_EQ(invoke({"new", "-m", "publish", "main"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "one", "two"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "publish", main_id()}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "one", "two"}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "release", "stable"}).code, 0);
   const git_oid target = ref("refs/heads/one");
   ASSERT_EQ(invoke({"new", "-m", "later"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "set", "two", "-r", "@"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "set", "two", "-r", "@"}).code, 0);
   const git_oid later = ref("refs/heads/two");
   for (const std::string_view remote : {"origin", "backup"}) {
     ASSERT_EQ(
@@ -885,7 +892,7 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
 
   ASSERT_EQ(invoke({"fetch", "--remote", "origin", "-b", "one"}).code, 0);
   EXPECT_TRUE(has_ref("refs/remotes/origin/one"));
-  EXPECT_TRUE(has_ref("refs/gg/tracking/bookmarks/origin/one"));
+  EXPECT_TRUE(has_ref("refs/gg/tracking/branches/origin/one"));
   EXPECT_FALSE(has_ref("refs/remotes/origin/two"));
   EXPECT_FALSE(has_ref("refs/tags/release"));
   remove_ref("refs/remotes/origin/one");
@@ -897,7 +904,7 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   remove_ref("refs/remotes/origin/two");
 
   ASSERT_EQ(invoke({"fetch", "--remote", "origin", "--remote", "backup",
-                    "--bookmark", "one"})
+                    "--branch", "one"})
                 .code,
             0);
   EXPECT_TRUE(has_ref("refs/remotes/origin/one"));
@@ -956,7 +963,7 @@ TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   ASSERT_EQ(invoke({"fetch", "--tracked", "--remote", "backup"}).code, 0);
   EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/release"));
   EXPECT_FALSE(has_ref("refs/gg/remotes/backup/tags/stable"));
-  ASSERT_EQ(invoke({"bookmark", "untrack", "one@backup"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "untrack", "one@backup"}).code, 0);
   remove_ref("refs/remotes/backup/one");
   const Result no_tracked = invoke({"fetch", "--tracked", "--remote", "backup"});
   EXPECT_NE(no_tracked.output.find("No tracked refs to fetch"),

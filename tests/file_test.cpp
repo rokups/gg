@@ -25,7 +25,7 @@ TEST(FileSize, ParsesJujutsuCompatibleValues) {
 }
 
 TEST_F(RepositoryTest, LimitsAutomaticTrackingOfNewFiles) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("exact.bin", std::string(1024 * 1024, 'x'));
   write("oversized.bin", std::string(1024 * 1024 + 1, 'x'));
   write("tracked.txt", std::string(1024 * 1024 + 1, 'x'));
@@ -50,7 +50,7 @@ TEST_F(RepositoryTest, LimitsAutomaticTrackingOfNewFiles) {
 }
 
 TEST_F(RepositoryTest, ReReadsScopedAutomaticTrackingLimit) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"config", "set", "--repo",
                     "snapshot.max-new-file-size", "1"})
                 .code,
@@ -77,7 +77,7 @@ TEST_F(RepositoryTest, ReReadsScopedAutomaticTrackingLimit) {
 }
 
 TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("tracked.txt", "working\n");
   write("nested/empty.txt", "");
   write("nested/tool.txt", "alpha\nbeta alpha\nfinal");
@@ -85,6 +85,7 @@ TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
   std::filesystem::permissions(
       path_ / "nested/tool.txt", std::filesystem::perms::owner_exec,
       std::filesystem::perm_options::add);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   const std::string all =
       "nested/empty.txt\nnested/link\nnested/tool.txt\ntracked.txt\n";
@@ -119,10 +120,11 @@ TEST_F(RepositoryTest, ListsAndShowsFilesFromRevisionTrees) {
 }
 
 TEST_F(RepositoryTest, SearchesRevisionFileContents) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("nested/tool.txt", "alpha\nbeta alpha\nfinal");
   write("nested/empty.txt", "");
   std::filesystem::create_symlink("tool.txt", path_ / "nested/link");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   EXPECT_EQ(invoke({"file", "search", "-p", "alpha"}).output,
             "nested/tool.txt:alpha\nnested/tool.txt:beta alpha\n");
@@ -150,9 +152,9 @@ TEST_F(RepositoryTest, SearchesRevisionFileContents) {
 }
 
 TEST_F(RepositoryTest, ChangesExecutableBitsAndRestacksDescendants) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("tool.sh", "#!/bin/sh\n");
-  ASSERT_EQ(invoke({"file", "list"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid side = raw_commit("side");
   set_ref("refs/heads/side", side);
 
@@ -185,39 +187,44 @@ TEST_F(RepositoryTest, ChangesExecutableBitsAndRestacksDescendants) {
   EXPECT_EQ(invoke({"file", "chmod", "x", "missing"}).code, 2);
 
   std::filesystem::create_symlink("tool.sh", path_ / "link");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"file", "chmod", "x", "link"}).code, 2);
 }
 
 TEST_F(RepositoryTest, PersistsFileTrackingOverrides) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("nested/one.txt", "one\n");
   write("nested/two.txt", "two\n");
   write("nest", "prefix\n");
   write("abc", "different\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   EXPECT_EQ(invoke({"file", "untrack", "nested"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"file", "list", "nested"}).output, "");
 
   EXPECT_EQ(invoke({"file", "track", "nest"}).code, 0);
   EXPECT_EQ(invoke({"file", "track", "abc"}).code, 0);
   EXPECT_TRUE(std::filesystem::exists(path_ / "nested/one.txt"));
   write("nested/one.txt", "changed\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"file", "list", "nested"}).output, "");
 
   EXPECT_EQ(invoke({"file", "track", "nested/one.txt"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"file", "list", "nested"}).output,
             "nested/one.txt\n");
   EXPECT_EQ(invoke({"file", "track", "nested"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"file", "list", "nested"}).output,
             "nested/one.txt\nnested/two.txt\n");
 
   EXPECT_EQ(invoke({"file", "untrack", "."}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"file", "list"}).output, "");
   const Result root_track = invoke({"file", "track", "."});
   EXPECT_EQ(root_track.code, 0) << root_track.error;
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_NE(invoke({"file", "list"}).output.find("tracked.txt"),
             std::string::npos);
 
@@ -230,9 +237,11 @@ TEST_F(RepositoryTest, PersistsFileTrackingOverrides) {
   EXPECT_EQ(invoke({"file", "track", "--include-ignored", "ignored.txt"})
                 .code,
             0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_NE(invoke({"file", "list"}).output.find("ignored.txt"),
             std::string::npos);
   EXPECT_EQ(invoke({"file", "untrack", "ignored.txt"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"file", "list"}).output.find("ignored.txt"),
             std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(path_ / "ignored.txt"));
@@ -260,8 +269,8 @@ TEST_F(RepositoryTest, ValidatesFileCommandArguments) {
   EXPECT_EQ(invoke({"file", "chmod", "x"}).code, 2);
   EXPECT_EQ(invoke({"file", "chmod", "x", "-r", "main", "tracked.txt"})
                 .code,
-            2);
-  EXPECT_EQ(invoke({"file", "track", "tracked.txt"}).code, 2);
+            0);
+  EXPECT_EQ(invoke({"file", "track", "tracked.txt"}).code, 0);
   EXPECT_EQ(invoke({"file", "track"}).code, 2);
   EXPECT_EQ(invoke({"file", "untrack"}).code, 2);
   EXPECT_EQ(invoke({"file", "list", "extra", "-r", "missing"}).code, 2);

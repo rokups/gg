@@ -228,6 +228,7 @@ if(GG_BUILD_TESTS)
     tests/remote_test.cpp
     tests/tag_test.cpp
     tests/internals_test.cpp
+    tests/branch_workflow_test.cpp
   )
   target_include_directories(gg_tests PRIVATE src)
   target_link_libraries(gg_tests PRIVATE gg_cli_lib GTest::gtest_main)

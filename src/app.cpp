@@ -74,8 +74,8 @@ bool has_primary_output(const Command& command) {
                          repository_value.action == FileAction::show ||
                          repository_value.action == FileAction::search;
                 } else if constexpr (std::is_same_v<RepositoryValue,
-                                                    BookmarkCommand>) {
-                  return repository_value.action == BookmarkAction::list;
+                                                    BranchCommand>) {
+                  return repository_value.action == BranchAction::list;
                 } else if constexpr (std::is_same_v<RepositoryValue,
                                                     TagCommand>) {
                   return repository_value.action == TagAction::list;
@@ -116,8 +116,8 @@ bool reads_revisions(const Command& command) {
           return value.action == FileAction::list ||
                  value.action == FileAction::show ||
                  value.action == FileAction::search;
-        } else if constexpr (std::is_same_v<Value, BookmarkCommand>) {
-          return value.action == BookmarkAction::list;
+        } else if constexpr (std::is_same_v<Value, BranchCommand>) {
+          return value.action == BranchAction::list;
         } else if constexpr (std::is_same_v<Value, TagCommand>) {
           return value.action == TagAction::list;
         } else {
@@ -185,8 +185,8 @@ int execute(Repository& repository,
             [&](const ShowCommand& value) {
               command_show(repository, value, output);
             },
-            [&](const BookmarkCommand& value) {
-              command_bookmark(repository, value, output);
+            [&](const BranchCommand& value) {
+              command_branch(repository, value, output);
             },
             [&](const TagCommand& value) {
               command_tag(repository, value, output);
@@ -210,9 +210,6 @@ int execute(Repository& repository,
             },
             [&](const UtilOptimizeCommand&) {
               command_util_optimize(repository, output);
-            },
-            [&](const UtilSnapshotCommand&) {
-              command_util_snapshot(repository, output);
             },
             [&](const UtilInstallGitHooksCommand&) {
               command_util_install_git_hooks(repository, output);
@@ -291,7 +288,7 @@ int dispatch(std::span<const std::string_view> arguments,
     Repository repository(invocation.repository,
                           invocation.ignore_working_copy);
     repository.enable_ref_cache();
-    repository.sync_for_command();
+    repository.prepare_command();
     return 0;
   }
   if (const auto* util_exec =

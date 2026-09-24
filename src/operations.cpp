@@ -103,6 +103,10 @@ OperationState parse_operation_state(std::string_view text,
     git_oid target{};
     check(git_oid_fromstr(&target, oid_text.c_str(), oid_type),
           "parse operation reference");
+    if (starts_with(name, kLegacyBranchTrackingPrefix)) {
+      name = std::string(kBranchTrackingPrefix) +
+             name.substr(kLegacyBranchTrackingPrefix.size());
+    }
     state.refs.emplace(name, target);
   }
   std::erase_if(state.refs, [](const auto& item) {
@@ -537,8 +541,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
   const HeadState previous_head = target.head;
   std::optional<git_oid> previous_checkout = workspace();
   if (!previous_checkout.has_value()) previous_checkout = head_oid();
-  if (restore_repository && rollback_on_failure &&
-      !synchronizes_commands()) {
+  if (restore_repository && rollback_on_failure) {
     const git_oid baseline_tree = previous_checkout.has_value()
                                       ? *git_commit_tree_id(commit(*previous_checkout).get())
                                       : empty_tree();
@@ -612,7 +615,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
     }
     const bool remote = starts_with(iterator->first, "refs/remotes/") ||
                         starts_with(iterator->first, kRemoteTagPrefix) ||
-                        starts_with(iterator->first, kBookmarkTrackingPrefix) ||
+                        starts_with(iterator->first, kBranchTrackingPrefix) ||
                         starts_with(iterator->first, kTagTrackingPrefix);
     if ((remote && restore_remote_tracking) ||
         (!remote && restore_repository)) {
@@ -628,7 +631,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
     }
     const bool remote = starts_with(name, "refs/remotes/") ||
                         starts_with(name, kRemoteTagPrefix) ||
-                        starts_with(name, kBookmarkTrackingPrefix) ||
+                        starts_with(name, kBranchTrackingPrefix) ||
                         starts_with(name, kTagTrackingPrefix);
     if ((remote && restore_remote_tracking) ||
         (!remote && restore_repository)) {

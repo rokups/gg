@@ -20,13 +20,14 @@ TEST_F(RepositoryTest, StartsFromGitHeadWithoutAnExplicitParent) {
 }
 
 TEST_F(RepositoryTest, CreatesChangesWithoutEditingThem) {
-  const Result detached = invoke({"new", "--no-edit", "-m", "detached", "main"});
+  const Result detached = invoke({"new", "--no-edit", "-m", "detached", main_id()});
   ASSERT_EQ(detached.code, 0) << detached.error;
   EXPECT_NE(detached.output.find("Created change: "), std::string::npos);
-  EXPECT_NE(invoke({"workspace", "list"}).output.find("(unmanaged)"),
-            std::string::npos);
+  const git_oid main = ref("refs/heads/main");
+  const git_oid still_main = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&main, &still_main), 0);
 
-  ASSERT_EQ(invoke({"new", "-m", "current", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "current", main_id()}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "--no-edit", "-m", "side"}).code, 0);
   const git_oid unchanged = ref("refs/gg/workspaces/default");
@@ -45,11 +46,11 @@ TEST_F(RepositoryTest, CreatesChangesWithoutEditingThem) {
 }
 
 TEST_F(RepositoryTest, InsertsNewChangesBeforeAndAfterRevisions) {
-  const Result first = invoke({"new", "-m", "first", "main"});
+  const Result first = invoke({"new", "-m", "first", main_id()});
   ASSERT_EQ(first.code, 0) << first.error;
   const std::string first_id = token_after(first.output, "Working copy now at: ");
   ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "child"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "child"}).code, 0);
 
   const Result after =
       invoke({"new", "-m", "after", "--after", first_id});
@@ -70,7 +71,7 @@ TEST_F(RepositoryTest, InsertsNewChangesBeforeAndAfterRevisions) {
   const git_oid current = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&current, &after_oid), 0);
 
-  EXPECT_EQ(invoke({"new", "main", "--insert-after", "main"}).code, 2);
+  EXPECT_EQ(invoke({"new", "main", "--insert-after", main_id()}).code, 2);
   const Result combined =
       invoke({"new", "-m", "combined", "--after", "main", "--before",
               "child", "--no-edit"});
@@ -127,7 +128,7 @@ TEST_F(RepositoryTest, InsertsNewChangesBeforeAndAfterRevisions) {
 TEST_F(RepositoryTest, PreservesTheOriginalIdThroughAnInitialInsertion) {
   const git_oid original_main = ref("refs/heads/main");
   const Result inserted =
-      invoke({"new", "-m", "inserted", "--insert-before", "main"});
+      invoke({"new", "-m", "inserted", "--insert-before", main_id()});
   ASSERT_EQ(inserted.code, 0) << inserted.error;
   detail::Repository repo(path_);
   const git_oid rewritten_main = ref("refs/heads/main");
@@ -148,7 +149,7 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
   EXPECT_EQ(invoke({"workspace", "add", unused.string()}).code, 2);
   std::filesystem::remove(unused);
 
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   EXPECT_EQ(invoke({"workspace", "add", unused.string(), "--name",
                     "default"})
                 .code,
@@ -182,7 +183,7 @@ TEST_F(RepositoryTest, ListsTheDefaultWorkspaceAndItsRoot) {
 }
 
 TEST_F(RepositoryTest, CreatesAnEmptySparseWorkspace) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   const auto destination = path_.parent_path() /
                            (path_.filename().string() + "-empty-workspace");
   std::filesystem::remove_all(destination);
@@ -236,7 +237,7 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
   EXPECT_EQ(invoke({"workspace", "forget"}).output,
             "No such workspace: default\nNothing changed.\n");
 
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   const git_oid original = ref(detail::kWorkspaceRef);
   set_ref("refs/gg/workspaces/taken", original);
   EXPECT_EQ(invoke({"workspace", "rename", "taken"}).code, 2);
@@ -323,12 +324,16 @@ TEST_F(RepositoryTest, RenamesAndForgetsTheCurrentWorkspace) {
 TEST_F(RepositoryTest, RenamesAndSafelyRemovesAnotherWorkspace) {
   const std::filesystem::path linked = path_.string() + "-remove-workspace";
   std::filesystem::remove_all(linked);
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "side"})
                 .code,
             0);
 
   std::ofstream(linked / "tracked.txt") << "preserved\n";
+  const Result unsafe = invoke({"workspace", "remove", "side"});
+  EXPECT_EQ(unsafe.code, 2);
+  EXPECT_NE(unsafe.error.find("would be lost"), std::string::npos);
+  ASSERT_EQ(invoke_at(linked, {"commit", "-m", "preserved"}).code, 0);
   ASSERT_EQ(invoke({"workspace", "rename", "renamed", "--workspace", "side"})
                 .code,
             0);
@@ -346,7 +351,7 @@ TEST_F(RepositoryTest, RenamesAndSafelyRemovesAnotherWorkspace) {
 TEST_F(RepositoryTest, RefusesUnsafeAndLiveWorkspaceRemoval) {
   const std::filesystem::path linked = path_.string() + "-unsafe-workspace";
   std::filesystem::remove_all(linked);
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "unsafe"})
                 .code,
             0);
@@ -365,7 +370,7 @@ TEST_F(RepositoryTest, RefusesUnsafeAndLiveWorkspaceRemoval) {
 TEST_F(RepositoryTest, RemovesStaleWorkspaceAdministrationAndMetadata) {
   const std::filesystem::path linked = path_.string() + "-stale-workspace";
   std::filesystem::remove_all(linked);
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "stale"})
                 .code,
             0);
@@ -389,7 +394,7 @@ TEST_F(RepositoryTest, ListsAndResetsFullWorkingCopyPatterns) {
   EXPECT_EQ(invoke({"sparse", "list"}).code, 2);
   EXPECT_EQ(invoke({"sparse", "reset"}).code, 2);
 
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   EXPECT_EQ(invoke({"sparse", "list"}).output, ".\n");
   EXPECT_EQ(invoke({"sparse", "reset"}).output, "");
   EXPECT_EQ(invoke({"--at-op", "@", "sparse", "list"}).output, ".\n");
@@ -397,7 +402,7 @@ TEST_F(RepositoryTest, ListsAndResetsFullWorkingCopyPatterns) {
 }
 
 TEST_F(RepositoryTest, ReportsRenamedFiles) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   std::filesystem::rename(path_ / "tracked.txt", path_ / "renamed.txt");
   const Result status = invoke({"status"});
   ASSERT_EQ(status.code, 0) << status.error;
@@ -405,7 +410,7 @@ TEST_F(RepositoryTest, ReportsRenamedFiles) {
 }
 
 TEST_F(RepositoryTest, FiltersStatusPaths) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("directory/selected.txt", "selected\n");
   write("other.txt", "other\n");
   const Result selected = invoke({"status", "directory"});
@@ -428,7 +433,7 @@ TEST_F(RepositoryTest, FiltersStatusPaths) {
 }
 
 TEST_F(RepositoryTest, CreatesSnapshotsAndLogsChanges) {
-  const Result created = invoke({"new", "-m", "first", "main"});
+  const Result created = invoke({"new", "-m", "first", main_id()});
   ASSERT_EQ(created.code, 0) << created.error;
   write("tracked.txt", "first\n");
   const Result status = invoke({"status"});
@@ -443,15 +448,15 @@ TEST_F(RepositoryTest, CreatesSnapshotsAndLogsChanges) {
 }
 
 TEST_F(RepositoryTest, FiltersAndFormatsRevisionLogs) {
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "first", main_id()}).code, 0);
   write("tracked.txt", "first\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result second = invoke({"new", "-m", "second"});
   ASSERT_EQ(second.code, 0) << second.error;
   const std::string second_id =
       token_after(second.output, "Working copy now at: ");
   write("second.txt", "second\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "release", "-r", second_id}).code, 0);
   git_oid blob{};
@@ -533,7 +538,8 @@ TEST_F(RepositoryTest, HighlightsPrefixesWithinTheDisplayedLog) {
   const Result single = invoke(
       {"--color", "debug", "log", "-r", "first", "--no-graph"});
   ASSERT_EQ(single.code, 0) << single.error;
-  EXPECT_NE(single.output.find("<<commit_id shortest prefix::" +
+  // first is @, so its ID also carries the working-copy style.
+  EXPECT_NE(single.output.find("shortest prefix::" +
                                first_commit.substr(0, 1) + ">>"),
             std::string::npos);
 
@@ -543,77 +549,57 @@ TEST_F(RepositoryTest, HighlightsPrefixesWithinTheDisplayedLog) {
   std::size_t common = 0;
   const std::string second_commit = detail::oid_string(second);
   while (first_commit[common] == second_commit[common]) ++common;
-  EXPECT_NE(both.output.find("<<commit_id shortest prefix::" +
+  EXPECT_NE(both.output.find("shortest prefix::" +
                              first_commit.substr(0, common + 1) + ">>"),
             std::string::npos);
 }
 
-TEST_F(RepositoryTest, ExplicitlySnapshotsTheWorkingCopy) {
-  EXPECT_EQ(invoke({"util", "snapshot"}).output, "Nothing changed.\n");
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
-  write("tracked.txt", "snapshot\n");
-  EXPECT_EQ(invoke({"util", "snapshot"}).output,
-            "Created working-copy snapshot.\n");
-  EXPECT_EQ(invoke({"util", "snapshot"}).output, "Nothing changed.\n");
-  EXPECT_NE(invoke({"status"}).output.find("M tracked.txt"), std::string::npos);
-}
-
 TEST_F(RepositoryTest, NavigatesRevisionStacks) {
-  const Result first_result = invoke({"new", "-m", "first", "main"});
+  const Result first_result = invoke({"new", "-m", "first", main_id()});
   ASSERT_EQ(first_result.code, 0) << first_result.error;
+  const git_oid first = ref("refs/gg/workspaces/default");
   const Result second_result = invoke({"new", "-m", "second"});
   ASSERT_EQ(second_result.code, 0) << second_result.error;
   const git_oid second = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
   const git_oid third = ref("refs/gg/workspaces/default");
 
+  // Navigation checks revisions out; it never creates changes.
   ASSERT_EQ(invoke({"prev"}).code, 0);
   git_oid workspace = ref("refs/gg/workspaces/default");
-  git_oid parent = commit_parent(workspace);
-  EXPECT_NE(git_oid_equal(&parent, &second), 0);
+  EXPECT_NE(git_oid_equal(&workspace, &second), 0);
+  expect_workspace_coherent();
 
   ASSERT_EQ(invoke({"next"}).code, 0);
   workspace = ref("refs/gg/workspaces/default");
-  parent = commit_parent(workspace);
-  EXPECT_NE(git_oid_equal(&parent, &third), 0);
-  EXPECT_EQ(invoke({"next", "--conflict"}).code, 2);
-}
-
-TEST_F(RepositoryTest, EditsAndValidatesNavigationTargets) {
-  const Result first_result = invoke({"new", "-m", "first", "main"});
-  ASSERT_EQ(first_result.code, 0) << first_result.error;
-  const std::string first_id =
-      token_after(first_result.output, "Working copy now at: ");
-  const git_oid first = ref("refs/gg/workspaces/default");
-  ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
-  const git_oid second = ref("refs/gg/workspaces/default");
-  ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
-  const git_oid third = ref("refs/gg/workspaces/default");
-
-  ASSERT_EQ(invoke({"prev", "--edit"}).code, 0);
-  git_oid workspace = ref("refs/gg/workspaces/default");
-  EXPECT_NE(git_oid_equal(&workspace, &second), 0);
-  ASSERT_EQ(invoke({"next", "--edit"}).code, 0);
-  workspace = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&workspace, &third), 0);
-  ASSERT_EQ(invoke({"prev", "--edit", "2"}).code, 0);
+  ASSERT_EQ(invoke({"prev", "2"}).code, 0);
   workspace = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&workspace, &first), 0);
-  EXPECT_EQ(invoke({"prev"}).code, 0);
+  EXPECT_EQ(invoke({"next", "--conflict"}).code, 2);
+  EXPECT_EQ(invoke({"prev", "99"}).code, 2);
 
+  const std::string first_id = detail::oid_string(first);
   ASSERT_EQ(invoke({"new", "-m", "side", first_id}).code, 0);
   ASSERT_EQ(invoke({"edit", first_id}).code, 0);
-  EXPECT_EQ(invoke({"next", "--edit"}).code, 2);
-  EXPECT_EQ(invoke({"prev", "--edit", "99"}).code, 2);
+  const Result ambiguous = invoke({"next"});
+  EXPECT_EQ(ambiguous.code, 2);
+  EXPECT_NE(ambiguous.error.find("ambiguous"), std::string::npos);
+
+  write("tracked.txt", "dirty\n");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  write("tracked.txt", "dirtier\n");
+  EXPECT_EQ(invoke({"prev"}).code, 2);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "dirtier\n");
 }
 
 TEST_F(RepositoryTest, NavigationTracksExternalCommitsByObjectId) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
   const git_oid child = raw_commit("raw child", {workspace});
   set_ref("refs/heads/raw-child", child);
 
-  const Result moved = invoke({"next", "--edit"});
+  const Result moved = invoke({"next"});
   ASSERT_EQ(moved.code, 0) << moved.error;
   const git_oid actual = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&actual, &child), 0);
@@ -624,31 +610,8 @@ TEST_F(RepositoryTest, NavigationTracksExternalCommitsByObjectId) {
   ASSERT_EQ(edited.code, 0) << edited.error;
 }
 
-TEST_F(RepositoryTest, NavigationCreatesChangesUnlessEditIsRequested) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
-  const git_oid workspace = ref("refs/gg/workspaces/default");
-  const git_oid child = raw_commit("configured child", {workspace});
-  set_ref("refs/heads/configured-child", child);
-  ASSERT_EQ(invoke({"next"}).code, 0);
-  git_oid actual = ref("refs/gg/workspaces/default");
-  EXPECT_EQ(git_oid_equal(&actual, &child), 0);
-  detail::Repository repo(path_);
-  const std::vector<git_oid> parents = repo.parents(actual);
-  ASSERT_EQ(parents.size(), 1U);
-  EXPECT_NE(git_oid_equal(&parents.front(), &child), 0);
-
-  ASSERT_EQ(invoke({"prev"}).code, 0);
-  const git_oid no_edit = ref("refs/gg/workspaces/default");
-  EXPECT_TRUE(repo.commit_aliases(no_edit).empty());
-  const std::vector<git_oid> no_edit_parents = repo.parents(no_edit);
-  ASSERT_EQ(no_edit_parents.size(), 1U);
-  EXPECT_NE(git_oid_equal(&no_edit_parents.front(), &child), 0);
-
-  EXPECT_EQ(invoke({"prev", "--edit"}).code, 0);
-}
-
 TEST_F(RepositoryTest, CanIgnoreWorkingCopySynchronization) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("tracked.txt", "unsnapshotted\n");
   const Result stale = invoke({"--ignore-working-copy", "status"});
   ASSERT_EQ(stale.code, 0) << stale.error;
@@ -660,26 +623,26 @@ TEST_F(RepositoryTest, CanIgnoreWorkingCopySynchronization) {
   EXPECT_EQ(file(), "unsnapshotted\n");
 }
 
-TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
-  const Result first = invoke({"new", "-m", "first", "main"});
+TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBranches) {
+  const Result first = invoke({"new", "-m", "first", main_id()});
   ASSERT_EQ(first.code, 0) << first.error;
   const std::string first_id = token_after(first.output, "Working copy now at: ");
   write("tracked.txt", "first\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid first_before = ref("refs/gg/workspaces/default");
 
   const Result second = invoke({"new", "-m", "second"});
   ASSERT_EQ(second.code, 0) << second.error;
   const std::string second_id = token_after(second.output, "Working copy now at: ");
   write("second.txt", "second\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "feature"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "feature"}).code, 0);
   const git_oid second_before = ref("refs/heads/feature");
 
   ASSERT_EQ(invoke({"edit", "-r", first_id}).code, 0);
   ASSERT_EQ(invoke({"describe", "-m", "first rewritten"}).code, 0);
   write("tracked.txt", "first rewritten\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   const git_oid first_after = ref("refs/gg/workspaces/default");
   EXPECT_FALSE(git_oid_equal(&first_before, &first_after) != 0);
@@ -692,7 +655,7 @@ TEST_F(RepositoryTest, EditsDescriptionsAndRestacksDescendantsAndBookmarks) {
 }
 
 TEST_F(RepositoryTest, DescribesFromMessagesStdinAndEditors) {
-  ASSERT_EQ(invoke({"new", "-m", "original", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "original", main_id()}).code, 0);
   EXPECT_EQ(invoke({"describe", "-m", ""}).code, 0);
   EXPECT_NE(invoke({"show", "--no-patch"}).output.find(
                 "Description: (no description set)"),
@@ -758,36 +721,36 @@ TEST_F(RepositoryTest, DescribesExternalHistoryWithoutAWorkspace) {
 }
 
 TEST_F(RepositoryTest, SplitsAndSquashesPathChanges) {
-  const Result created = invoke({"new", "-m", "both", "main"});
+  const Result created = invoke({"new", "-m", "both", main_id()});
   ASSERT_EQ(created.code, 0) << created.error;
   write("first.txt", "first\n");
   write("second.txt", "second\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   const Result split = invoke({"split", "-m", "selected", "first.txt"});
   ASSERT_EQ(split.code, 0) << split.error;
   EXPECT_NE(split.output.find("Selected change"), std::string::npos);
-  const Result status = invoke({"status"});
+  const Result status = invoke({"diff", "-r", "@", "--summary"});
   EXPECT_NE(status.output.find("A second.txt"), std::string::npos) << status.output;
   EXPECT_EQ(status.output.find("A first.txt"), std::string::npos) << status.output;
 
-  const Result squash = invoke({"squash"});
+  const Result squash = invoke({"squash", "-r", "@"});
   ASSERT_EQ(squash.code, 0) << squash.error;
   EXPECT_NE(squash.output.find("Squashed into"), std::string::npos);
   EXPECT_NE(invoke({"status"}).output.find("no changes"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, AbandonsChangesAndUndoRestoresOperations) {
-  const Result first = invoke({"new", "-m", "first", "main"});
+  const Result first = invoke({"new", "-m", "first", main_id()});
   ASSERT_EQ(first.code, 0) << first.error;
   const std::string first_id = token_after(first.output, "Working copy now at: ");
   write("first.txt", "first\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result second = invoke({"new", "-m", "second"});
   ASSERT_EQ(second.code, 0) << second.error;
   write("second.txt", "second\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "topic"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "topic"}).code, 0);
   const git_oid topic_before = ref("refs/heads/topic");
 
   const Result abandoned = invoke({"abandon", first_id});
@@ -796,7 +759,7 @@ TEST_F(RepositoryTest, AbandonsChangesAndUndoRestoresOperations) {
   EXPECT_FALSE(git_oid_equal(&topic_before, &topic_after) != 0);
   EXPECT_EQ(invoke({"log"}).output.find("first"), std::string::npos);
 
-  ASSERT_EQ(invoke({"bookmark", "delete", "topic"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "delete", "topic"}).code, 0);
   EXPECT_FALSE(has_ref("refs/heads/topic"));
   ASSERT_EQ(invoke({"undo"}).code, 0);
   EXPECT_TRUE(has_ref("refs/heads/topic"));
@@ -804,7 +767,7 @@ TEST_F(RepositoryTest, AbandonsChangesAndUndoRestoresOperations) {
 
 TEST_F(RepositoryTest, SupportsEditorStyleUndoAndRedo) {
   constexpr std::string_view workspace = "refs/gg/workspaces/default";
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "first", main_id()}).code, 0);
   const git_oid first = ref(workspace);
   ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
   const git_oid second = ref(workspace);
@@ -813,7 +776,10 @@ TEST_F(RepositoryTest, SupportsEditorStyleUndoAndRedo) {
   git_oid actual = ref(workspace);
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
   ASSERT_EQ(invoke({"undo"}).code, 0);
-  EXPECT_FALSE(has_ref(workspace));
+  // The initial operation has @ on main.
+  actual = ref(workspace);
+  const git_oid main = ref("refs/heads/main");
+  EXPECT_NE(git_oid_equal(&actual, &main), 0);
   ASSERT_EQ(invoke({"redo"}).code, 0);
   actual = ref(workspace);
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
@@ -829,16 +795,16 @@ TEST_F(RepositoryTest, SupportsEditorStyleUndoAndRedo) {
   EXPECT_NE(git_oid_equal(&actual, &second), 0);
 
   ASSERT_EQ(invoke({"undo"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "after-undo"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "after-undo"}).code, 0);
   EXPECT_EQ(invoke({"redo"}).code, 2);
 }
 
 TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "moving"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "first", main_id()}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "moving"}).code, 0);
   ASSERT_EQ(invoke({"new", "-m", "second"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "set", "moving", "-r", "@"}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "delete", "moving"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "set", "moving", "-r", "@"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "delete", "moving"}).code, 0);
   ASSERT_EQ(invoke({"undo"}).code, 0);
   ASSERT_EQ(invoke({"redo"}).code, 0);
 
@@ -917,13 +883,13 @@ TEST_F(RepositoryTest, ShowsTheOperationLogAndAlias) {
 }
 
 TEST_F(RepositoryTest, ShowsChangedRevisionPatchesInOperationLogs) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   write("tracked.txt", "first\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid first = ref("refs/gg/workspaces/default");
   const std::string first_oid = git_oid_tostr_s(&first);
   write("tracked.txt", "second\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   const std::vector<std::string> prefix{
       "operation", "log", "--limit", "1", "--no-graph"};
@@ -976,13 +942,13 @@ TEST_F(RepositoryTest, ShowsChangedRevisionPatchesInOperationLogs) {
 }
 
 TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "first", main_id()}).code, 0);
   const git_oid first = ref("refs/gg/workspaces/default");
   set_ref("refs/remotes/origin/main", first);
   set_ref("refs/gg/remotes/origin/tags/v1", first);
-  set_ref("refs/gg/tracking/bookmarks/origin/main", first);
+  set_ref("refs/gg/tracking/branches/origin/main", first);
   set_ref("refs/gg/tracking/tags/origin/v1", first);
-  ASSERT_EQ(invoke({"bookmark", "create", "keep"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "keep"}).code, 0);
   const git_oid target_operation = ref("refs/gg/operations/current");
   const std::string target =
       std::string(git_oid_tostr_s(&target_operation)).substr(0, 8);
@@ -991,9 +957,9 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   const git_oid second = ref("refs/gg/workspaces/default");
   set_ref("refs/remotes/origin/main", second);
   set_ref("refs/gg/remotes/origin/tags/v1", second);
-  set_ref("refs/gg/tracking/bookmarks/origin/main", second);
+  set_ref("refs/gg/tracking/branches/origin/main", second);
   set_ref("refs/gg/tracking/tags/origin/v1", second);
-  ASSERT_EQ(invoke({"bookmark", "delete", "keep"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "delete", "keep"}).code, 0);
 
   Result restored = invoke({"operation", "restore", "--what", "repo", target});
   ASSERT_EQ(restored.code, 0) << restored.error;
@@ -1005,7 +971,7 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   EXPECT_NE(git_oid_equal(&actual, &second), 0);
   actual = ref("refs/gg/remotes/origin/tags/v1");
   EXPECT_NE(git_oid_equal(&actual, &second), 0);
-  actual = ref("refs/gg/tracking/bookmarks/origin/main");
+  actual = ref("refs/gg/tracking/branches/origin/main");
   EXPECT_NE(git_oid_equal(&actual, &second), 0);
 
   restored = invoke(
@@ -1015,7 +981,7 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
   actual = ref("refs/gg/remotes/origin/tags/v1");
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
-  actual = ref("refs/gg/tracking/bookmarks/origin/main");
+  actual = ref("refs/gg/tracking/branches/origin/main");
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
   actual = ref("refs/gg/tracking/tags/origin/v1");
   EXPECT_NE(git_oid_equal(&actual, &first), 0);
@@ -1023,7 +989,7 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
   ASSERT_EQ(invoke({"new", "-m", "third"}).code, 0);
   set_ref("refs/remotes/origin/main", second);
   set_ref("refs/gg/remotes/origin/tags/v1", second);
-  set_ref("refs/gg/tracking/bookmarks/origin/main", second);
+  set_ref("refs/gg/tracking/branches/origin/main", second);
   set_ref("refs/gg/tracking/tags/origin/v1", second);
   ASSERT_EQ(invoke({"operation", "restore", target}).code, 0);
   actual = ref("refs/gg/workspaces/default");
@@ -1044,7 +1010,7 @@ TEST_F(RepositoryTest, RestoresAllOrSelectedOperationState) {
 }
 
 TEST_F(RepositoryTest, ReadsRepositoryStateAtHistoricalOperations) {
-  ASSERT_EQ(invoke({"new", "-m", "before", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "before", main_id()}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "historical"}).code, 0);
   detail::Repository repo(path_);
   const git_oid before_revision = repo.resolve("@");
@@ -1109,12 +1075,13 @@ TEST_F(RepositoryTest, ReadsRepositoryStateAtHistoricalOperations) {
 }
 
 TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
-  EXPECT_NE(invoke({"status"}).output.find("No working-copy"), std::string::npos);
   ASSERT_EQ(git_reference_remove(repository_.get(), "refs/heads/main"), 0);
   std::filesystem::remove(path_ / "tracked.txt");
+  EXPECT_NE(invoke({"status"}).output.find("No commits yet"), std::string::npos);
   const Result root = invoke({"new", "-m", "root"});
   ASSERT_EQ(root.code, 0) << root.error;
-  EXPECT_NE(invoke({"status"}).output.find("Root working-copy"),
+  // The first change on an unborn branch gives birth to it.
+  EXPECT_NE(invoke({"status"}).output.find("On branch main"),
             std::string::npos);
   EXPECT_EQ(invoke({"log", "-r", "@-"}).code, 2);
   ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
@@ -1128,6 +1095,7 @@ TEST_F(RepositoryTest, SupportsRootAndMergeWorkingCopyChanges) {
   const Result left_status = invoke({"status"});
   ASSERT_EQ(left_status.code, 0);
   EXPECT_NE(left_status.output.find("A left.txt"), std::string::npos);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const std::string left = current_id();
   ASSERT_EQ(invoke({"new", "-m", "merge", left, grandchild}).code, 0);
   git_commit* merge = nullptr;
@@ -1165,7 +1133,7 @@ TEST_F(RepositoryTest, MergesUnrelatedParents) {
 }
 
 TEST_F(RepositoryTest, ImportsExternalHeadChangesAndResolvesObjectIds) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   const git_oid base = ref("refs/heads/main");
   const git_oid external = raw_commit("external", {base});
   set_ref("refs/heads/main", external);

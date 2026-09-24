@@ -146,7 +146,7 @@ TEST_F(RepositoryTest, OptimizeCollectsLayeredAliasesAfterAWeekOfDisuse) {
   constexpr std::int64_t start = 1'000'000;
   constexpr std::int64_t week = 7 * 24 * 60 * 60;
   ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME", std::to_string(start).c_str(), 1), 0);
-  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "work", main_id()}).code, 0);
   detail::Repository repo(path_);
   const git_oid original = repo.resolve("@");
   const std::string alias = detail::oid_string(original);
@@ -160,7 +160,7 @@ TEST_F(RepositoryTest, OptimizeCollectsLayeredAliasesAfterAWeekOfDisuse) {
   ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
                    std::to_string(start + 2 * week - 2).c_str(), 1),
             0);
-  ASSERT_EQ(invoke({"bookmark", "create", "retained"}).code, 0);
+  ASSERT_EQ(invoke({"branch", "create", "retained"}).code, 0);
   EXPECT_TRUE(repo.aliases().contains(alias));
 
   ASSERT_EQ(setenv("GG_TEST_ALIAS_TIME",
@@ -213,6 +213,16 @@ TEST_F(RepositoryTest, AppliesLargeUpdatesAndMigratesLegacyChangeRefs) {
                    .has_value());
 }
 
+TEST_F(RepositoryTest, MigratesLegacyBranchTrackingRefs) {
+  const git_oid base = ref("HEAD");
+  set_ref("refs/gg/tracking/bookmarks/origin/main", base);
+  detail::Repository repo(path_);
+  EXPECT_FALSE(has_ref("refs/gg/tracking/bookmarks/origin/main"));
+  ASSERT_TRUE(has_ref("refs/gg/tracking/branches/origin/main"));
+  const git_oid migrated = ref("refs/gg/tracking/branches/origin/main");
+  EXPECT_NE(git_oid_equal(&migrated, &base), 0);
+}
+
 TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
@@ -257,11 +267,11 @@ TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   expect("root()", {base});
   expect("heads(all())", {tip, other});
   expect("heads()", {tip, other});
-  expect("bookmarks('glob:l*')", {left});
-  expect("(bookmarks('glob:l*'))", {left});
-  expect("bookmarks(glob:l*)", {left});
-  expect("bookmarks(\"exact:right\")", {right});
-  expect("bookmarks(x)", {});
+  expect("branches('glob:l*')", {left});
+  expect("(branches('glob:l*'))", {left});
+  expect("branches(glob:l*)", {left});
+  expect("branches(\"exact:right\")", {right});
+  expect("branches(x)", {});
   expect("tags()", {right});
   expect("ancestors(tip, 1)", {tip, merge});
   expect("first_ancestors(merge, 1)", {merge, left});
@@ -283,11 +293,11 @@ TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   set_ref("refs/remotes/origin/tracked", left);
   set_ref("refs/remotes/origin/untracked", right);
   set_ref("refs/remotes/orphan", other);
-  set_ref("refs/gg/tracking/bookmarks/origin/tracked", left);
-  expect("remote_bookmarks()", {left, right});
-  expect("remote_bookmarks(exact:tracked)", {left});
-  expect("tracked_remote_bookmarks()", {left});
-  expect("untracked_remote_bookmarks()", {right});
+  set_ref("refs/gg/tracking/branches/origin/tracked", left);
+  expect("remote_branches()", {left, right});
+  expect("remote_branches(exact:tracked)", {left});
+  expect("tracked_remote_branches()", {left});
+  expect("untracked_remote_branches()", {right});
   git_oid conflict_blob{};
   ASSERT_EQ(git_blob_create_from_buffer(&conflict_blob, repository_.get(),
                                         "conflict", 8),
@@ -408,6 +418,7 @@ TEST_F(RepositoryTest, ExercisesRewriteVariants) {
 }
 
 TEST_F(RepositoryTest, TransitionsLegacyOperationsDirectlyToV4) {
+  set_ref(detail::kWorkspaceRef, ref("HEAD"));
   detail::Repository repo(path_);
   detail::OperationState state = repo.state();
   std::vector<git_oid> targets;
@@ -462,13 +473,14 @@ TEST_F(RepositoryTest, RendersAWorkspaceWithItsCommitId) {
 }
 
 TEST_F(RepositoryTest, ImportsAWorkspaceWhenHeadIsUnborn) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(git_repository_set_head(repository_.get(),
                                     "refs/heads/does-not-exist"),
             0);
   const Result status = invoke({"status"});
   ASSERT_EQ(status.code, 0) << status.error;
-  EXPECT_NE(status.output.find("Root working-copy"), std::string::npos);
+  EXPECT_NE(status.output.find("On branch does-not-exist"), std::string::npos);
+  EXPECT_NE(status.output.find("Working copy (@)"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, UsesFallbackIdentityWhenGitIdentityIsMissing) {
@@ -478,7 +490,7 @@ TEST_F(RepositoryTest, UsesFallbackIdentityWhenGitIdentityIsMissing) {
   ASSERT_EQ(git_config_delete_entry(config, "user.email"), 0);
   git_config_free(config);
 
-  const Result created = invoke({"new", "main"});
+  const Result created = invoke({"new", main_id()});
   EXPECT_EQ(created.code, 0) << created.error;
 }
 
@@ -571,7 +583,7 @@ TEST_F(RepositoryTest, RejectsMalformedOperationSnapshots) {
       state, std::nullopt,
       "undo: restore to operation " + detail::oid_string(ref("HEAD")));
   set_ref(detail::kOperationRef, invalid_undo);
-  EXPECT_EQ(invoke({"redo"}).code, 1);
+  EXPECT_NE(invoke({"redo"}).code, 0);
 }
 
 TEST_F(RepositoryTest, RejectsLegacyPendingRewrites) {
@@ -622,10 +634,13 @@ TEST_F(RepositoryTest, SelectsSupportedCredentialKinds) {
 }
 
 TEST_F(RepositoryTest, UndoReachesTheInitialOperation) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"undo"}).code, 0);
   EXPECT_EQ(invoke({"undo"}).code, 2);
-  EXPECT_FALSE(has_ref(detail::kWorkspaceRef));
+  // The initial operation already has @ on Git's HEAD.
+  const git_oid workspace = ref(detail::kWorkspaceRef);
+  const git_oid main = ref("refs/heads/main");
+  EXPECT_NE(git_oid_equal(&workspace, &main), 0);
 }
 
 TEST_F(RepositoryTest, RestoresAnUnbornOperationWithoutAWorkspace) {

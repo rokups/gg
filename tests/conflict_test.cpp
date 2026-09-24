@@ -11,19 +11,19 @@
 namespace gg::test {
 
 TEST_F(RepositoryTest, RecordsAndResolvesConflictsWithoutPausing) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0) << source.error;
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  const Result destination = invoke({"new", "-m", "destination", "main"});
+  const Result destination = invoke({"new", "-m", "destination", main_id()});
   ASSERT_EQ(destination.code, 0) << destination.error;
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   write("tracked.txt", "destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   const Result rebased =
       invoke({"rebase", "-s", source_id, "-d", destination_id});
@@ -55,6 +55,7 @@ TEST_F(RepositoryTest, RecordsAndResolvesConflictsWithoutPausing) {
   EXPECT_NE(invoke({"status"}).output.find("Unresolved conflicts"),
             std::string::npos);
   write("tracked.txt", "resolved\n");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result resolved = invoke({"status"});
   ASSERT_EQ(resolved.code, 0) << resolved.error;
   EXPECT_EQ(resolved.output.find("Unresolved conflicts"), std::string::npos);
@@ -66,19 +67,19 @@ TEST_F(RepositoryTest, RecordsAndResolvesConflictsWithoutPausing) {
 }
 
 TEST_F(RepositoryTest, KeepsConflictsUntilAllMarkersAreRemoved) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  const Result destination = invoke({"new", "-m", "destination", "main"});
+  const Result destination = invoke({"new", "-m", "destination", main_id()});
   ASSERT_EQ(destination.code, 0);
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   write("tracked.txt", "destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code,
             0);
   ASSERT_EQ(invoke({"edit", source_id}).code, 0);
@@ -86,34 +87,37 @@ TEST_F(RepositoryTest, KeepsConflictsUntilAllMarkersAreRemoved) {
   const std::string custom_markers = file();
   ASSERT_NE(custom_markers.find("<<<<<<< Conflict"), std::string::npos);
   write("tracked.txt", "partial resolution\n" + custom_markers);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_NE(invoke({"status"}).output.find("C tracked.txt"),
             std::string::npos);
   EXPECT_NE(file().find("partial resolution"), std::string::npos);
 
   write("tracked.txt",
         "<<<<<<< ours\npartial resolution\n=======\ndestination\n>>>>>>> theirs\n");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_NE(invoke({"status"}).output.find("C tracked.txt"),
             std::string::npos);
 
   write("tracked.txt", "resolved\n");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"status"}).output.find("C tracked.txt"),
             std::string::npos);
 }
 
 TEST_F(RepositoryTest, GraphRewritesNeverResolveExistingConflicts) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  const Result destination = invoke({"new", "-m", "destination", "main"});
+  const Result destination = invoke({"new", "-m", "destination", main_id()});
   ASSERT_EQ(destination.code, 0);
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   write("tracked.txt", "destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code,
             0);
   ASSERT_NE(invoke({"log", "-r", source_id}).output.find("conflict"),
@@ -129,37 +133,37 @@ TEST_F(RepositoryTest, GraphRewritesNeverResolveExistingConflicts) {
 }
 
 TEST_F(RepositoryTest, RebasesAConflictOntoAConflictAtTheSamePath) {
-  const Result first_source = invoke({"new", "-m", "first source", "main"});
+  const Result first_source = invoke({"new", "-m", "first source", main_id()});
   ASSERT_EQ(first_source.code, 0);
   const std::string first_source_id =
       token_after(first_source.output, "Working copy now at: ");
   write("tracked.txt", "first source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result first_destination =
-      invoke({"new", "-m", "first destination", "main"});
+      invoke({"new", "-m", "first destination", main_id()});
   ASSERT_EQ(first_destination.code, 0);
   const std::string first_destination_id =
       token_after(first_destination.output, "Working copy now at: ");
   write("tracked.txt", "first destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", first_source_id, "-d",
                     first_destination_id})
                 .code,
             0);
 
-  const Result second_source = invoke({"new", "-m", "second source", "main"});
+  const Result second_source = invoke({"new", "-m", "second source", main_id()});
   ASSERT_EQ(second_source.code, 0);
   const std::string second_source_id =
       token_after(second_source.output, "Working copy now at: ");
   write("tracked.txt", "second source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result second_destination =
-      invoke({"new", "-m", "second destination", "main"});
+      invoke({"new", "-m", "second destination", main_id()});
   ASSERT_EQ(second_destination.code, 0);
   const std::string second_destination_id =
       token_after(second_destination.output, "Working copy now at: ");
   write("tracked.txt", "second destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", second_source_id, "-d",
                     second_destination_id})
                 .code,
@@ -198,21 +202,21 @@ TEST_F(RepositoryTest, RebasesAConflictOntoAConflictAtTheSamePath) {
 }
 
 TEST_F(RepositoryTest, ComposesConflictsWithoutNestedMarkers) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "source\n");
   write("overlap.txt", "source overlap\n");
   write("clean.sh", "#!/bin/sh\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  const Result first = invoke({"new", "-m", "first", "main"});
+  const Result first = invoke({"new", "-m", "first", main_id()});
   ASSERT_EQ(first.code, 0);
   const std::string first_id = token_after(first.output, "Working copy now at: ");
   write("tracked.txt", "first\n");
   write("overlap.txt", "first overlap\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", first_id}).code, 0);
 
   const Result left = invoke({"new", "-m", "left", source_id});
@@ -220,14 +224,14 @@ TEST_F(RepositoryTest, ComposesConflictsWithoutNestedMarkers) {
   const std::string left_id = token_after(left.output, "Working copy now at: ");
   write("tracked.txt", "left resolution\n");
   write("overlap.txt", "left overlap resolution\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const Result right = invoke({"new", "-m", "right", source_id});
   ASSERT_EQ(right.code, 0);
   const std::string right_id =
       token_after(right.output, "Working copy now at: ");
   write("tracked.txt", "right resolution\n");
   write("overlap.txt", "right overlap resolution\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", left_id, "-d", right_id}).code, 0);
   ASSERT_EQ(invoke({"edit", left_id}).code, 0);
   const std::string materialized = file();
@@ -269,31 +273,33 @@ TEST_F(RepositoryTest, ComposesConflictsWithoutNestedMarkers) {
   EXPECT_NE(invoke({"diff", "--from", left_id, "--to", right_id})
                 .output.find("tracked.txt"),
             std::string::npos);
+  write("tracked.txt", "resolved\n");
   ASSERT_EQ(invoke({"commit", "-m", "partial", "tracked.txt"}).code, 0);
-  EXPECT_NE(invoke({"status"}).output.find("C overlap.txt"),
-            std::string::npos);
+  const Result partial = invoke({"status"});
+  EXPECT_NE(partial.output.find("C overlap.txt"), std::string::npos);
+  EXPECT_EQ(partial.output.find("C tracked.txt"), std::string::npos);
 }
 
 TEST_F(RepositoryTest, RejectsPushingConflictedAncestry) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  const Result destination = invoke({"new", "-m", "destination", "main"});
+  const Result destination = invoke({"new", "-m", "destination", main_id()});
   ASSERT_EQ(destination.code, 0);
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   write("tracked.txt", "destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code, 0);
-  ASSERT_EQ(invoke({"bookmark", "create", "conflicted", "-r", source_id}).code,
+  ASSERT_EQ(invoke({"branch", "create", "conflicted", "-r", source_id}).code,
             0);
   ASSERT_EQ(invoke({"tag", "set", "conflicted-tag", "-r", source_id}).code,
             0);
-  EXPECT_NE(invoke({"bookmark", "list", "--conflicted"})
+  EXPECT_NE(invoke({"branch", "list", "--conflicted"})
                 .output.find("conflicted"),
             std::string::npos);
   EXPECT_NE(invoke({"tag", "list", "--conflicted"})
@@ -311,30 +317,30 @@ TEST_F(RepositoryTest, PropagatesResolutionsThroughOverlappingDescendants) {
   write("tracked.txt", "one\nmiddle\ntwo\n");
   ASSERT_EQ(invoke_git({"add", "tracked.txt"}).code, 0);
   ASSERT_EQ(invoke_git({"commit", "-m", "two lines"}).code, 0);
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "SOURCE\nmiddle\ntwo\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   const Result child = invoke({"new", "-m", "child"});
   ASSERT_EQ(child.code, 0);
   const std::string child_id = token_after(child.output, "Working copy now at: ");
   write("tracked.txt", "SOURCE\nmiddle\nCHILD\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
-  const Result destination = invoke({"new", "-m", "destination", "main"});
+  const Result destination = invoke({"new", "-m", "destination", main_id()});
   ASSERT_EQ(destination.code, 0);
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   write("tracked.txt", "DEST\nmiddle\ntwo\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code, 0);
 
   ASSERT_EQ(invoke({"edit", source_id}).code, 0);
   write("tracked.txt", "RESOLVED\nmiddle\ntwo\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"edit", child_id}).code, 0);
   EXPECT_EQ(file(), "RESOLVED\nmiddle\nCHILD\n");
   EXPECT_EQ(invoke({"status"}).output.find("Unresolved conflicts"),
@@ -342,22 +348,23 @@ TEST_F(RepositoryTest, PropagatesResolutionsThroughOverlappingDescendants) {
 }
 
 TEST_F(RepositoryTest, RecordsAndResolvesDeleteModifyConflicts) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "modified\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  const Result destination = invoke({"new", "-m", "delete", "main"});
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  const Result destination = invoke({"new", "-m", "delete", main_id()});
   ASSERT_EQ(destination.code, 0);
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   ASSERT_TRUE(std::filesystem::remove(path_ / "tracked.txt"));
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code, 0);
   ASSERT_EQ(invoke({"edit", source_id}).code, 0);
   EXPECT_NE(file().find("(absent)"), std::string::npos);
   ASSERT_TRUE(std::filesystem::remove(path_ / "tracked.txt"));
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   EXPECT_EQ(invoke({"status"}).output.find("Unresolved conflicts"),
             std::string::npos);
 }
@@ -402,18 +409,18 @@ TEST_F(RepositoryTest, DefersGitlinkConflicts) {
 }
 
 TEST_F(RepositoryTest, KeepsConflictMetadataAcrossWorkspaceOperationRestore) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  const Result destination = invoke({"new", "-m", "destination", "main"});
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  const Result destination = invoke({"new", "-m", "destination", main_id()});
   ASSERT_EQ(destination.code, 0);
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   write("tracked.txt", "destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid before_rebase = ref(detail::kOperationRef);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code,
             0);
@@ -439,21 +446,21 @@ TEST_F(RepositoryTest, KeepsConflictMetadataAcrossWorkspaceOperationRestore) {
 }
 
 TEST_F(RepositoryTest, InstallsAChainedGitPrePushConflictGuard) {
-  const Result source = invoke({"new", "-m", "source", "main"});
+  const Result source = invoke({"new", "-m", "source", main_id()});
   ASSERT_EQ(source.code, 0);
   const std::string source_id =
       token_after(source.output, "Working copy now at: ");
   write("tracked.txt", "source\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
-  const Result destination = invoke({"new", "-m", "destination", "main"});
+  ASSERT_EQ(invoke({"squash"}).code, 0);
+  const Result destination = invoke({"new", "-m", "destination", main_id()});
   ASSERT_EQ(destination.code, 0);
   const std::string destination_id =
       token_after(destination.output, "Working copy now at: ");
   write("tracked.txt", "destination\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"rebase", "-s", source_id, "-d", destination_id}).code,
             0);
-  ASSERT_EQ(invoke({"bookmark", "create", "conflicted", "-r", source_id})
+  ASSERT_EQ(invoke({"branch", "create", "conflicted", "-r", source_id})
                 .code,
             0);
 

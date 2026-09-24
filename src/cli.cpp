@@ -287,8 +287,14 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "Insert before revisions");
   new_after->excludes(new_parents);
   new_before->excludes(new_parents);
-  make_new->add_flag("--no-edit", new_value.no_edit,
-                     "Create the change without editing it");
+  CLI::Option* new_no_edit = make_new->add_flag(
+      "--no-edit", new_value.no_edit, "Create the change without editing it");
+  make_new
+      ->add_flag("-d,--detach", new_value.detach,
+                 "Do not advance the current branch; detach HEAD at the new change")
+      ->excludes(new_no_edit)
+      ->excludes(new_after)
+      ->excludes(new_before);
 
   DescribeCommand describe_value;
   auto* describe = app.add_subcommand("describe", "Set a change description");
@@ -362,7 +368,8 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required();
 
   SquashCommand squash_value;
-  auto* squash = app.add_subcommand("squash", "Move a change into another revision (default: its parent)");
+  auto* squash = app.add_subcommand(
+      "squash", "Amend working-tree edits into @, or move a change into another revision");
   CLI::Option* squash_revision =
       squash->add_option("-r,--revision", squash_value.revision, "Revision");
   CLI::Option* squash_source =
@@ -374,14 +381,27 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       squash->add_option("-m,--message", squash_value.message, "Description");
   squash->add_flag("--entire-branch", squash_value.entire_branch,
                    "Also squash ancestors back to the branch divergence");
+  CLI::Option* squash_paths = squash->add_option(
+      "filesets", squash_value.paths, "Working-tree paths to amend into @");
+  CLI::Option* squash_interactive = squash->add_flag(
+      "-i,--interactive", squash_value.interactive,
+      "Interactively select working-tree changes");
+  CLI::Option* squash_tool =
+      squash->add_option("--tool", squash_value.tool, "Diff editor");
+  for (CLI::Option* worktree_option :
+       {squash_paths, squash_interactive, squash_tool}) {
+    worktree_option->excludes(squash_revision)
+        ->excludes(squash_source)
+        ->excludes(squash_destination);
+  }
 
   AbandonCommand abandon_value;
   auto* abandon = app.add_subcommand("abandon", "Abandon a change");
   abandon->add_option("revisions", abandon_value.revisions, "Revisions");
   abandon->add_option("-r,--revision", abandon_value.revision_options,
                       "Revisions");
-  abandon->add_flag("--retain-bookmarks", abandon_value.retain_bookmarks,
-                    "Move bookmarks to the abandoned revision's parent");
+  abandon->add_flag("--retain-branches", abandon_value.retain_branches,
+                    "Move branches to the abandoned revision's parent");
   abandon->add_flag("--restore-descendants",
                     abandon_value.restore_descendants,
                     "Preserve descendant contents while restacking");
@@ -473,7 +493,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   FileCommand file_track_value;
   file_track_value.action = FileAction::track;
   auto* file_track = file->add_subcommand(
-      "track", "Start tracking paths in working-copy snapshots");
+      "track", "Include paths when recording the working tree");
   file_track->add_option("filesets", file_track_value.paths,
                          "Repository-relative paths")
       ->required();
@@ -482,7 +502,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   FileCommand file_untrack_value;
   file_untrack_value.action = FileAction::untrack;
   auto* file_untrack = file->add_subcommand(
-      "untrack", "Stop tracking paths in working-copy snapshots");
+      "untrack", "Exclude paths when recording the working tree");
   file_untrack->add_option("filesets", file_untrack_value.paths,
                            "Repository-relative paths")
       ->required();
@@ -542,99 +562,92 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     show_no_patch->excludes(option);
   }
 
-  auto* bookmark = app.add_subcommand("bookmark", "Manage bookmarks");
-  bookmark->require_subcommand(0, 1);
-  BookmarkCommand bookmark_advance;
-  bookmark_advance.action = BookmarkAction::advance;
-  auto* advance =
-      bookmark->add_subcommand("advance", "Advance the closest bookmarks");
-  advance->add_option("names", bookmark_advance.names, "Bookmark names");
-  advance->add_option("-t,--to", bookmark_advance.revision,
-                      "Target revision");
-  BookmarkCommand bookmark_create;
-  bookmark_create.action = BookmarkAction::create;
-  auto* create = bookmark->add_subcommand("create", "Create a bookmark");
-  create->add_option("names", bookmark_create.names, "Bookmark names")
+  auto* branch = app.add_subcommand("branch", "Manage branches");
+  branch->require_subcommand(0, 1);
+  BranchCommand branch_create;
+  branch_create.action = BranchAction::create;
+  auto* create = branch->add_subcommand("create", "Create a branch");
+  create->add_option("names", branch_create.names, "Branch names")
       ->required();
-  create->add_option("-r,--revision,--to", bookmark_create.revision,
+  create->add_option("-r,--revision,--to", branch_create.revision,
                      "Revision");
-  BookmarkCommand bookmark_set;
-  bookmark_set.action = BookmarkAction::set;
-  auto* set = bookmark->add_subcommand("set", "Set a bookmark");
-  set->add_option("names", bookmark_set.names, "Bookmark names")->required();
-  set->add_option("-r,--revision,--to", bookmark_set.revision, "Revision");
-  set->add_flag("-B,--allow-backwards", bookmark_set.allow_backwards,
-                "Allow moving bookmarks backwards");
-  BookmarkCommand bookmark_move;
-  bookmark_move.action = BookmarkAction::move;
-  auto* move = bookmark->add_subcommand("move", "Move existing bookmarks");
-  move->add_option("names", bookmark_move.names, "Bookmark names");
-  move->add_option("-f,--from", bookmark_move.from, "Source revisions");
-  move->add_option("-t,--to", bookmark_move.revision, "Target revision");
-  move->add_flag("-B,--allow-backwards", bookmark_move.allow_backwards,
-                 "Allow moving bookmarks backwards or sideways");
-  BookmarkCommand bookmark_delete;
-  bookmark_delete.action = BookmarkAction::erase;
-  auto* erase = bookmark->add_subcommand("delete", "Delete bookmarks");
-  erase->add_option("names", bookmark_delete.names, "Bookmark names")
+  BranchCommand branch_set;
+  branch_set.action = BranchAction::set;
+  auto* set = branch->add_subcommand("set", "Set a branch");
+  set->add_option("names", branch_set.names, "Branch names")->required();
+  set->add_option("-r,--revision,--to", branch_set.revision, "Revision");
+  set->add_flag("-B,--allow-backwards", branch_set.allow_backwards,
+                "Allow moving branches backwards");
+  BranchCommand branch_move;
+  branch_move.action = BranchAction::move;
+  auto* move = branch->add_subcommand("move", "Move existing branches");
+  move->add_option("names", branch_move.names, "Branch names");
+  move->add_option("-f,--from", branch_move.from, "Source revisions");
+  move->add_option("-t,--to", branch_move.revision, "Target revision");
+  move->add_flag("-B,--allow-backwards", branch_move.allow_backwards,
+                 "Allow moving branches backwards or sideways");
+  BranchCommand branch_delete;
+  branch_delete.action = BranchAction::erase;
+  auto* erase = branch->add_subcommand("delete", "Delete branches");
+  erase->add_option("names", branch_delete.names, "Branch names")
       ->required();
-  BookmarkCommand bookmark_forget;
-  bookmark_forget.action = BookmarkAction::forget;
-  auto* forget = bookmark->add_subcommand("forget", "Forget bookmarks");
-  forget->add_option("names", bookmark_forget.names, "Bookmark names")
+  BranchCommand branch_forget;
+  branch_forget.action = BranchAction::forget;
+  auto* forget = branch->add_subcommand("forget", "Forget branches");
+  forget->add_option("names", branch_forget.names, "Branch names")
       ->required();
-  forget->add_flag("--include-remotes", bookmark_forget.include_remotes,
-                   "Also forget matching remote bookmarks");
-  BookmarkCommand bookmark_rename;
-  bookmark_rename.action = BookmarkAction::rename;
-  auto* rename = bookmark->add_subcommand("rename", "Rename a bookmark");
-  rename->add_option("names", bookmark_rename.names, "Old and new names")
+  forget->add_flag("--include-remotes", branch_forget.include_remotes,
+                   "Also forget matching remote branches");
+  BranchCommand branch_rename;
+  branch_rename.action = BranchAction::rename;
+  auto* rename = branch->add_subcommand("rename", "Rename a branch");
+  rename->add_option("names", branch_rename.names, "Old and new names")
       ->required()
       ->expected(2);
-  rename->add_flag("--overwrite-existing", bookmark_rename.overwrite_existing,
-                   "Overwrite the destination bookmark");
-  BookmarkCommand bookmark_track;
-  bookmark_track.action = BookmarkAction::track;
-  auto* track = bookmark->add_subcommand("track", "Track remote bookmarks");
-  track->add_option("names", bookmark_track.names, "Bookmark patterns or symbols")
+  rename->add_flag("--overwrite-existing", branch_rename.overwrite_existing,
+                   "Overwrite the destination branch");
+  BranchCommand branch_track;
+  branch_track.action = BranchAction::track;
+  auto* track = branch->add_subcommand("track", "Track remote branches");
+  track->add_option("names", branch_track.names, "Branch patterns or symbols")
       ->required();
-  track->add_option("--remote", bookmark_track.remotes, "Remote pattern");
-  BookmarkCommand bookmark_untrack;
-  bookmark_untrack.action = BookmarkAction::untrack;
+  track->add_option("--remote", branch_track.remotes, "Remote pattern");
+  BranchCommand branch_untrack;
+  branch_untrack.action = BranchAction::untrack;
   auto* untrack =
-      bookmark->add_subcommand("untrack", "Stop tracking remote bookmarks");
+      branch->add_subcommand("untrack", "Stop tracking remote branches");
   untrack
-      ->add_option("names", bookmark_untrack.names,
-                   "Bookmark patterns or symbols")
+      ->add_option("names", branch_untrack.names,
+                   "Branch patterns or symbols")
       ->required();
-  untrack->add_option("--remote", bookmark_untrack.remotes,
+  untrack->add_option("--remote", branch_untrack.remotes,
                       "Remote pattern");
-  BookmarkCommand bookmark_list;
-  auto* list = bookmark->add_subcommand("list", "List bookmarks");
-  list->add_option("names", bookmark_list.names, "Bookmark names");
-  CLI::Option* bookmark_list_all =
-      list->add_flag("-a,--all-remotes", bookmark_list.all_remotes,
-                     "Include all remote bookmarks");
-  CLI::Option* bookmark_list_remotes =
-      list->add_option("--remote", bookmark_list.remotes, "Remote name");
-  CLI::Option* bookmark_list_tracked =
-      list->add_flag("-t,--tracked", bookmark_list.tracked,
-                     "Show tracked remote bookmarks only");
-  CLI::Option* bookmark_list_conflicted =
-      list->add_flag("-c,--conflicted", bookmark_list.conflicted,
-                     "Show conflicted bookmarks only");
-  bookmark_list_all->excludes(bookmark_list_remotes)
-      ->excludes(bookmark_list_tracked)
-      ->excludes(bookmark_list_conflicted);
-  list->add_option("-r,--revision,--revisions", bookmark_list.revisions,
-                   "Revision containing a bookmark target");
+  BranchCommand branch_list;
+  auto* list = branch->add_subcommand("list", "List branches");
+  list->add_option("names", branch_list.names, "Branch names");
+  CLI::Option* branch_list_all =
+      list->add_flag("-a,--all-remotes", branch_list.all_remotes,
+                     "Include all remote branches");
+  CLI::Option* branch_list_remotes =
+      list->add_option("--remote", branch_list.remotes, "Remote name");
+  CLI::Option* branch_list_tracked =
+      list->add_flag("-t,--tracked", branch_list.tracked,
+                     "Show tracked remote branches only");
+  CLI::Option* branch_list_conflicted =
+      list->add_flag("-c,--conflicted", branch_list.conflicted,
+                     "Show conflicted branches only");
+  branch_list_all->excludes(branch_list_remotes)
+      ->excludes(branch_list_tracked)
+      ->excludes(branch_list_conflicted);
+  list->add_option("-r,--revision,--revisions", branch_list.revisions,
+                   "Revision containing a branch target");
   const std::vector<std::string> ref_sort_keys{
       "name",            "name-",           "author-name",
       "author-name-",    "author-email",    "author-email-",
       "author-date",     "author-date-",    "committer-name",
       "committer-name-", "committer-email", "committer-email-",
       "committer-date",  "committer-date-"};
-  list->add_option("--sort", bookmark_list.sort, "Sort key")
+  list->add_option("--sort", branch_list.sort, "Sort key")
       ->delimiter(',')
       ->check(CLI::IsMember(ref_sort_keys));
 
@@ -698,7 +711,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   clone->add_option("--remote", clone_value.remote, "Remote name");
   clone->add_option("--depth", clone_value.depth, "Shallow clone depth")
       ->check(CLI::PositiveNumber);
-  clone->add_option("-b,--branch,--bookmark", clone_value.branches,
+  clone->add_option("-b,--branch", clone_value.branches,
                     "Branch name")
       ->type_size(1)
       ->allow_extra_args(false);
@@ -716,7 +729,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   GitFetchCommand fetch_value;
   auto* fetch = app.add_subcommand("fetch", "Fetch a remote");
   CLI::Option* fetch_branches =
-      fetch->add_option("-b,--branch,--bookmark", fetch_value.branches,
+      fetch->add_option("-b,--branch", fetch_value.branches,
                         "Branch name");
   CLI::Option* fetch_tags =
       fetch->add_option("-t,--tag", fetch_value.tags, "Tag name");
@@ -734,21 +747,21 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   pull->set_help_flag();
   pull->prefix_command();
   GitPushCommand push_value;
-  auto* push = app.add_subcommand("push", "Push bookmarks and tags");
-  CLI::Option* push_bookmarks =
-      push->add_option("-b,--bookmark,--branch", push_value.bookmarks,
-                       "Bookmark name");
+  auto* push = app.add_subcommand("push", "Push branches and tags");
+  CLI::Option* push_branches =
+      push->add_option("-b,--branch", push_value.branches,
+                       "Branch name");
   CLI::Option* push_tags =
       push->add_option("-t,--tag", push_value.tags, "Tag name");
   CLI::Option* push_revisions =
       push->add_option("-r,--revision,--revisions", push_value.revisions,
                        "Revision containing refs to push");
-  push->add_flag("--all", push_value.all, "Push all bookmarks and tags");
+  push->add_flag("--all", push_value.all, "Push all branches and tags");
   push->add_flag("--tracked", push_value.tracked,
                  "Push refs known on the remote");
   push->add_flag("--deleted", push_value.deleted,
-                 "Delete remote bookmarks and tags deleted locally")
-      ->excludes(push_bookmarks)
+                 "Delete remote branches and tags deleted locally")
+      ->excludes(push_branches)
       ->excludes(push_tags)
       ->excludes(push_revisions);
   push->add_option("--remote", push_value.remote, "Remote name");
@@ -822,8 +835,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       ->required();
   auto* util_markdown =
       util->add_subcommand("markdown-help", "Print Markdown command help");
-  auto* util_snapshot =
-      util->add_subcommand("snapshot", "Snapshot the working copy");
   auto* util_install_git_hooks = util->add_subcommand(
       "install-git-hooks", "Install Git hooks that protect gg state");
   auto* util_check_push_conflicts = util->add_subcommand(
@@ -929,7 +940,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       next->add_option("offset", next_value.offset, "Number of revisions")
           ->default_val(1)
           ->check(CLI::PositiveNumber);
-  next->add_flag("-e,--edit", next_value.edit, "Edit the target revision");
   next->add_flag("--conflict", next_value.conflict,
                  "Jump to the next conflicted descendant")
       ->excludes(next_offset);
@@ -941,8 +951,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
           ->add_option("offset", previous_value.offset, "Number of revisions")
           ->default_val(1)
           ->check(CLI::PositiveNumber);
-  previous->add_flag(
-      "-e,--edit", previous_value.edit, "Edit the target revision");
   previous->add_flag("--conflict", previous_value.conflict,
                      "Jump to the previous conflicted ancestor")
       ->excludes(previous_offset);
@@ -1003,14 +1011,18 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
 
   app.footer(
       "WORKING MODEL:\n"
-      "  The working copy is mutable change @; @- is its parent. Revision-facing\n"
-      "  commands snapshot tracked files automatically. Rewrites retain old commit\n"
-      "  IDs as aliases, restack descendants, and move affected local refs.\n\n"
+      "  @ is Git's HEAD commit; @- is its parent. Edits in the working tree are\n"
+      "  uncommitted changes to @: `gg commit` records them as a new child of @ and\n"
+      "  `gg squash` amends them into @. HEAD is attached to a branch after\n"
+      "  `gg edit BRANCH` or `gg branch create` at a detached @, and new commits on\n"
+      "  it advance that branch; commit IDs and `gg new -d` detach. Rewrites retain\n"
+      "  old commit IDs as aliases, restack descendants, and move affected local refs.\n\n"
       "WORKFLOW:\n"
-      "  Inspect with `gg status`; start with `gg new -m \"task\"`; edit and test;\n"
-      "  verify with `gg diff` and `gg status`; leave the named change at @.\n\n"
+      "  Inspect with `gg status`; edit and test; record with `gg commit -m \"task\"`\n"
+      "  or start an empty change with `gg new -m \"task\"` and amend into it with\n"
+      "  `gg squash`; verify with `gg diff` (working tree) and `gg show` (@).\n\n"
       "SELECTORS:\n"
-      "  Revisions accept @, @-, commit IDs and aliases, bookmarks, Git object IDs,\n"
+      "  Revisions accept @, @-, commit IDs and aliases, branches, Git object IDs,\n"
       "  and set expressions. Filesets accept paths plus file:, root:, cwd:, glob:,\n"
       "  union (|), intersection (&), and difference (~).\n\n"
       "SAFETY:\n"
@@ -1024,21 +1036,27 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "  `gg util markdown-help`.");
   status->footer(
       "DETAILS:\n"
-      "  Snapshots tracked working-copy files, then compares @ with its first parent.\n"
-      "  Filesets filter both changed paths and unresolved-conflict paths.\n"
+      "  Shows the checked-out branch (or detached HEAD), @ and @-, then working-tree\n"
+      "  changes relative to @ as `gg commit` would record them (? marks files it\n"
+      "  would skip) and unresolved conflicts in @. Filesets filter all of them.\n"
       "SEE ALSO: `gg diff`, `gg log`.");
   log->footer(
       "DEFAULTS:\n"
-      "  Shows 256 reachable revisions from @ and local bookmarks, newest first.\n"
+      "  Shows 256 reachable revisions from @ and local branches, newest first.\n"
       "  --limit overrides the default; --all explicitly requests unbounded history.\n"
       "  -r accepts a revision-set expression; filesets keep revisions touching a match.\n"
       "SEE ALSO: `gg show`, `gg operation log`.");
   make_new->footer(
       "DEFAULTS:\n"
       "  Uses @ as the parent and makes the empty new change the working copy.\n"
+      "  When HEAD is attached to a branch at the parent, that branch advances to the\n"
+      "  new change. A branch name as the only parent checks that branch out and\n"
+      "  continues it; a commit ID forks a new unnamed head with HEAD detached.\n"
+      "  --detach never advances a branch. Unnamed heads stay visible until abandoned.\n"
       "  --insert-after/--insert-before insert into the graph and restack descendants.\n"
       "EXAMPLES:\n"
       "  gg new -m \"Add parser\"\n"
+      "  gg new -d -m \"Experiment without moving the branch\"\n"
       "  gg new -B main -m \"Insert before main\"");
   describe->footer(
       "DEFAULTS:\n"
@@ -1047,9 +1065,11 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "SEE ALSO: `gg metaedit`.");
   edit->footer(
       "DETAILS:\n"
-      "  Makes exactly one revision @ and updates the working tree; conflicted revisions\n"
-      "  materialize their sides for normal file-based resolution.\n"
-      "EXAMPLES: gg edit <commit-id>");
+      "  Checks out exactly one revision as @, like `git checkout`: a local branch name\n"
+      "  attaches HEAD to that branch, anything else detaches it. Refuses to overwrite\n"
+      "  uncommitted tracked changes; conflicted revisions materialize their sides for\n"
+      "  normal file-based resolution.\n"
+      "EXAMPLES: gg edit main; gg edit <commit-id>");
   metaedit->footer(
       "DEFAULTS:\n"
       "  Selects @. Metadata changes rewrite selected revisions, restack descendants,\n"
@@ -1069,22 +1089,28 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "EXAMPLES: gg split -m \"Parser core\" 'glob(src/parser*)'");
   squash->footer(
       "DEFAULTS:\n"
-      "  Squashes @ into its parent, removes the source, and restacks descendants.\n"
+      "  Without -r/--from/--into, amends working-tree edits (optionally only the\n"
+      "  selected filesets) into @, like `git commit --amend`. With a revision, squashes\n"
+      "  it into its parent (or --into), removes the source, and restacks descendants.\n"
       "  --entire-branch squashes the source-side branch through the selected tip.\n"
-      "EXAMPLES: gg squash -r @-");
+      "EXAMPLES: gg squash; gg squash src/parser.cpp; gg squash -r @-");
   abandon->footer(
       "DEFAULTS:\n"
-      "  Abandons @, deletes bookmarks on it, and rebases descendants onto its parents.\n"
-      "  --retain-bookmarks moves those bookmarks to the abandoned change's parent.");
+      "  Abandons @, deletes branches on it, and rebases descendants onto its parents.\n"
+      "  The checked-out branch moves to the parent and stays checked out, like\n"
+      "  `git reset --hard HEAD~`. --retain-branches moves all those branches instead.");
   commit->footer(
       "DETAILS:\n"
-      "  Rewrites @ with the selected filesets and description, then creates a new empty\n"
-      "  working change containing any unselected edits. No staging step is required.\n"
-      "SEE ALSO: `gg new`, `gg describe`.");
+      "  Records working-tree changes (or only the selected filesets) as a new child of\n"
+      "  @ and makes it @, advancing the checked-out branch like `git commit -a`.\n"
+      "  Unselected edits stay uncommitted. No staging step is required.\n"
+      "SEE ALSO: `gg squash` (amend @), `gg new`, `gg describe`.");
   restore->footer(
       "DEFAULTS:\n"
-      "  With no source options, undoes all changes in @ into @. --from/--into copy tree\n"
-      "  content; the destination rewrite restacks descendants.\n"
+      "  With no source options, discards working-tree edits back to @ like\n"
+      "  `git restore` and prints the ID of a commit that keeps the discarded content.\n"
+      "  --from/--into copy tree content and -c undoes a revision's changes; those\n"
+      "  rewrite the destination and restack descendants.\n"
       "EXAMPLES:\n"
       "  gg restore path/to/file\n"
       "  gg restore --from main --into @ 'glob(src/**)'");
@@ -1113,64 +1139,62 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "  restacks descendants after changing executable bits.");
   file_track->footer(
       "DETAILS:\n"
-      "  Adds repository-relative paths to working-copy snapshots and snapshots them now.\n"
-      "  Ignored files require --include-ignored.");
+      "  Includes repository-relative paths when gg records the working tree (commit,\n"
+      "  squash). Ignored files require --include-ignored.");
   file_untrack->footer(
       "DETAILS:\n"
-      "  Removes repository-relative paths from future snapshots and snapshots @ now;\n"
-      "  files remain in the filesystem.");
+      "  Excludes repository-relative paths when gg records the working tree (commit,\n"
+      "  squash); files remain in the filesystem and in existing commits.");
 
   diff->footer(
       "DEFAULTS:\n"
-      "  Compares @ with its parent. -r compares the roots and heads of a contiguous\n"
-      "  revision set; --from/--to default their omitted side to @. Output is a patch.");
+      "  Compares @ (or --from) with the working tree, like `git diff HEAD`. -r compares\n"
+      "  the roots and heads of a contiguous revision set (-r @ shows @'s own change);\n"
+      "  --to compares revisions, defaulting --from to @. Output is a patch.");
   show->footer(
       "DEFAULTS:\n"
       "  Shows @ with metadata and its patch. Revision arguments are selectors and may\n"
       "  expand to multiple revisions; --no-patch prints metadata only.");
 
-  bookmark->footer(
+  branch->footer(
       "DETAILS:\n"
-      "  Bookmarks are local Git branches. With no subcommand this lists local bookmarks;\n"
+      "  Branches are native local Git branches. With no subcommand this lists them;\n"
       "  movements are operation-logged and reject backwards moves unless allowed.");
-  advance->footer(
-      "DEFAULTS:\n"
-      "  Advances the named bookmarks to @; with no names, advances the closest ancestor\n"
-      "  bookmarks. Backwards or sideways movement is rejected.");
   create->footer(
       "DEFAULTS:\n"
-      "  Creates local Git branches at @. Existing names are rejected.");
+      "  Creates local Git branches at @. Existing names are rejected. Creating one\n"
+      "  branch at a detached @ checks it out, like `git switch -c`.");
   set->footer(
       "DEFAULTS:\n"
-      "  Creates or moves local Git branches to @; existing bookmarks move forward only\n"
+      "  Creates or moves local Git branches to @; existing branches move forward only\n"
       "  unless --allow-backwards is supplied.");
   move->footer(
       "DETAILS:\n"
-      "  Select bookmarks by name and/or --from revision, then move them to @ by default.\n"
+      "  Select branches by name and/or --from revision, then move them to @ by default.\n"
       "  Backwards or sideways movement requires --allow-backwards.\n"
-      "EXAMPLES: gg bookmark move topic --from @- --to @");
+      "EXAMPLES: gg branch move topic --from @- --to @");
   erase->footer(
       "DETAILS:\n"
       "  Deletes matching local Git branches but leaves remote and tracking refs intact.\n"
-      "SEE ALSO: `gg bookmark forget`.");
+      "SEE ALSO: `gg branch forget`.");
   forget->footer(
       "DETAILS:\n"
-      "  Deletes matching local bookmarks and their gg tracking state; --include-remotes\n"
-      "  also removes matching remote-tracking bookmarks locally.");
+      "  Deletes matching local branches and their gg tracking state; --include-remotes\n"
+      "  also removes matching remote-tracking branches locally.");
   rename->footer(
       "DETAILS:\n"
       "  Renames a local Git branch. The destination must not exist unless\n"
       "  --overwrite-existing is supplied.");
   track->footer(
       "DETAILS:\n"
-      "  Tracks fetched remote bookmarks selected by patterns or name@remote symbols and\n"
-      "  creates a missing same-named local bookmark at the fetched target.");
+      "  Tracks fetched remote branches selected by patterns or name@remote symbols and\n"
+      "  creates a missing same-named local branch at the fetched target.");
   untrack->footer(
       "DETAILS:\n"
-      "  Removes gg tracking state for matching remote bookmarks; local and fetched refs remain.");
+      "  Removes gg tracking state for matching remote branches; local and fetched refs remain.");
   list->footer(
       "DEFAULTS:\n"
-      "  Lists local bookmarks sorted by name. Remote bookmarks appear only when selected\n"
+      "  Lists local branches sorted by name. Remote branches appear only when selected\n"
       "  with --all-remotes, --remote, or --tracked.");
 
   tag->footer(
@@ -1205,17 +1229,17 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   fetch->footer(
       "DEFAULTS:\n"
       "  Fetches and prunes origin. With no ref filters, fetches all advertised branches\n"
-      "  and tags, records tracking state, and fast-forwards eligible local bookmarks.");
+      "  and tags, records tracking state, and fast-forwards eligible local branches.");
   pull->footer(
       "DETAILS:\n"
       "  Passes all trailing arguments unchanged to `git pull`, returns Git's status, then\n"
-      "  imports history and fast-forwards eligible tracked local bookmarks on success.");
+      "  imports history and fast-forwards eligible tracked local branches on success.");
   push->footer(
       "DEFAULTS:\n"
-      "  Advances the closest bookmark to non-empty, described @ (or @- when @ is not\n"
-      "  publishable) and atomically pushes it to origin. Explicit revisions must already\n"
-      "  have a local bookmark or tag; empty descriptions and conflicted history are refused.\n"
-      "EXAMPLES: gg push --dry-run; gg push --bookmark topic --dry-run");
+      "  Pushes the checked-out branch to origin; a detached HEAD requires --branch.\n"
+      "  Explicit revisions must already have a local branch or tag; empty descriptions\n"
+      "  and conflicted history are refused.\n"
+      "EXAMPLES: gg push --dry-run; gg push --branch topic --dry-run");
 
   undo->footer(
       "DETAILS:\n"
@@ -1264,9 +1288,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   util_markdown->footer(
       "DETAILS:\n"
       "  Prints the complete schema-derived command reference as Markdown; no files are written.");
-  util_snapshot->footer(
-      "DETAILS:\n"
-      "  Explicitly snapshots tracked filesystem and index changes into @ and reports whether it changed.");
   util_install_git_hooks->footer(
       "DETAILS:\n"
       "  Installs a managed pre-push conflict check at core.hooksPath (or .git/hooks).\n"
@@ -1279,7 +1300,7 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
   workspace->footer(
       "DETAILS:\n"
       "  Each Git worktree has an isolated gg working change, operation history, and\n"
-      "  conflict-recovery state while commits, aliases, bookmarks, and tags are shared.");
+      "  conflict-recovery state while commits, aliases, branches, and tags are shared.");
   workspace_list->footer(
       "DETAILS:\n"
       "  Lists gg workspace names, working-change IDs, and roots; missing worktrees are marked stale.");
@@ -1288,8 +1309,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "  Prints the current workspace root; --name resolves another registered workspace.");
   workspace_add->footer(
       "DEFAULTS:\n"
-      "  Creates a linked Git worktree plus an isolated empty change based on @ (or HEAD),\n"
-      "  copying current sparse patterns.\n"
+      "  Creates a linked Git worktree that checks out @ (or -r), attached when -r names\n"
+      "  a branch no other workspace has checked out; -m starts a new change there.\n"
+      "  Copies current sparse patterns.\n"
       "EXAMPLES: gg workspace add ../review --name review -r main");
   workspace_forget->footer(
       "DEFAULTS:\n"
@@ -1338,12 +1360,12 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "  Runs `git sparse-checkout disable`, restoring all working-copy files.");
   next->footer(
       "DEFAULTS:\n"
-      "  Moves one child forward and creates a new empty working change there; --edit makes\n"
-      "  the target itself @. Ambiguous graph movement is rejected.");
+      "  Checks out the child of @ (HEAD detaches unless the current branch points there).\n"
+      "  Refuses uncommitted tracked changes. Ambiguous graph movement is rejected.");
   previous->footer(
       "DEFAULTS:\n"
-      "  Moves one ancestor back and creates a new empty working change there; --edit makes\n"
-      "  the target itself @. Ambiguous graph movement is rejected.");
+      "  Checks out the parent of @ (HEAD detaches unless the current branch points there).\n"
+      "  Refuses uncommitted tracked changes. Ambiguous graph movement is rejected.");
 
   config->footer(
       "DETAILS:\n"
@@ -1479,26 +1501,24 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(diff_value)};
   } else if (show->parsed()) {
     command = RepositoryCommand{std::move(show_value)};
-  } else if (advance->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_advance)};
   } else if (create->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_create)};
+    command = RepositoryCommand{std::move(branch_create)};
   } else if (set->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_set)};
+    command = RepositoryCommand{std::move(branch_set)};
   } else if (move->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_move)};
+    command = RepositoryCommand{std::move(branch_move)};
   } else if (erase->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_delete)};
+    command = RepositoryCommand{std::move(branch_delete)};
   } else if (forget->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_forget)};
+    command = RepositoryCommand{std::move(branch_forget)};
   } else if (rename->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_rename)};
+    command = RepositoryCommand{std::move(branch_rename)};
   } else if (track->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_track)};
+    command = RepositoryCommand{std::move(branch_track)};
   } else if (untrack->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_untrack)};
-  } else if (list->parsed() || bookmark->parsed()) {
-    command = RepositoryCommand{std::move(bookmark_list)};
+    command = RepositoryCommand{std::move(branch_untrack)};
+  } else if (list->parsed() || branch->parsed()) {
+    command = RepositoryCommand{std::move(branch_list)};
   } else if (tag_set->parsed()) {
     command = RepositoryCommand{std::move(tag_set_value)};
   } else if (tag_delete->parsed()) {
@@ -1534,8 +1554,6 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
     command = RepositoryCommand{std::move(util_gc_value)};
   } else if (util_optimize->parsed()) {
     command = RepositoryCommand{UtilOptimizeCommand{}};
-  } else if (util_snapshot->parsed()) {  // GG_COV_EXCL_BRANCH
-    command = RepositoryCommand{UtilSnapshotCommand{}};
   } else if (util_install_git_hooks->parsed()) {
     command = RepositoryCommand{UtilInstallGitHooksCommand{}};
   } else if (util_check_push_conflicts->parsed()) {

@@ -30,9 +30,9 @@ TEST_F(RepositoryTest, MovesWorkspaceWithItsFilesAndIndependentHistory) {
   WorkspacePaths paths(path_);
   const auto linked = paths / "linked";
   const auto moved = paths / "moved with spaces";
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "side"}).code, 0);
-  ASSERT_EQ(invoke_at(linked, {"describe", "-m", "side change"}).code, 0);
+  ASSERT_EQ(invoke_at(linked, {"new", "-m", "side change"}).code, 0);
   detail::Repository target(linked);
   const auto working = *target.workspace();
   const auto operation = *target.operation();
@@ -82,8 +82,8 @@ TEST_F(RepositoryTest, NativeLocksProtectLiveAndMissingWorkspacesFromPruning) {
   const auto stale = paths / "stale";
   ASSERT_EQ(invoke({"workspace", "add", locked.string(), "--name", "locked"}).code, 0);
   ASSERT_EQ(invoke({"workspace", "add", stale.string(), "--name", "stale"}).code, 0);
-  ASSERT_EQ(invoke_at(locked, {"describe", "-m", "locked history"}).code, 0);
-  ASSERT_EQ(invoke_at(stale, {"describe", "-m", "stale history"}).code, 0);
+  ASSERT_EQ(invoke_at(locked, {"new", "-m", "locked history"}).code, 0);
+  ASSERT_EQ(invoke_at(stale, {"new", "-m", "stale history"}).code, 0);
   detail::Repository locked_repo(locked), stale_repo(stale);
   const auto locked_operation = locked_repo.operation_ref_name();
   const auto stale_operation = stale_repo.operation_ref_name();
@@ -116,7 +116,7 @@ TEST_F(RepositoryTest, NativeLocksProtectLiveAndMissingWorkspacesFromPruning) {
 TEST_F(RepositoryTest, RollsBackWorkspaceCreationWhenMetadataCannotBeWritten) {
   WorkspacePaths paths(path_);
   const auto linked = paths / "linked";
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   const auto blocker = path_ / ".git/gg/workspace-roots/blocked";
   std::filesystem::create_directories(blocker.parent_path());
   std::ofstream(blocker) << "preserve\n";
@@ -152,11 +152,14 @@ TEST_F(RepositoryTest, RefLocksRejectWorkspaceRemovalAndPruneBeforeNativeDeletio
   EXPECT_FALSE(has_ref("refs/gg/workspaces/side"));
 }
 
-TEST_F(RepositoryTest, RemovingWorkspaceKeepsTheFinalSnapshotRecoverable) {
+TEST_F(RepositoryTest, RemovingWorkspaceKeepsItsFinalCommitRecoverable) {
   WorkspacePaths paths(path_);
   const auto linked = paths / "linked";
   ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "side"}).code, 0);
   std::ofstream(linked / "tracked.txt") << "last unsnapped edit\n";
+  // Uncommitted edits would be lost with the worktree.
+  EXPECT_EQ(invoke({"workspace", "remove", "side"}).code, 2);
+  ASSERT_EQ(invoke_at(linked, {"commit", "-m", "last edit"}).code, 0);
   ASSERT_EQ(invoke({"workspace", "remove", "side"}).code, 0);
   EXPECT_FALSE(has_ref("refs/gg/operations/worktrees/linked"));
   ASSERT_EQ(invoke({"undo"}).code, 0);
@@ -169,7 +172,7 @@ TEST_F(RepositoryTest, RepairsAnExternallyMovedLockedWorkspace) {
   const auto linked = paths / "linked";
   const auto moved = paths / "moved";
   ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "side"}).code, 0);
-  ASSERT_EQ(invoke_at(linked, {"describe", "-m", "history"}).code, 0);
+  ASSERT_EQ(invoke_at(linked, {"new", "-m", "history"}).code, 0);
   const auto working = ref("refs/gg/workspaces/side");
   ASSERT_EQ(invoke({"workspace", "lock", "side", "--reason", "moving"}).code, 0);
   std::filesystem::rename(linked, moved);

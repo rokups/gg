@@ -34,8 +34,8 @@ struct gg_repository {
 namespace {
 
 using gg::detail::AbandonCommand;
-using gg::detail::BookmarkAction;
-using gg::detail::BookmarkCommand;
+using gg::detail::BranchAction;
+using gg::detail::BranchCommand;
 using gg::detail::CommitCommand;
 using gg::detail::DescribeCommand;
 using gg::detail::EditCommand;
@@ -534,10 +534,10 @@ int gg_simplify_parents_options_init(gg_simplify_parents_options* options,
                         GG_SIMPLIFY_PARENTS_OPTIONS_INIT);
 }
 
-int gg_bookmark_options_init(gg_bookmark_options* options,
+int gg_branch_options_init(gg_branch_options* options,
                              unsigned int version) {
   return initialize(options, version,
-                    gg_bookmark_options GG_BOOKMARK_OPTIONS_INIT);
+                    gg_branch_options GG_BRANCH_OPTIONS_INIT);
 }
 
 int gg_tag_options_init(gg_tag_options* options, unsigned int version) {
@@ -594,7 +594,7 @@ int gg_repository_adopt_git_history(gg_repository* repository,
 }
 
 int gg_repository_adopt_git_history_ex(gg_repository* repository,
-                                       int advance_bookmarks,
+                                       int advance_branches,
                                        const gg_operation_options* options) {
   return boundary([&] {
     if (repository == nullptr) {
@@ -604,40 +604,8 @@ int gg_repository_adopt_git_history_ex(gg_repository* repository,
     Repository& implementation = repository->implementation;
     implementation.invalidate_ref_cache();
     implementation.import_git_history();
-    implementation.sync_remote_bookmarks(advance_bookmarks != 0);
+    implementation.sync_remote_branches(advance_branches != 0);
     finish_operation(options, "adopt_git_history");
-    return GIT_OK;
-  });
-}
-
-int gg_repository_snapshot_working_copy(int* changed,
-                                        gg_repository* repository,
-                                        const gg_operation_options* options) {
-  return boundary([&] {
-    if (changed == nullptr || repository == nullptr) {
-      throw gg::detail::UserError("snapshot output and repository must not be null");
-    }
-    begin_operation(options, "snapshot_working_copy");
-    repository->implementation.invalidate_ref_cache();
-    *changed = repository->implementation.sync_workspace();
-    finish_operation(options, "snapshot_working_copy");
-    return GIT_OK;
-  });
-}
-
-int gg_repository_snapshot_working_copy_paths(
-    int* changed, gg_repository* repository, gg_string_array paths,
-    const gg_operation_options* options) {
-  return boundary([&] {
-    if (changed == nullptr || repository == nullptr ||
-        (paths.count != 0 && paths.strings == nullptr)) {
-      throw gg::detail::UserError(
-          "snapshot output, repository, and paths must not be null");
-    }
-    begin_operation(options, "snapshot_working_copy");
-    repository->implementation.invalidate_ref_cache();
-    *changed = repository->implementation.sync_workspace(strings(paths));
-    finish_operation(options, "snapshot_working_copy");
     return GIT_OK;
   });
 }
@@ -748,8 +716,8 @@ int gg_repository_named_refs(gg_named_ref_array* out,
       bool tracked = false;
       if (reference.starts_with("refs/heads/")) {
         name = reference.substr(std::string_view("refs/heads/").size());
-        kind = GG_NAMED_REF_LOCAL_BOOKMARK;
-        tracked = locally_tracked(gg::detail::kBookmarkTrackingPrefix, name);
+        kind = GG_NAMED_REF_LOCAL_BRANCH;
+        tracked = locally_tracked(gg::detail::kBranchTrackingPrefix, name);
       } else if (reference.starts_with("refs/remotes/")) {
         const std::string suffix =
             reference.substr(std::string_view("refs/remotes/").size());
@@ -759,8 +727,8 @@ int gg_repository_named_refs(gg_named_ref_array* out,
         }
         remote = suffix.substr(0, slash);
         name = suffix.substr(slash + 1);
-        kind = GG_NAMED_REF_REMOTE_BOOKMARK;
-        tracked = has_tracking(gg::detail::kBookmarkTrackingPrefix, remote,
+        kind = GG_NAMED_REF_REMOTE_BRANCH;
+        tracked = has_tracking(gg::detail::kBranchTrackingPrefix, remote,
                                name);
       } else if (reference.starts_with("refs/tags/")) {
         name = reference.substr(std::string_view("refs/tags/").size());
@@ -788,6 +756,17 @@ int gg_repository_named_refs(gg_named_ref_array* out,
                         tracked});
     }
     if (values.empty()) return GIT_OK;
+    const auto current_branch = repo.current_branch();
+    std::map<std::string, std::string> checked_out;
+    if (std::filesystem::exists(
+            std::filesystem::path(git_repository_commondir(repo.raw())) /
+            "worktrees")) {
+      for (const auto& workspace : repo.workspaces()) {
+        if (!workspace.current && !workspace.branch.empty()) {
+          checked_out.emplace(workspace.branch.substr(11), workspace.name);
+        }
+      }
+    }
     out->items = static_cast<gg_named_ref*>(
         std::calloc(values.size(), sizeof(gg_named_ref)));
     if (out->items == nullptr) throw std::bad_alloc();
@@ -795,6 +774,14 @@ int gg_repository_named_refs(gg_named_ref_array* out,
       gg_named_ref& item = out->items[out->count];
       item.name = duplicate(value.name);
       item.remote = duplicate(value.remote);
+      if (value.kind == GG_NAMED_REF_LOCAL_BRANCH) {
+        item.current = current_branch.has_value() &&
+                       current_branch->substr(11) == value.name;
+        if (const auto other = checked_out.find(value.name);
+            other != checked_out.end()) {
+          item.workspace = duplicate(other->second);
+        }
+      }
       item.target = value.target;
       item.kind = value.kind;
       item.tracked = value.tracked;
@@ -1175,6 +1162,27 @@ int gg_repository_operation_capabilities(gg_operation_capabilities* out,
   });
 }
 
+int gg_repository_head(gg_head* out, gg_repository* repository) {
+  return boundary([&] {
+    if (out == nullptr || repository == nullptr) {
+      throw gg::detail::UserError("head arguments must not be null");
+    }
+    const unsigned int version = out->version;
+    *out = {};
+    out->version = version;
+    Repository& repo = repository->implementation;
+    if (const auto branch = repo.current_branch(); branch.has_value()) {
+      out->attached = 1;
+      out->branch = duplicate(branch->substr(11));
+    }
+    if (const auto target = repo.head_oid(); target.has_value()) {
+      out->target = *target;
+      out->has_target = 1;
+    }
+    return GIT_OK;
+  });
+}
+
 int gg_repository_workspaces(gg_workspace_array* out,
                              gg_repository* repository) {
   return boundary([&] {
@@ -1201,6 +1209,9 @@ int gg_repository_workspaces(gg_workspace_array* out,
       item.current = workspace.current;
       item.primary = workspace.primary;
       item.root = duplicate(workspace.root.string());
+      if (!workspace.branch.empty()) {
+        item.branch = duplicate(workspace.branch.substr(11));
+      }
       ++out->count;
     }
     return GIT_OK;
@@ -1253,7 +1264,8 @@ int gg_repository_new_change(gg_mutation_result* out,
     command_new(repo, NewCommand{string(value.message), strings(value.parents),
                                  strings(value.insert_after),
                                  strings(value.insert_before),
-                                 value.no_edit != 0}, output);
+                                 value.no_edit != 0, value.detach != 0},
+                output);
   });
 }
 
@@ -1271,25 +1283,12 @@ int gg_repository_commit(gg_mutation_result* out,
   });
 }
 
-int gg_repository_commit_worktree(gg_mutation_result* out,
-                                  gg_repository* repository,
-                                  const char* message,
-                                  const gg_operation_options* operation) {
-  return mutate(out, repository, operation, "commit_worktree",
-                [&](Repository& repo, std::ostream& output) {
-    if (message == nullptr) {
-      throw gg::detail::UserError("commit message must not be null");
-    }
-    gg::detail::command_commit_worktree(repo, message, output);
-  });
-}
-
-int gg_repository_amend_worktree(gg_mutation_result* out,
+int gg_repository_amend(gg_mutation_result* out,
                                  gg_repository* repository,
                                  const char* revision,
                                  const char* message,
                                  const gg_operation_options* operation) {
-  return mutate(out, repository, operation, "amend_worktree",
+  return mutate(out, repository, operation, "amend",
                 [&](Repository& repo, std::ostream& output) {
     gg::detail::command_amend_worktree(
         repo, revision == nullptr ? std::nullopt
@@ -1299,11 +1298,11 @@ int gg_repository_amend_worktree(gg_mutation_result* out,
   });
 }
 
-int gg_repository_amend_tree_worktree(
+int gg_repository_amend_tree(
     gg_mutation_result* out, gg_repository* repository,
     const char* revision, const git_oid* tree_oid,
     const gg_operation_options* operation) {
-  return mutate(out, repository, operation, "amend_tree_worktree",
+  return mutate(out, repository, operation, "amend_tree",
                 [&](Repository& repo, std::ostream& output) {
     if (revision == nullptr || tree_oid == nullptr) {
       throw gg::detail::UserError("revision and tree must not be null");
@@ -1361,19 +1360,6 @@ int gg_repository_edit(gg_mutation_result* out,
   });
 }
 
-int gg_repository_edit_worktree(gg_mutation_result* out,
-                                gg_repository* repository,
-                                const char* revision,
-                                const gg_operation_options* operation) {
-  return mutate(out, repository, operation, "edit_worktree",
-                [&](Repository& repo, std::ostream& output) {
-    if (revision == nullptr) {
-      throw gg::detail::UserError("revision must not be null");
-    }
-    gg::detail::command_edit_worktree(repo, revision, output);
-  });
-}
-
 int gg_repository_move(gg_mutation_result* out,
                        gg_repository* repository,
                        const gg_move_options* options,
@@ -1390,7 +1376,6 @@ int gg_repository_move(gg_mutation_result* out,
                             ? MovementDirection::previous
                             : MovementDirection::next;
     command.offset = value.offset;
-    command.edit = value.edit != 0;
     command.conflict = value.conflict != 0;
     command_move(repo, command, output);
   });
@@ -1452,12 +1437,18 @@ int gg_repository_squash_ex(gg_mutation_result* out,
                             const gg_operation_options* operation) {
   return mutate(out, repository, operation, "squash", [&](Repository& repo, std::ostream& output) {
     const auto& value = required(options);
-    command_squash(repo,
-                   SquashCommand{string(value.revision), string(value.source),
-                                 string(value.destination), string(value.message),
-                                 value.message != nullptr,
-                                 entire_branch != 0},
-                   output);
+    SquashCommand command;
+    command.revision = string(value.revision);
+    command.source = string(value.source);
+    command.destination = string(value.destination);
+    // The C API squashes commits; working-tree edits are amended explicitly.
+    if (command.revision.empty() && command.source.empty()) {
+      command.revision = "@";
+    }
+    command.message = string(value.message);
+    command.message_provided = value.message != nullptr;
+    command.entire_branch = entire_branch != 0;
+    command_squash(repo, command, output);
   });
 }
 
@@ -1476,7 +1467,7 @@ int gg_repository_abandon(gg_mutation_result* out,
     const auto& value = required(options);
     AbandonCommand command;
     command.revisions = strings(value.revisions);
-    command.retain_bookmarks = value.retain_bookmarks != 0;
+    command.retain_branches = value.retain_branches != 0;
     command.restore_descendants = value.restore_descendants != 0;
     command_abandon(repo, command, output);
   });
@@ -1537,24 +1528,23 @@ int gg_repository_simplify_parents(
   });
 }
 
-int gg_repository_bookmark(gg_mutation_result* out,
+int gg_repository_branch(gg_mutation_result* out,
                            gg_repository* repository,
-                           const gg_bookmark_options* options,
+                           const gg_branch_options* options,
                            const gg_operation_options* operation) {
-  return mutate(out, repository, operation, "bookmark", [&](Repository& repo, std::ostream& output) {
+  return mutate(out, repository, operation, "branch", [&](Repository& repo, std::ostream& output) {
     const auto& value = required(options);
-    BookmarkCommand command;
+    BranchCommand command;
     switch (value.action) {
-      case GG_BOOKMARK_ADVANCE: command.action = BookmarkAction::advance; break;
-      case GG_BOOKMARK_CREATE: command.action = BookmarkAction::create; break;
-      case GG_BOOKMARK_SET: command.action = BookmarkAction::set; break;
-      case GG_BOOKMARK_MOVE: command.action = BookmarkAction::move; break;
-      case GG_BOOKMARK_DELETE: command.action = BookmarkAction::erase; break;
-      case GG_BOOKMARK_FORGET: command.action = BookmarkAction::forget; break;
-      case GG_BOOKMARK_RENAME: command.action = BookmarkAction::rename; break;
-      case GG_BOOKMARK_TRACK: command.action = BookmarkAction::track; break;
-      case GG_BOOKMARK_UNTRACK: command.action = BookmarkAction::untrack; break;
-      default: throw gg::detail::UserError("invalid bookmark action");
+      case GG_BRANCH_CREATE: command.action = BranchAction::create; break;
+      case GG_BRANCH_SET: command.action = BranchAction::set; break;
+      case GG_BRANCH_MOVE: command.action = BranchAction::move; break;
+      case GG_BRANCH_DELETE: command.action = BranchAction::erase; break;
+      case GG_BRANCH_FORGET: command.action = BranchAction::forget; break;
+      case GG_BRANCH_RENAME: command.action = BranchAction::rename; break;
+      case GG_BRANCH_TRACK: command.action = BranchAction::track; break;
+      case GG_BRANCH_UNTRACK: command.action = BranchAction::untrack; break;
+      default: throw gg::detail::UserError("invalid branch action");
     }
     command.names = strings(value.names);
     command.from = strings(value.from);
@@ -1563,7 +1553,7 @@ int gg_repository_bookmark(gg_mutation_result* out,
     command.allow_backwards = value.allow_backwards != 0;
     command.include_remotes = value.include_remotes != 0;
     command.overwrite_existing = value.overwrite_existing != 0;
-    command_bookmark(repo, command, output);
+    command_branch(repo, command, output);
   });
 }
 
@@ -1907,14 +1897,14 @@ int gg_repository_plan_fetch(gg_transport_plan* out,
       if (value.tracked) {
         branches.clear();
         tags.clear();
-        const std::string bookmark_prefix =
-            std::string(gg::detail::kBookmarkTrackingPrefix) + remote + "/";
+        const std::string branch_prefix =
+            std::string(gg::detail::kBranchTrackingPrefix) + remote + "/";
         const std::string tag_prefix =
             std::string(gg::detail::kTagTrackingPrefix) + remote + "/";
         for (const auto& [reference, oid] : data_refs) {
           (void)oid;
-          if (reference.starts_with(bookmark_prefix)) {
-            const std::string name = reference.substr(bookmark_prefix.size());
+          if (reference.starts_with(branch_prefix)) {
+            const std::string name = reference.substr(branch_prefix.size());
             if (by_branch.contains(name)) branches.push_back(name);
             else {
               deletes.push_back(reference);
@@ -1964,9 +1954,9 @@ int gg_repository_complete_fetch(gg_mutation_result* out,
 int gg_repository_complete_fetch_ex(gg_mutation_result* out,
                                     gg_repository* repository,
                                     const gg_transport_plan* plan,
-                                    int advance_bookmarks,
+                                    int advance_branches,
                                     const gg_operation_options* operation) {
-  return mutate(out, repository, operation, "complete_fetch", [&](Repository& repo, std::ostream&) {
+  return mutate(out, repository, operation, "complete_fetch", [&](Repository& repo, std::ostream& output) {
     if (plan == nullptr || plan->version != GG_OPTIONS_VERSION ||
         (plan->refspec_count != 0 && plan->refspecs == nullptr)) {
       throw gg::detail::UserError("invalid fetch plan");
@@ -1996,7 +1986,7 @@ int gg_repository_complete_fetch_ex(gg_mutation_result* out,
           throw gg::detail::UserError("invalid fetch destination");
         }
         const std::string name = destination.substr(prefix.size());
-        updates[std::string(gg::detail::kBookmarkTrackingPrefix) +
+        updates[std::string(gg::detail::kBranchTrackingPrefix) +
                 refspec.remote + "/" + name] = refspec.target;
       } else if (destination.starts_with("refs/tags/")) {
         const std::string name = destination.substr(std::string("refs/tags/").size());
@@ -2008,9 +1998,8 @@ int gg_repository_complete_fetch_ex(gg_mutation_result* out,
         throw gg::detail::UserError("invalid fetch destination");
       }
     }
-    repo.add_remote_bookmark_updates(updates, advance_bookmarks != 0);
-    repo.record(std::move(updates), std::move(deletes), repo.head_state(),
-                "gg fetch");
+    gg::detail::record_fetch(repo, std::move(updates), std::move(deletes),
+                             advance_branches != 0, output);
   });
 }
 
@@ -2049,11 +2038,11 @@ int gg_repository_plan_push(gg_transport_plan* out,
       }
       for (const std::string& name :
            matching_names(patterns, available,
-                          kind == "heads" ? "bookmark" : "tag", false)) {
+                          kind == "heads" ? "branch" : "tag", false)) {
         selected[prefix + name] = prefix + name;
       }
     };
-    add_kind("heads", value.bookmarks);
+    add_kind("heads", value.branches);
     add_kind("tags", value.tags);
 
     std::set<git_oid, gg::detail::OidLess> revisions;
@@ -2077,7 +2066,7 @@ int gg_repository_plan_push(gg_transport_plan* out,
       });
       if (!named) {
         throw gg::detail::UserError(
-            "push revision is not named by a local bookmark or tag",
+            "push revision is not named by a local branch or tag",
             GIT_EINVALIDSPEC);
       }
     }
@@ -2092,18 +2081,18 @@ int gg_repository_plan_push(gg_transport_plan* out,
       }
     }
     const bool default_selection = !value.all && !value.tracked &&
-                                   !value.deleted && value.bookmarks.count == 0 &&
+                                   !value.deleted && value.branches.count == 0 &&
                                    value.tags.count == 0 && value.revisions.count == 0;
     std::vector<std::string> deletes;
-    const std::string bookmark_tracking =
-        std::string(gg::detail::kBookmarkTrackingPrefix) + remote + "/";
+    const std::string branch_tracking =
+        std::string(gg::detail::kBranchTrackingPrefix) + remote + "/";
     const std::string tag_tracking =
         std::string(gg::detail::kTagTrackingPrefix) + remote + "/";
     for (const auto& [reference, oid] : refs) {
       (void)oid;
       std::string local;
-      if (reference.starts_with(bookmark_tracking)) {
-        local = "refs/heads/" + reference.substr(bookmark_tracking.size());
+      if (reference.starts_with(branch_tracking)) {
+        local = "refs/heads/" + reference.substr(branch_tracking.size());
       } else if (reference.starts_with(tag_tracking)) {
         local = "refs/tags/" + reference.substr(tag_tracking.size());
       } else {
@@ -2175,7 +2164,7 @@ int gg_repository_complete_push(gg_mutation_result* out,
       if (destination.starts_with("refs/heads/")) {
         const std::string name = destination.substr(std::string("refs/heads/").size());
         updates["refs/remotes/" + std::string(refspec.remote) + "/" + name] = current;
-        updates[std::string(gg::detail::kBookmarkTrackingPrefix) +
+        updates[std::string(gg::detail::kBranchTrackingPrefix) +
                 refspec.remote + "/" + name] = current;
       } else if (destination.starts_with("refs/tags/")) {
         const std::string name = destination.substr(std::string("refs/tags/").size());
@@ -2222,6 +2211,7 @@ void gg_named_ref_array_dispose(gg_named_ref_array* array) {
   for (size_t index = 0; index < array->count; ++index) {
     std::free(array->items[index].name);
     std::free(array->items[index].remote);
+    std::free(array->items[index].workspace);
   }
   std::free(array->items);
   *array = {};
@@ -2300,9 +2290,16 @@ void gg_workspace_array_dispose(gg_workspace_array* array) {
   for (size_t index = 0; index < array->count; ++index) {
     std::free(array->items[index].name);
     std::free(array->items[index].root);
+    std::free(array->items[index].branch);
   }
   std::free(array->items);
   *array = {};
+}
+
+void gg_head_dispose(gg_head* head) {
+  if (head == nullptr) return;
+  std::free(head->branch);
+  head->branch = nullptr;
 }
 
 void gg_string_dispose(char* value) { std::free(value); }

@@ -67,8 +67,8 @@ typedef struct gg_reference_array {
 } gg_reference_array;
 
 typedef enum gg_named_ref_kind {
-  GG_NAMED_REF_LOCAL_BOOKMARK,
-  GG_NAMED_REF_REMOTE_BOOKMARK,
+  GG_NAMED_REF_LOCAL_BRANCH,
+  GG_NAMED_REF_REMOTE_BRANCH,
   GG_NAMED_REF_LOCAL_TAG,
   GG_NAMED_REF_REMOTE_TAG
 } gg_named_ref_kind;
@@ -80,6 +80,10 @@ typedef struct gg_named_ref {
   gg_named_ref_kind kind;
   int tracked;
   int conflicted;
+  /* Local branches only: HEAD of this workspace is attached to it. */
+  int current;
+  /* Local branches only: another workspace that has it checked out, or NULL. */
+  char *workspace;
 } gg_named_ref;
 
 typedef struct gg_named_ref_array {
@@ -154,10 +158,22 @@ typedef struct gg_new_options {
   gg_string_array insert_after;
   gg_string_array insert_before;
   int no_edit;
+  /* Do not advance the current branch; HEAD detaches at the new change. A
+   * single parent naming a local branch otherwise continues that branch. */
+  int detach;
 } gg_new_options;
 
 #define GG_NEW_OPTIONS_INIT \
-  { GG_OPTIONS_VERSION, NULL, { NULL, 0 }, { NULL, 0 }, { NULL, 0 }, 0 }
+  { GG_OPTIONS_VERSION, NULL, { NULL, 0 }, { NULL, 0 }, { NULL, 0 }, 0, 0 }
+
+/* Git HEAD of the current workspace. @ is HEAD's commit. */
+typedef struct gg_head {
+  unsigned int version;
+  int attached;     /* HEAD is attached to a local branch */
+  char *branch;     /* short branch name when attached (also when unborn) */
+  git_oid target;
+  int has_target;   /* 0 while the branch is unborn */
+} gg_head;
 
 typedef struct gg_commit_options {
   unsigned int version;
@@ -252,7 +268,7 @@ typedef struct gg_squash_options {
 typedef struct gg_abandon_options {
   unsigned int version;
   gg_string_array revisions;
-  int retain_bookmarks;
+  int retain_branches;
   int restore_descendants;
 } gg_abandon_options;
 
@@ -291,21 +307,20 @@ typedef struct gg_simplify_parents_options {
 #define GG_SIMPLIFY_PARENTS_OPTIONS_INIT \
   { GG_OPTIONS_VERSION, { NULL, 0 }, { NULL, 0 } }
 
-typedef enum gg_bookmark_action {
-  GG_BOOKMARK_ADVANCE,
-  GG_BOOKMARK_CREATE,
-  GG_BOOKMARK_SET,
-  GG_BOOKMARK_MOVE,
-  GG_BOOKMARK_DELETE,
-  GG_BOOKMARK_FORGET,
-  GG_BOOKMARK_RENAME,
-  GG_BOOKMARK_TRACK,
-  GG_BOOKMARK_UNTRACK
-} gg_bookmark_action;
+typedef enum gg_branch_action {
+  GG_BRANCH_CREATE,
+  GG_BRANCH_SET,
+  GG_BRANCH_MOVE,
+  GG_BRANCH_DELETE,
+  GG_BRANCH_FORGET,
+  GG_BRANCH_RENAME,
+  GG_BRANCH_TRACK,
+  GG_BRANCH_UNTRACK
+} gg_branch_action;
 
-typedef struct gg_bookmark_options {
+typedef struct gg_branch_options {
   unsigned int version;
-  gg_bookmark_action action;
+  gg_branch_action action;
   gg_string_array names;
   gg_string_array from;
   gg_string_array remotes;
@@ -313,10 +328,10 @@ typedef struct gg_bookmark_options {
   int allow_backwards;
   int include_remotes;
   int overwrite_existing;
-} gg_bookmark_options;
+} gg_branch_options;
 
-#define GG_BOOKMARK_OPTIONS_INIT \
-  { GG_OPTIONS_VERSION, GG_BOOKMARK_CREATE, { NULL, 0 }, { NULL, 0 }, \
+#define GG_BRANCH_OPTIONS_INIT \
+  { GG_OPTIONS_VERSION, GG_BRANCH_CREATE, { NULL, 0 }, { NULL, 0 }, \
     { NULL, 0 }, NULL, 0, 0, 0 }
 
 typedef enum gg_tag_action {
@@ -347,12 +362,11 @@ typedef struct gg_move_options {
   unsigned int version;
   gg_move_direction direction;
   uint64_t offset;
-  int edit;
   int conflict;
 } gg_move_options;
 
 #define GG_MOVE_OPTIONS_INIT \
-  { GG_OPTIONS_VERSION, GG_MOVE_NEXT, 1, 0, 0 }
+  { GG_OPTIONS_VERSION, GG_MOVE_NEXT, 1, 0 }
 
 typedef struct gg_workspace_add_options {
   unsigned int version;
@@ -400,7 +414,7 @@ typedef struct gg_fetch_options {
 
 typedef struct gg_push_options {
   unsigned int version;
-  gg_string_array bookmarks;
+  gg_string_array branches;
   gg_string_array tags;
   gg_string_array revisions;
   gg_string_array push_options;
@@ -513,6 +527,8 @@ typedef struct gg_workspace {
   int managed;
   int current;
   int primary;
+  /* Short name of the local branch checked out there, or NULL if detached. */
+  char *branch;
 } gg_workspace;
 
 typedef struct gg_workspace_array {
@@ -554,7 +570,7 @@ GG_EXTERN int gg_move_files_options_init(gg_move_files_options *options,
                                          unsigned int version);
 GG_EXTERN int gg_simplify_parents_options_init(
     gg_simplify_parents_options *options, unsigned int version);
-GG_EXTERN int gg_bookmark_options_init(gg_bookmark_options *options,
+GG_EXTERN int gg_branch_options_init(gg_branch_options *options,
                                        unsigned int version);
 GG_EXTERN int gg_tag_options_init(gg_tag_options *options,
                                   unsigned int version);
@@ -579,13 +595,7 @@ GG_EXTERN git_repository *gg_repository_raw(gg_repository *repository);
 GG_EXTERN int gg_repository_adopt_git_history(
     gg_repository *repository, const gg_operation_options *options);
 GG_EXTERN int gg_repository_adopt_git_history_ex(
-    gg_repository *repository, int advance_bookmarks,
-    const gg_operation_options *options);
-GG_EXTERN int gg_repository_snapshot_working_copy(
-    int *changed, gg_repository *repository,
-    const gg_operation_options *options);
-GG_EXTERN int gg_repository_snapshot_working_copy_paths(
-    int *changed, gg_repository *repository, gg_string_array paths,
+    gg_repository *repository, int advance_branches,
     const gg_operation_options *options);
 
 GG_EXTERN int gg_repository_resolve(git_oid *out,
@@ -628,6 +638,8 @@ GG_EXTERN int gg_repository_operation_capabilities(
     gg_operation_capabilities *out, gg_repository *repository);
 GG_EXTERN int gg_repository_workspaces(gg_workspace_array *out,
                                        gg_repository *repository);
+/* Read Git HEAD of this workspace. Dispose with gg_head_dispose. */
+GG_EXTERN int gg_repository_head(gg_head *out, gg_repository *repository);
 GG_EXTERN int gg_repository_workspace_lock_info(
     gg_workspace_lock_info *out, gg_repository *repository, const char *name);
 GG_EXTERN int gg_repository_sparse_patterns(gg_owned_string_array *out,
@@ -636,21 +648,19 @@ GG_EXTERN int gg_repository_sparse_patterns(gg_owned_string_array *out,
 GG_EXTERN int gg_repository_new_change(
     gg_mutation_result *out, gg_repository *repository,
     const gg_new_options *options, const gg_operation_options *operation);
+/* Commit working-tree changes (optionally only the selected filesets) as a
+ * new child of @ and advance the branch HEAD is attached to. */
 GG_EXTERN int gg_repository_commit(
     gg_mutation_result *out, gg_repository *repository,
     const gg_commit_options *options, const gg_operation_options *operation);
-/* Capture all eligible filesystem changes in one new child commit. */
-GG_EXTERN int gg_repository_commit_worktree(
-    gg_mutation_result *out, gg_repository *repository, const char *message,
-    const gg_operation_options *operation);
-/* Rewrite the active change from the filesystem and restack descendants.
+/* Rewrite @ from the filesystem and restack descendants.
  * revision, if supplied, must identify the currently active change.
  * A NULL message retains the previous description. */
-GG_EXTERN int gg_repository_amend_worktree(
+GG_EXTERN int gg_repository_amend(
     gg_mutation_result *out, gg_repository *repository, const char *revision,
     const char *message, const gg_operation_options *operation);
 /* Replace only the active commit's tree. Leaves disk and index untouched. */
-GG_EXTERN int gg_repository_amend_tree_worktree(
+GG_EXTERN int gg_repository_amend_tree(
     gg_mutation_result *out, gg_repository *repository, const char *revision,
     const git_oid *tree_oid, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_describe(
@@ -659,14 +669,12 @@ GG_EXTERN int gg_repository_describe(
 GG_EXTERN int gg_repository_metaedit(
     gg_mutation_result *out, gg_repository *repository,
     const gg_metaedit_options *options, const gg_operation_options *operation);
+/* Check out a revision (Git checkout semantics): a local branch name attaches
+ * HEAD to it, anything else detaches. Refuses to overwrite filesystem edits. */
 GG_EXTERN int gg_repository_edit(gg_mutation_result *out,
                                  gg_repository *repository,
                                  const char *revision,
                                  const gg_operation_options *operation);
-/* Switch active changes only when no filesystem edits would be overwritten. */
-GG_EXTERN int gg_repository_edit_worktree(
-    gg_mutation_result *out, gg_repository *repository, const char *revision,
-    const gg_operation_options *operation);
 GG_EXTERN int gg_repository_move(gg_mutation_result *out,
                                  gg_repository *repository,
                                  const gg_move_options *options,
@@ -718,9 +726,9 @@ GG_EXTERN int gg_repository_simplify_parents(
     gg_mutation_result *out, gg_repository *repository,
     const gg_simplify_parents_options *options,
     const gg_operation_options *operation);
-GG_EXTERN int gg_repository_bookmark(
+GG_EXTERN int gg_repository_branch(
     gg_mutation_result *out, gg_repository *repository,
-    const gg_bookmark_options *options, const gg_operation_options *operation);
+    const gg_branch_options *options, const gg_operation_options *operation);
 GG_EXTERN int gg_repository_tag(gg_mutation_result *out,
                                 gg_repository *repository,
                                 const gg_tag_options *options,
@@ -801,7 +809,7 @@ GG_EXTERN int gg_repository_complete_fetch(
     const gg_operation_options *operation);
 GG_EXTERN int gg_repository_complete_fetch_ex(
     gg_mutation_result *out, gg_repository *repository,
-    const gg_transport_plan *plan, int advance_bookmarks,
+    const gg_transport_plan *plan, int advance_branches,
     const gg_operation_options *operation);
 GG_EXTERN int gg_repository_plan_push(gg_transport_plan *out,
                                       gg_repository *repository,
@@ -822,6 +830,7 @@ GG_EXTERN void gg_revision_array_dispose(gg_revision_array *array);
 GG_EXTERN void gg_status_dispose(gg_status *status);
 GG_EXTERN void gg_operation_array_dispose(gg_operation_array *array);
 GG_EXTERN void gg_workspace_array_dispose(gg_workspace_array *array);
+GG_EXTERN void gg_head_dispose(gg_head *head);
 GG_EXTERN void gg_workspace_lock_info_dispose(gg_workspace_lock_info *info);
 GG_EXTERN void gg_string_dispose(char *value);
 

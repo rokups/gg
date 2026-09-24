@@ -9,26 +9,30 @@
 
 namespace gg::test {
 
-TEST_F(RepositoryTest, ImportsDirtyGitWorkingTreeAsInitialChange) {
+TEST_F(RepositoryTest, AdoptsADirtyGitWorkingTreeWithoutTouchingIt) {
   write("tracked.txt", "modified\n");
   write("untracked.txt", "new\n");
 
   const Result status = invoke({"status"});
   ASSERT_EQ(status.code, 0) << status.error;
+  EXPECT_NE(status.output.find("On branch main"), std::string::npos);
   EXPECT_NE(status.output.find("M tracked.txt"), std::string::npos);
   EXPECT_NE(status.output.find("A untracked.txt"), std::string::npos);
-  expect_workspace_coherent();
+  const git_oid workspace = ref(detail::kWorkspaceRef);
+  const git_oid head = ref("HEAD");
+  EXPECT_NE(git_oid_equal(&workspace, &head), 0);
+  EXPECT_EQ(invoke_git({"status", "--porcelain"}).output,
+            " M tracked.txt\n?? untracked.txt\n");
   EXPECT_EQ(read_path(path_ / "tracked.txt"), "modified\n");
   EXPECT_EQ(read_path(path_ / "untracked.txt"), "new\n");
 }
 
-TEST_F(RepositoryTest, NewSnapshotsStagedAndUnstagedFilesForGit) {
-  ASSERT_EQ(invoke({"new", "-m", "first", "main"}).code, 0);
+TEST_F(RepositoryTest, CommitRecordsStagedAndUnstagedFilesForGit) {
   write("unstaged.txt", "unstaged\n");
   write("staged.txt", "staged\n");
   ASSERT_EQ(invoke_git({"add", "staged.txt"}).code, 0);
 
-  const Result created = invoke({"new", "-m", "second"});
+  const Result created = invoke({"commit", "-m", "first"});
   ASSERT_EQ(created.code, 0) << created.error;
   expect_workspace_coherent();
   EXPECT_TRUE(std::filesystem::exists(path_ / "unstaged.txt"));
@@ -42,17 +46,16 @@ TEST_F(RepositoryTest, NewSnapshotsStagedAndUnstagedFilesForGit) {
             "staged.txt\nunstaged.txt\n");
 }
 
-TEST_F(RepositoryTest, SnapshotRepairsIndexOnlyDeletion) {
-  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+TEST_F(RepositoryTest, AmendRepairsIndexOnlyDeletion) {
   write("kept.txt", "kept\n");
-  ASSERT_EQ(invoke({"log", "--no-graph"}).code, 0);
+  ASSERT_EQ(invoke({"commit", "-m", "work"}).code, 0);
   ASSERT_EQ(invoke_git({"rm", "--cached", "kept.txt"}).code, 0);
   ASSERT_TRUE(std::filesystem::exists(path_ / "kept.txt"));
   ASSERT_FALSE(invoke_git({"status", "--porcelain=v2",
                            "--untracked-files=all"})
                    .output.empty());
 
-  ASSERT_EQ(invoke({"log", "--no-graph"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   expect_workspace_coherent();
   EXPECT_TRUE(std::filesystem::exists(path_ / "kept.txt"));
   EXPECT_EQ(invoke_git({"ls-files", "--", "kept.txt"}).output,
@@ -60,23 +63,24 @@ TEST_F(RepositoryTest, SnapshotRepairsIndexOnlyDeletion) {
 }
 
 TEST_F(RepositoryTest, NavigationUpdatesGitIndexToTheCheckedOutChange) {
-  ASSERT_EQ(invoke({"new", "-m", "parent", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "parent", main_id()}).code, 0);
   write("tracked.txt", "parent\n");
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   ASSERT_EQ(invoke({"new", "-m", "child"}).code, 0);
   write("tracked.txt", "child\n");
-  ASSERT_EQ(invoke({"log", "--no-graph"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
 
   ASSERT_EQ(invoke({"edit", "@-"}).code, 0);
   EXPECT_EQ(file(), "parent\n");
   expect_workspace_coherent();
 
-  ASSERT_EQ(invoke({"next", "--edit"}).code, 0);
+  ASSERT_EQ(invoke({"next"}).code, 0);
   EXPECT_EQ(file(), "child\n");
   expect_workspace_coherent();
 }
 
 TEST_F(RepositoryTest, ExplicitlyUntrackedFilesSurviveCheckoutAndRecovery) {
-  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "work", main_id()}).code, 0);
   write("keep.txt", "keep\n");
   ASSERT_EQ(invoke({"log", "--no-graph"}).code, 0);
   ASSERT_EQ(invoke({"file", "untrack", "keep.txt"}).code, 0);
@@ -98,13 +102,15 @@ TEST_F(RepositoryTest, ExplicitlyUntrackedFilesSurviveCheckoutAndRecovery) {
   expect_workspace_coherent();
 }
 
-TEST_F(RepositoryTest, ImportsNativeGitCommitsIntoACoherentWorkingChange) {
-  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+TEST_F(RepositoryTest, AdoptsNativeGitCommitsAsTheWorkingCopy) {
+  ASSERT_EQ(invoke({"new", "-m", "work", main_id()}).code, 0);
   write("tracked.txt", "native\n");
-  ASSERT_EQ(invoke({"log", "--no-graph"}).code, 0);
-  ASSERT_EQ(invoke_git({"commit", "-m", "native commit"}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-qam", "native commit"}).code, 0);
+  const git_oid native = ref("HEAD");
 
   ASSERT_EQ(invoke({"log", "--no-graph"}).code, 0);
+  const git_oid workspace = ref(detail::kWorkspaceRef);
+  EXPECT_NE(git_oid_equal(&workspace, &native), 0);
   expect_workspace_coherent();
   EXPECT_EQ(file(), "native\n");
   EXPECT_EQ(invoke_git({"status", "--porcelain=v2",
@@ -113,12 +119,12 @@ TEST_F(RepositoryTest, ImportsNativeGitCommitsIntoACoherentWorkingChange) {
             "");
 }
 
-TEST_F(RepositoryTest, ReconcilesGitPulledRemoteBookmarks) {
+TEST_F(RepositoryTest, ReconcilesGitPulledRemoteBranches) {
   const git_oid base = ref("refs/heads/main");
   set_ref("refs/remotes/origin/main", base);
-  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "work", main_id()}).code, 0);
   const git_oid imported_tracking =
-      ref("refs/gg/tracking/bookmarks/origin/main");
+      ref("refs/gg/tracking/branches/origin/main");
   EXPECT_NE(git_oid_equal(&imported_tracking, &base), 0);
 
   const git_oid pulled = raw_commit("pulled", {base});
@@ -128,24 +134,23 @@ TEST_F(RepositoryTest, ReconcilesGitPulledRemoteBookmarks) {
             0);
   ASSERT_EQ(invoke_git({"reset", "--hard", git_oid_tostr_s(&pulled)}).code,
             0);
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid pulled_local = ref("refs/heads/main");
   const git_oid pulled_tracking =
-      ref("refs/gg/tracking/bookmarks/origin/main");
-  const git_oid pulled_parent =
-      commit_parent(ref("refs/gg/workspaces/default"));
+      ref("refs/gg/tracking/branches/origin/main");
+  const git_oid pulled_workspace = ref("refs/gg/workspaces/default");
   EXPECT_NE(git_oid_equal(&pulled_local, &pulled), 0);
   EXPECT_NE(git_oid_equal(&pulled_tracking, &pulled), 0);
-  EXPECT_NE(git_oid_equal(&pulled_parent, &pulled), 0);
+  EXPECT_NE(git_oid_equal(&pulled_workspace, &pulled), 0);
 
   const git_oid local = raw_commit("local", {pulled});
   const git_oid remote = raw_commit("remote", {local});
   set_ref("refs/heads/main", local);
   set_ref("refs/remotes/origin/main", remote);
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid advanced_local = ref("refs/heads/main");
   const git_oid updated_tracking =
-      ref("refs/gg/tracking/bookmarks/origin/main");
+      ref("refs/gg/tracking/branches/origin/main");
   EXPECT_NE(git_oid_equal(&advanced_local, &remote), 0);
   EXPECT_NE(git_oid_equal(&updated_tracking, &remote), 0);
 
@@ -153,15 +158,15 @@ TEST_F(RepositoryTest, ReconcilesGitPulledRemoteBookmarks) {
   const git_oid remote_side = raw_commit("remote side", {remote});
   set_ref("refs/heads/main", local_side);
   set_ref("refs/remotes/origin/main", remote_side);
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid preserved_local = ref("refs/heads/main");
   EXPECT_NE(git_oid_equal(&preserved_local, &local_side), 0);
 }
 
 TEST_F(RepositoryTest, FailedCommandsLeaveGitProjectionUnchanged) {
-  ASSERT_EQ(invoke({"new", "-m", "work", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "work", main_id()}).code, 0);
   write("tracked.txt", "changed\n");
-  ASSERT_EQ(invoke({"log", "--no-graph"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid workspace = ref("refs/gg/workspaces/default");
   const git_oid head = ref("HEAD");
   const std::string status =
@@ -182,7 +187,7 @@ TEST_F(RepositoryTest, FailedCommandsLeaveGitProjectionUnchanged) {
 }
 
 TEST_F(RepositoryTest, SnapshotsRenamesDeletesModesSymlinksAndIgnoredFiles) {
-  ASSERT_EQ(invoke({"new", "-m", "files", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "files", main_id()}).code, 0);
   std::filesystem::rename(path_ / "tracked.txt", path_ / "renamed.txt");
   write("nested/tool.sh", "#!/bin/sh\n");
   std::filesystem::permissions(
@@ -192,7 +197,7 @@ TEST_F(RepositoryTest, SnapshotsRenamesDeletesModesSymlinksAndIgnoredFiles) {
   write(".gitignore", "ignored.txt\n");
   write("ignored.txt", "ignored\n");
 
-  ASSERT_EQ(invoke({"new", "-m", "next"}).code, 0);
+  ASSERT_EQ(invoke({"commit", "-m", "next"}).code, 0);
   expect_workspace_coherent();
   EXPECT_FALSE(std::filesystem::exists(path_ / "tracked.txt"));
   EXPECT_EQ(read_path(path_ / "renamed.txt"), "base\n");
@@ -210,7 +215,7 @@ TEST_F(RepositoryTest, SnapshotsRenamesDeletesModesSymlinksAndIgnoredFiles) {
 }
 
 TEST_F(RepositoryTest, CommitRestoreAndMetadataCommandsKeepGitCoherent) {
-  ASSERT_EQ(invoke({"new", "-m", "draft", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "draft", main_id()}).code, 0);
   write("selected.txt", "selected\n");
   write("remaining.txt", "remaining\n");
   ASSERT_EQ(invoke({"commit", "-m", "selected", "selected.txt"}).code, 0);
@@ -235,7 +240,7 @@ TEST_F(RepositoryTest, IsolatesGgStateAcrossLinkedWorkspaces) {
   const auto linked = path_.parent_path() /
                       (path_.filename().string() + "-linked");
   std::filesystem::remove_all(linked);
-  ASSERT_EQ(invoke({"new", "-m", "primary", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "primary", main_id()}).code, 0);
   const git_oid primary_workspace = ref(detail::kWorkspaceRef);
   detail::Repository initial(path_);
   initial.record({}, {std::string(detail::kWorkspaceRef)},
@@ -279,7 +284,7 @@ TEST_F(RepositoryTest, IsolatesGgStateAcrossLinkedWorkspaces) {
             std::filesystem::weakly_canonical(linked).string() + "\n");
 
   std::ofstream(linked / "linked.txt") << "linked\n";
-  ASSERT_EQ(invoke_at(linked, {"new", "-m", "linked work"}).code, 0);
+  ASSERT_EQ(invoke_at(linked, {"commit", "-m", "linked work"}).code, 0);
   EXPECT_EQ(invoke_git_at(linked, {"status", "--porcelain=v2",
                                    "--untracked-files=all"})
                 .output,
@@ -326,7 +331,7 @@ TEST_F(RepositoryTest, IsolatesGgStateAcrossLinkedWorkspaces) {
 }
 
 TEST_F(RepositoryTest, RegistersGitCreatedLinkedWorktreesOnFirstUse) {
-  ASSERT_EQ(invoke({"new", "-m", "primary", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", "-m", "primary", main_id()}).code, 0);
   const std::string primary_name = path_.filename().string() + "-native";
   ASSERT_EQ(invoke({"workspace", "rename", primary_name}).code, 0);
   const auto linked = path_.parent_path() / primary_name;
@@ -421,18 +426,21 @@ TEST_F(RepositoryTest, RegistersGitCreatedLinkedWorktreesOnFirstUse) {
 }
 
 TEST_F(RepositoryTest, LockedHeadRejectsWorkspaceChangesWithoutRecordingThem) {
+  ASSERT_EQ(invoke({"status"}).code, 0);
   detail::Repository before(path_);
   const git_oid operation = before.ensure_operation();
   const git_oid original = ref("HEAD");
   write(".git/HEAD.lock", "held by another process\n");
-  for (const auto& command : {std::vector<std::string>{"new", "-m", "new child"},
+  // Both commands detach HEAD from main, which requires writing HEAD.
+  for (const auto& command : {std::vector<std::string>{"new", "-d", "-m", "new child"},
                               std::vector<std::string>{"edit", detail::oid_string(original)}}) {
     SCOPED_TRACE(command.front());
     const Result failed = invoke(command);
     EXPECT_NE(failed.code, 0);
     EXPECT_NE(failed.error.find("HEAD.lock"), std::string::npos);
     EXPECT_EQ(failed.error.find("could not restore"), std::string::npos) << failed.error;
-    EXPECT_FALSE(has_ref("refs/gg/workspaces/default"));
+    const git_oid workspace = ref("refs/gg/workspaces/default");
+    EXPECT_NE(git_oid_equal(&workspace, &original), 0);
     const git_oid head = ref("HEAD");
     EXPECT_NE(git_oid_equal(&head, &original), 0);
     detail::Repository after(path_);
@@ -450,12 +458,12 @@ TEST_F(RepositoryTest, FailedCheckoutRestoresGraphAndPartiallyWrittenFiles) {
   ASSERT_EQ(invoke({"new", "-m", "source"}).code, 0);
   write("aaa.txt", "old first\n");
   write("restricted/file.txt", "old blocked\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid source = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"new", "-m", "target"}).code, 0);
   write("aaa.txt", "new first\n");
   write("restricted/file.txt", "new blocked\n");
-  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"squash"}).code, 0);
   const git_oid target = ref("refs/gg/workspaces/default");
   ASSERT_EQ(invoke({"edit", detail::oid_string(source)}).code, 0);
   write(".git/info/exclude", "ignored.txt\n");
@@ -500,7 +508,7 @@ TEST_F(RepositoryTest, FailedCheckoutRestoresGraphAndPartiallyWrittenFiles) {
   }
 }
 
-TEST_F(RepositoryTest, FailedCheckoutPreservesIgnoredCollisionWithoutCreatingWorkspace) {
+TEST_F(RepositoryTest, FailedCheckoutPreservesIgnoredCollisionAndWorkspace) {
   const git_oid original = ref("HEAD");
   write("ignored.txt", "committed target\n");
   ASSERT_EQ(invoke_git({"add", "ignored.txt"}).code, 0);
@@ -509,6 +517,7 @@ TEST_F(RepositoryTest, FailedCheckoutPreservesIgnoredCollisionWithoutCreatingWor
   ASSERT_EQ(invoke_git({"checkout", "--detach", detail::oid_string(original)}).code, 0);
   write(".git/info/exclude", "ignored.txt\n");
   write("ignored.txt", "precious local content\n");
+  ASSERT_EQ(invoke({"status"}).code, 0);
   detail::Repository before(path_);
   const git_oid operation = before.ensure_operation();
 
@@ -516,7 +525,8 @@ TEST_F(RepositoryTest, FailedCheckoutPreservesIgnoredCollisionWithoutCreatingWor
   EXPECT_NE(failed.code, 0);
   EXPECT_EQ(failed.error.find("could not restore"), std::string::npos) << failed.error;
   EXPECT_EQ(read_path(path_ / "ignored.txt"), "precious local content\n");
-  EXPECT_FALSE(has_ref("refs/gg/workspaces/default"));
+  const git_oid workspace = ref("refs/gg/workspaces/default");
+  EXPECT_NE(git_oid_equal(&workspace, &original), 0);
   const git_oid head = ref("HEAD");
   EXPECT_NE(git_oid_equal(&head, &original), 0);
   detail::Repository after(path_);
@@ -570,7 +580,7 @@ TEST_F(RepositoryTest, FailedCheckoutRestoresAnUnbornWorkingTree) {
   EXPECT_EQ(invoke_git({"ls-files"}).output, "");
 }
 
-TEST_F(RepositoryTest, LinkedWorktreeImportPreservesHeadAndFirstUndoLineage) {
+TEST_F(RepositoryTest, LinkedWorktreeImportKeepsItsCheckedOutBranch) {
   const git_oid base = ref("HEAD");
   const auto linked = path_.parent_path() / (path_.filename().string() + "-attached");
   struct Cleanup {
@@ -580,30 +590,33 @@ TEST_F(RepositoryTest, LinkedWorktreeImportPreservesHeadAndFirstUndoLineage) {
   ASSERT_EQ(invoke_git({"worktree", "add", "--quiet", "-b", "linked", linked.string(), "main"}).code, 0);
   const Result imported = invoke_at(linked, {"status"});
   ASSERT_EQ(imported.code, 0) << imported.error;
+  EXPECT_NE(imported.output.find("On branch linked"), std::string::npos);
   detail::Repository repo(linked);
   const auto workspace = repo.workspace();
   ASSERT_TRUE(workspace.has_value());
+  EXPECT_EQ(detail::oid_string(*workspace), detail::oid_string(base));
   const git_oid operation = *repo.operation();
   const auto recorded = repo.parse_operation(operation);
   EXPECT_EQ(recorded.head.symbolic, repo.head_state().symbolic);
   EXPECT_EQ(recorded.head.value, repo.head_state().value);
-  EXPECT_FALSE(repo.head_state().symbolic);
-  EXPECT_EQ(detail::oid_string(*repo.head_oid()), detail::oid_string(base));
-  ASSERT_EQ(invoke_at(linked, {"status"}).code, 0);
-  EXPECT_EQ(detail::oid_string(*repo.operation()), detail::oid_string(operation));
-  const Result undone = invoke_at(linked, {"undo"});
-  ASSERT_EQ(undone.code, 0) << undone.error;
-  EXPECT_FALSE(repo.workspace().has_value());
   EXPECT_TRUE(repo.head_state().symbolic);
   EXPECT_EQ(repo.head_state().value, "refs/heads/linked");
-  ASSERT_EQ(invoke_at(linked, {"redo"}).code, 0);
-  EXPECT_EQ(detail::oid_string(*repo.workspace()), detail::oid_string(*workspace));
-  EXPECT_FALSE(repo.head_state().symbolic);
+  ASSERT_EQ(invoke_at(linked, {"status"}).code, 0);
+  EXPECT_EQ(detail::oid_string(*repo.operation()), detail::oid_string(operation));
+  // Adopting the worktree is its initial state; there is nothing to undo.
+  EXPECT_EQ(invoke_at(linked, {"undo"}).code, 2);
+
+  // A branch checked out in another workspace cannot be checked out here.
+  EXPECT_EQ(invoke({"edit", "linked"}).code, 2);
+  EXPECT_EQ(invoke({"branch", "delete", "linked"}).code, 2);
+  write("tracked.txt", "primary\n");
+  ASSERT_EQ(invoke({"commit", "-m", "primary"}).code, 0);
   EXPECT_EQ(read_path(linked / "tracked.txt"), "base\n");
+  EXPECT_EQ(detail::oid_string(ref("refs/heads/linked")), detail::oid_string(base));
   ASSERT_EQ(invoke_git({"worktree", "remove", "--force", linked.string()}).code, 0);
 }
 
-TEST_F(RepositoryTest, LinkedWorktreeImportWithLockedHeadPreservesDirtyFiles) {
+TEST_F(RepositoryTest, LinkedWorktreeImportLeavesHeadAndDirtyFilesAlone) {
   const auto linked = path_.parent_path() / (path_.filename().string() + "-locked-import");
   struct Cleanup {
     std::filesystem::path path;
@@ -611,28 +624,21 @@ TEST_F(RepositoryTest, LinkedWorktreeImportWithLockedHeadPreservesDirtyFiles) {
   } cleanup{linked};
   ASSERT_EQ(invoke_git({"worktree", "add", "--quiet", "-b", "linked", linked.string(), "main"}).code, 0);
   detail::Repository repo(linked);
-  const git_oid operation = repo.ensure_operation();
   const auto head = repo.head_state();
   const auto lock = std::filesystem::path(git_repository_path(repo.raw())) / "HEAD.lock";
   std::ofstream(lock) << "locked\n";
   std::ofstream(linked / "tracked.txt") << "precious dirty content\n";
-  const Result refused = invoke_at(linked, {"status"});
-  EXPECT_NE(refused.code, 0);
-  EXPECT_EQ(refused.error.find("could not restore"), std::string::npos) << refused.error;
-  EXPECT_FALSE(repo.workspace().has_value());
+  const Result imported = invoke_at(linked, {"status"});
+  EXPECT_EQ(imported.code, 0) << imported.error;
+  EXPECT_TRUE(repo.workspace().has_value());
   EXPECT_EQ(repo.head_state().symbolic, head.symbolic);
   EXPECT_EQ(repo.head_state().value, head.value);
-  EXPECT_EQ(detail::oid_string(*repo.operation()), detail::oid_string(operation));
   EXPECT_EQ(read_path(linked / "tracked.txt"), "precious dirty content\n");
   std::filesystem::remove(lock);
-  ASSERT_EQ(invoke_at(linked, {"status"}).code, 0);
-  EXPECT_TRUE(repo.workspace().has_value());
-  EXPECT_FALSE(repo.head_state().symbolic);
-  EXPECT_EQ(read_path(linked / "tracked.txt"), "precious dirty content\n");
   ASSERT_EQ(invoke_git({"worktree", "remove", "--force", linked.string()}).code, 0);
 }
 
-TEST_F(RepositoryTest, LinkedWorktreeRefreshKeepsUndoRedoAndForgottenWorkspaceState) {
+TEST_F(RepositoryTest, LinkedWorktreeRefreshKeepsForgottenWorkspaceState) {
   const auto linked = path_.parent_path() / (path_.filename().string() + "-refresh");
   struct Cleanup {
     std::filesystem::path path;
@@ -642,31 +648,19 @@ TEST_F(RepositoryTest, LinkedWorktreeRefreshKeepsUndoRedoAndForgottenWorkspaceSt
   detail::Repository repo(linked);
   gg_repository* api = nullptr;
   ASSERT_EQ(gg_repository_attach(&api, repo.raw()), GIT_OK);
-  // The GUI runs both calls on the same attached instance for every refresh.
+  // The GUI adopts Git history on the same attached instance for every refresh.
   const auto refresh = [&] {
     EXPECT_EQ(gg_repository_adopt_git_history_ex(api, 0, nullptr), GIT_OK);
-    int changed = 0;
-    EXPECT_EQ(gg_repository_snapshot_working_copy(&changed, api, nullptr), GIT_OK);
   };
   refresh();
   ASSERT_TRUE(repo.workspace().has_value());
-  const git_oid imported = *repo.workspace();
-  gg_mutation_result mutation{};
-  ASSERT_EQ(gg_repository_undo(&mutation, api, nullptr), GIT_OK);
-  gg_mutation_result_dispose(&mutation);
-  ASSERT_FALSE(repo.workspace().has_value());
-  const git_oid undone_operation = *repo.operation();
+  const git_oid imported_operation = *repo.operation();
   refresh();
-  refresh();
-  EXPECT_FALSE(repo.workspace().has_value());
-  EXPECT_EQ(detail::oid_string(*repo.operation()), detail::oid_string(undone_operation));
+  EXPECT_EQ(detail::oid_string(*repo.operation()),
+            detail::oid_string(imported_operation));
   gg_operation_capabilities capabilities{};
   ASSERT_EQ(gg_repository_operation_capabilities(&capabilities, api), GIT_OK);
-  EXPECT_TRUE(capabilities.can_redo);
-  ASSERT_EQ(gg_repository_redo(&mutation, api, nullptr), GIT_OK);
-  gg_mutation_result_dispose(&mutation);
-  refresh();
-  EXPECT_EQ(detail::oid_string(*repo.workspace()), detail::oid_string(imported));
+  EXPECT_FALSE(capabilities.can_undo);
   ASSERT_EQ(invoke_at(linked, {"workspace", "forget", repo.workspace_name()}).code, 0);
   const git_oid forgotten_operation = *repo.operation();
   refresh();
@@ -679,13 +673,11 @@ TEST_F(RepositoryTest, LinkedWorktreeRefreshKeepsUndoRedoAndForgottenWorkspaceSt
 TEST_F(RepositoryTest, DetachedHeadMetadataRewriteSurvivesGarbageCollectionAndUndo) {
   const git_oid original = raw_commit("detached source", {ref("HEAD")});
   ASSERT_EQ(invoke_git({"checkout", "--detach", detail::oid_string(original)}).code, 0);
-  ASSERT_FALSE(has_ref("refs/gg/workspaces/default"));
   const Result described = invoke({"describe", "-m", "rewritten source",
                                    detail::oid_string(original)});
   ASSERT_EQ(described.code, 0) << described.error;
   const git_oid rewritten = ref("HEAD");
   ASSERT_FALSE(git_oid_equal(&original, &rewritten));
-  ASSERT_FALSE(has_ref("refs/gg/workspaces/default"));
 
   // The original commit has no branch or workspace ref, and aliases retain only
   // their replacement. Operation history must keep this detached HEAD alive.
@@ -700,7 +692,6 @@ TEST_F(RepositoryTest, DetachedHeadMetadataRewriteSurvivesGarbageCollectionAndUn
   const git_oid restored = ref("HEAD");
   EXPECT_TRUE(git_oid_equal(&restored, &original));
   EXPECT_FALSE(detail::Repository(path_).head_state().symbolic);
-  EXPECT_FALSE(has_ref("refs/gg/workspaces/default"));
   EXPECT_EQ(read_path(path_ / "tracked.txt"), "base\n");
   const Result redone = invoke({"redo"});
   ASSERT_EQ(redone.code, 0) << redone.error;

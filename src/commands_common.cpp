@@ -250,7 +250,7 @@ constexpr std::array<StyleSpec, 17> kStyles{{
     {"\x1b[1;38;5;12m", "working_copy commit_id"},
     {"\x1b[1;38;5;12m", "working_copy commit_id shortest prefix"},
     {"\x1b[38;5;8m", "working_copy commit_id shortest rest"},
-    {"\x1b[38;5;5m", "bookmark"},
+    {"\x1b[38;5;5m", "branch"},
     {"\x1b[38;5;5m", "tag"},
     {"\x1b[38;5;4m", "operation_id"},
     {"\x1b[1;38;5;12m", "current_operation_id"},
@@ -687,15 +687,14 @@ void finish_workspace(Repository& repo,
                       std::map<std::string, git_oid> updates,
                       std::set<std::string> deletes,
                       std::string_view operation,
-                      bool captured_worktree) {
+                      const HeadIntent& intent) {
   bool tree_unchanged = false;
   if (const auto current = repo.workspace(); current.has_value()) {
     tree_unchanged = git_oid_equal(
         git_commit_tree_id(repo.commit(*current).get()),
         git_commit_tree_id(repo.commit(workspace).get())) != 0;
   }
-  if (!tree_unchanged && !captured_worktree &&
-      !repo.synchronizes_commands()) {
+  if (!tree_unchanged) {
     const auto baseline = repo.workspace().has_value()
                               ? repo.workspace()
                               : repo.head_oid();
@@ -707,9 +706,7 @@ void finish_workspace(Repository& repo,
     }
   }
   updates[repo.workspace_ref_name()] = workspace;
-  const HeadState head = captured_worktree
-                             ? HeadState{false, oid_string(workspace)}
-                             : repo.head_for_workspace(workspace);
+  const HeadState head = repo.head_after(workspace, updates, deletes, intent);
   const git_oid previous_operation = repo.ensure_operation();
   const auto previous_aliases = repo.data_refs();
   repo.record(std::move(updates), std::move(deletes), head, operation);
@@ -733,12 +730,12 @@ void finish_workspace(Repository& repo,
 void finish_workspace_preserving_worktree(
     Repository& repo, const git_oid& workspace,
     std::map<std::string, git_oid> updates,
-    std::string_view operation) {
+    std::string_view operation, const HeadIntent& intent) {
   const HeadState previous_head = repo.head_state();
   const git_oid previous_operation = repo.ensure_operation();
   const auto previous_refs = repo.data_refs();
   updates[repo.workspace_ref_name()] = workspace;
-  const HeadState head{false, oid_string(workspace)};
+  const HeadState head = repo.head_after(workspace, updates, {}, intent);
   repo.record(std::move(updates), {}, head, operation);
   try {
     repo.set_head(head);
@@ -781,9 +778,8 @@ void finish_without_workspace(Repository& repo, RewritePlan plan,
   } else if (checkout.has_value()) {
     head = {false, oid_string(*checkout)};
   }
-  if (!repo.synchronizes_commands() &&
-      (checkout.has_value() != previous_head.has_value() ||
-       (checkout.has_value() && !(*checkout == *previous_head)))) {
+  if (checkout.has_value() != previous_head.has_value() ||
+      (checkout.has_value() && !(*checkout == *previous_head))) {
     const git_oid baseline_tree = previous_head.has_value()
                                       ? *git_commit_tree_id(repo.commit(*previous_head).get())
                                       : repo.empty_tree();
@@ -916,8 +912,18 @@ int command_util_exec(const UtilExecCommand& options,
 void command_util_gc(Repository& repo,
                      const UtilGcCommand& options,
                      std::ostream& output) {
-  repo.sync_for_command();
+  repo.prepare_command();
   (void)repo.collect_expired_aliases("gg util gc");
+  // Unnamed-head markers are only needed while they mark a head.
+  const auto heads = repo.resolve_set("visible_heads()");
+  const std::set<git_oid, OidLess> visible(heads.begin(), heads.end());
+  std::set<std::string> redundant;
+  for (const auto& [reference, oid] : repo.refs_with_prefix(kVisibleHeadPrefix)) {
+    if (!visible.contains(oid)) redundant.insert(reference);
+  }
+  if (!redundant.empty()) {
+    repo.record({}, std::move(redundant), repo.head_state(), "gg util gc");
+  }
   UtilExecCommand command{
       "git",
       {"--git-dir=" + std::string(git_repository_path(repo.raw())), "gc"}};
@@ -939,11 +945,6 @@ void command_util_optimize(Repository& repo, std::ostream& output) {
     throw UserError("commit-graph optimization failed");
   }
   output << "Repository optimization completed.\n";
-}
-
-void command_util_snapshot(Repository& repo, std::ostream& output) {
-  output << (repo.sync_workspace() ? "Created working-copy snapshot.\n"
-                                   : "Nothing changed.\n");
 }
 
 namespace {
@@ -1137,7 +1138,7 @@ void command_workspace(Repository& repo,
       options.action != WorkspaceAction::root) {
     lifecycle_lock = std::make_unique<WorkspaceLock>(repo.raw());
   }
-  if (options.action == WorkspaceAction::add) repo.sync_for_command();
+  if (options.action == WorkspaceAction::add) repo.prepare_command();
   const auto workspace_reference = repo.workspace_ref();
   const auto workspace = repo.workspace();
   const std::string workspace_name = repo.workspace_name();
@@ -1190,23 +1191,46 @@ void command_workspace(Repository& repo,
                                  : options.revision;
     const git_oid parent = repo.resolve(revision);
     const CommitPtr parent_commit = repo.commit(parent);
-    // Two identical empty changes created in one second must still have
-    // independent identities; rewriting one must not target another workspace.
-    SignaturePtr actor = repo.signature();
-    git_oid working{};
-    do {
-      working = repo.create_commit(*git_commit_tree_id(parent_commit.get()),
-                                   {parent}, options.message, actor.get(), actor.get());
-      ++actor->when.time;
-    } while (std::ranges::any_of(workspace_records, [&](const WorkspaceRecord& record) {
-      return record.managed && record.working_copy.has_value() &&
-             git_oid_equal(&*record.working_copy, &working) != 0;
-    }));
+    // The new workspace checks out the revision itself. A free local branch
+    // is checked out attached; a message starts a new unnamed change on it.
+    std::optional<std::string> branch =
+        options.message.empty() ? local_branch_named(repo, options.revision)
+                                : std::nullopt;
+    if (branch.has_value() &&
+        std::ranges::any_of(workspace_records, [&](const WorkspaceRecord& record) {
+          return record.branch == *branch;
+        })) {
+      branch.reset();
+    }
+    git_oid working = parent;
+    std::map<std::string, git_oid> updates;
+    if (!options.message.empty()) {
+      // Two identical changes created in one second must still have
+      // independent identities; rewriting one must not target another workspace.
+      SignaturePtr actor = repo.signature();
+      do {
+        working = repo.create_commit(*git_commit_tree_id(parent_commit.get()),
+                                     {parent}, options.message, actor.get(),
+                                     actor.get());
+        ++actor->when.time;
+      } while (std::ranges::any_of(workspace_records, [&](const WorkspaceRecord& record) {
+        return record.managed && record.working_copy.has_value() &&
+               git_oid_equal(&*record.working_copy, &working) != 0;
+      }));
+      updates.emplace(user_head_ref(working), working);
+    }
     UtilExecCommand command{
         "git",
         {"--git-dir=" + std::string(git_repository_commondir(repo.raw())),
-         "worktree", "add", "--quiet", "--detach", destination.string(),
-         oid_string(parent)}};
+         "worktree", "add", "--quiet"}};
+    if (branch.has_value()) {
+      command.arguments.push_back(destination.string());
+      command.arguments.push_back(branch->substr(11));
+    } else {
+      command.arguments.push_back("--detach");
+      command.arguments.push_back(destination.string());
+      command.arguments.push_back(oid_string(working));
+    }
     if (command_util_exec(command, git_repository_path(repo.raw())) != 0) {
       throw UserError("cannot create linked workspace");
     }
@@ -1243,8 +1267,9 @@ void command_workspace(Repository& repo,
         }
       }
       const std::string name = linked.workspace_name();
-      repo.record({{std::string(kWorkspacePrefix) + name, working}},
-                  {}, repo.head_state(), "gg workspace add " + name, true);
+      updates.emplace(std::string(kWorkspacePrefix) + name, working);
+      repo.record(std::move(updates), {}, repo.head_state(),
+                  "gg workspace add " + name, true);
     } catch (...) {
       // Only this newly created worktree is eligible for rollback. Native Git
       // owns its administration and refuses unexpected locks or submodules.
@@ -1476,10 +1501,8 @@ void command_workspace(Repository& repo,
       } else {
         if (selected->managed) {
           Repository target(selected->root);
-          // Explicit-commit callers never snapshot implicitly; uncommitted
-          // edits must fail the loss check below instead of being absorbed
-          // into a commit that removal would leave unreachable.
-          if (repo.synchronizes_commands()) target.sync_workspace();
+          // Uncommitted edits must fail the loss check below instead of
+          // being absorbed into a commit that removal would leave unreachable.
           repo.invalidate_ref_cache();
           const auto target_workspace = target.workspace();
           if (target_workspace.has_value() &&

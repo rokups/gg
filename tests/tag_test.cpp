@@ -7,7 +7,7 @@
 namespace gg::test {
 
 TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "v1", "stable"}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "base", "-r", "main"}).code, 0);
   const std::string listed = invoke({"tag", "list"}).output;
@@ -104,7 +104,7 @@ TEST_F(RepositoryTest, SetsListsMovesAndDeletesTags) {
 }
 
 TEST_F(RepositoryTest, RestoresTagsThroughOperationHistory) {
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   ASSERT_EQ(invoke({"tag", "set", "release"}).code, 0);
   EXPECT_TRUE(has_ref("refs/tags/release"));
   ASSERT_EQ(invoke({"undo"}).code, 0);
@@ -117,7 +117,7 @@ TEST_F(RepositoryTest, ValidatesTagRequestsAndUnsupportedFilters) {
   EXPECT_EQ(invoke({"tag"}).code, 2);
   EXPECT_EQ(invoke({"tag", "set"}).code, 2);
   EXPECT_EQ(invoke({"tag", "delete"}).code, 2);
-  ASSERT_EQ(invoke({"new", "main"}).code, 0);
+  ASSERT_EQ(invoke({"new", main_id()}).code, 0);
   EXPECT_EQ(invoke({"tag", "set", "valid", "bad name"}).code, 2);
   EXPECT_FALSE(has_ref("refs/tags/valid"));
   EXPECT_EQ(invoke({"tag", "list", "--all-remotes"}).code, 0);

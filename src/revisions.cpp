@@ -264,6 +264,124 @@ std::set<std::string> Repository::legacy_change_refs() const {
   return result;
 }
 
+void Repository::migrate_legacy_branch_tracking() const {
+  git_reference_iterator* raw_iterator = nullptr;
+  check(git_reference_iterator_glob_new(&raw_iterator, repo_.get(),
+                                        "refs/gg/tracking/bookmarks/*"),
+        "list legacy branch tracking references");
+  ReferenceIteratorPtr iterator(raw_iterator);
+  std::map<std::string, git_oid> updates;
+  std::set<std::string> deletes;
+  while (true) {
+    const char* name = nullptr;
+    const int next = git_reference_next_name(&name, iterator.get());
+    if (next == GIT_ITEROVER) break;
+    check(next, "list legacy branch tracking references");
+    const std::string legacy(name);
+    const auto target = ref_target(legacy);
+    if (!target.has_value()) continue;  // GG_COV_EXCL_LINE
+    updates.emplace(std::string(kBranchTrackingPrefix) +
+                        legacy.substr(kLegacyBranchTrackingPrefix.size()),
+                    *target);
+    deletes.insert(legacy);
+  }
+  if (deletes.empty()) return;
+  apply_refs(updates, deletes, "gg migrate branch tracking");
+}
+
+// Earlier gg versions kept unnamed heads visible through commit aliases. Mark
+// every alias target no branch, workspace, or marker reaches as a user head
+// once; afterwards aliases only redirect rewritten commit IDs.
+void Repository::migrate_alias_heads() const {
+  if (operation_view_.has_value()) return;
+  git_config* raw_config = nullptr;
+  check(git_repository_config(&raw_config, repo_.get()), "open Git configuration");
+  GitPtr<git_config, git_config_free> config(raw_config);
+  git_config* raw_local = nullptr;
+  check(git_config_open_level(&raw_local, config.get(), GIT_CONFIG_LEVEL_LOCAL),
+        "open repository configuration");
+  GitPtr<git_config, git_config_free> local(raw_local);
+  constexpr const char* key = "gg.unnamedheads";
+  git_buf value = GIT_BUF_INIT;
+  const int found = git_config_get_string_buf(&value, local.get(), key);
+  git_buf_dispose(&value);
+  if (found == 0) return;
+  git_error_clear();
+
+  git_revwalk* raw_walk = nullptr;
+  check(git_revwalk_new(&raw_walk, repo_.get()), "walk unnamed heads");
+  RevwalkPtr walk(raw_walk);
+  std::set<git_oid, OidLess> candidates;
+  for (const auto& [alias, target] : aliases()) {
+    (void)alias;
+    if (git_revwalk_push(walk.get(), &target) == 0) candidates.insert(target);
+    git_error_clear();
+  }
+  std::map<std::string, git_oid> updates;
+  if (!candidates.empty()) {
+    for (const auto& [reference, oid] : data_refs()) {
+      if (!starts_with(reference, "refs/heads/") &&
+          !starts_with(reference, kWorkspacePrefix) &&
+          !starts_with(reference, kVisibleHeadPrefix)) {
+        continue;
+      }
+      if (git_revwalk_hide(walk.get(), &oid) != 0) git_error_clear();
+    }
+    git_oid oid{};
+    while (git_revwalk_next(&oid, walk.get()) == 0) {
+      if (candidates.contains(oid)) updates.emplace(user_head_ref(oid), oid);
+    }
+  }
+  if (!updates.empty()) {
+    record(std::move(updates), {}, head_state(), "gg migrate unnamed heads");
+  }
+  check(git_config_set_string(local.get(), key, "markers"),
+        "record unnamed head migration");
+}
+
+// Earlier gg versions kept HEAD detached at @- and snapshotted the working
+// tree into @. Project such a workspace onto HEAD == @ without touching the
+// disk: an empty placeholder @ is dropped, anything else becomes HEAD.
+bool Repository::migrate_legacy_workspace() const {
+  const auto current_operation = operation();
+  const auto workspace_oid = workspace();
+  const auto head = head_oid();
+  if (!current_operation.has_value() || !workspace_oid.has_value() ||
+      !head.has_value() || *head == *workspace_oid) {
+    return false;
+  }
+  const std::vector<git_oid> workspace_parents = parents(*workspace_oid);
+  const OperationState recorded = parse_operation(*current_operation);
+  const HeadState actual = head_state();
+  if (workspace_parents.empty() || !(workspace_parents.front() == *head) ||
+      actual.symbolic || recorded.head.symbolic ||
+      recorded.head.value != actual.value) {
+    return false;
+  }
+  CommitPtr change = commit(*workspace_oid);
+  const bool placeholder =
+      workspace_parents.size() == 1 &&
+      *git_commit_tree_id(change.get()) ==
+          *git_commit_tree_id(commit(*head).get()) &&
+      first_line(git_commit_message(change.get())).empty() &&
+      children(*workspace_oid).empty();
+  const git_oid migrated = placeholder ? *head : *workspace_oid;
+  std::map<std::string, git_oid> updates{{workspace_ref_name(), migrated}};
+  std::vector<std::string> named;
+  for (const auto& [reference, oid] : refs_with_prefix("refs/heads/")) {
+    if (oid == migrated) named.push_back(reference);
+  }
+  HeadState next{false, oid_string(migrated)};
+  if (named.size() == 1 && !branch_checked_out_elsewhere(named.front())) {
+    next = {true, named.front()};
+  } else if (named.empty()) {
+    updates.emplace(user_head_ref(migrated), migrated);
+  }
+  record(std::move(updates), {}, next, "gg migrate working copy");
+  set_head(next);
+  return true;
+}
+
 const std::map<std::string, git_oid>& Repository::aliases() const {
   if (!ref_cache_enabled_) aliases_cache_.reset();
   if (aliases_cache_.has_value()) return *aliases_cache_;
@@ -307,26 +425,29 @@ void Repository::import_git_history(std::ostream* progress) const {
               << (linked_worktree_ ? "workspace" : "repository")
               << "; this may take a moment...\n";
   }
-  // Refresh must respect an undone or forgotten workspace. A bare bootstrap
-  // operation still permits retry after a failed initial HEAD transition.
-  if (linked_worktree_ && bootstrap_workspace &&  // GG_COV_EXCL_BRANCH
-      !workspace().has_value()) {  // GG_COV_EXCL_BRANCH
-    const auto head = head_oid();
-    if (head.has_value()) {  // GG_COV_EXCL_BRANCH
-      const git_oid tree = snapshot_tree(
-          *git_commit_tree_id(commit(*head).get()));
-      const git_oid imported = create_commit(tree, {*head}, "");
-      record_workspace_snapshot(imported, {{workspace_ref_name(), imported}},
-                                "gg import history");
-      return;
-    }
-  }
+  const auto head = head_oid();
+  // @ is Git's HEAD. Refresh must respect an undone or forgotten workspace;
+  // a bare bootstrap operation still permits retry.
+  const bool adopt_workspace = head.has_value() && !workspace().has_value() &&
+                               bootstrap_workspace;
   if (initializing) {
-    record({}, {}, head_state(), "gg import history");
-  } else {
+    // The initial operation already includes @, so there is nothing to undo
+    // before the first real command.
+    if (adopt_workspace) {
+      apply_refs({{workspace_ref_name(), *head}}, {}, "gg import history");
+    }
     (void)ensure_operation();
-    (void)adopt_external_head();
+    return;
   }
+  (void)ensure_operation();
+  migrate_alias_heads();
+  if (migrate_legacy_workspace()) return;
+  if (adopt_workspace) {
+    record({{workspace_ref_name(), *head}}, {}, head_state(),
+           "gg import history");
+    return;
+  }
+  (void)adopt_external_head();
 }
 
 ShortId Repository::short_commit_id(const git_oid& oid) const {
@@ -499,9 +620,10 @@ void Repository::touch_aliases(const std::vector<std::string>& touched) const {
 
 git_oid Repository::resolve_atom(std::string_view revision) const {
   if (revision == "@" || starts_with(revision, "@-")) {
-    const auto workspace = this->workspace();
+    auto workspace = this->workspace();
+    if (!workspace.has_value()) workspace = head_oid();
     if (!workspace.has_value()) {
-      throw UserError("no gg working-copy change; run `gg new` first");
+      throw UserError("HEAD has no commit yet");
     }
     git_oid current = *workspace;
     for (std::size_t index = 1; index < revision.size(); ++index) {
@@ -533,14 +655,14 @@ git_oid Repository::resolve_atom(std::string_view revision) const {
     touch_aliases(touched);
     return *matches.begin();
   }
-  const std::string bookmark = "refs/heads/" + std::string(revision);
-  int valid_bookmark = 0;
-  check(git_reference_name_is_valid(&valid_bookmark, bookmark.c_str()),
-        "validate bookmark reference");
-  if (valid_bookmark != 0) {
-    const auto bookmark_target = ref_target(bookmark);
-    if (bookmark_target.has_value()) {
-      matches.insert(*bookmark_target);
+  const std::string branch = "refs/heads/" + std::string(revision);
+  int valid_branch = 0;
+  check(git_reference_name_is_valid(&valid_branch, branch.c_str()),
+        "validate branch reference");
+  if (valid_branch != 0) {
+    const auto branch_target = ref_target(branch);
+    if (branch_target.has_value()) {
+      matches.insert(*branch_target);
     }
   }
 
@@ -743,8 +865,10 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
         // in large repositories with long-lived tags.
         Selection tips;
         for (const auto& [reference, oid] : rewrite_refs()) {
+          // Aliases only redirect rewritten commit IDs; unnamed heads the user
+          // created are marked explicitly, so anything Git or gg leaves
+          // behind internally stays hidden.
           const bool visible = starts_with(reference, "refs/heads/")
-              || starts_with(reference, kAliasPrefix)
               || starts_with(reference, kWorkspacePrefix)
               || starts_with(reference, kVisibleHeadPrefix);
           // Tags name history but do not keep an unnamed line of work visible;
@@ -904,9 +1028,9 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
         touch_aliases(touched);
         return result;
       }
-      if (function == "remote_bookmarks" ||
-          function == "tracked_remote_bookmarks" ||
-          function == "untracked_remote_bookmarks") {
+      if (function == "remote_branches" ||
+          function == "tracked_remote_branches" ||
+          function == "untracked_remote_branches") {
         const std::string_view pattern =
             argument.empty() ? std::string_view("*") : unquote(argument);
         Selection result;
@@ -919,12 +1043,12 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
           const std::size_t slash = remote_name.find('/');
           if (slash == std::string::npos) continue;
           const std::string tracking =
-              std::string(kBookmarkTrackingPrefix) +
+              std::string(kBranchTrackingPrefix) +
               remote_name.substr(0, slash) + "/" +
               remote_name.substr(slash + 1);
           const bool tracked = ref_target(tracking).has_value();
-          if (function == "tracked_remote_bookmarks" && !tracked) continue;
-          if (function == "untracked_remote_bookmarks" && tracked) continue;
+          if (function == "tracked_remote_branches" && !tracked) continue;
+          if (function == "untracked_remote_branches" && tracked) continue;
           if (string_pattern_matches(pattern, remote_name.substr(slash + 1))) {
             append_unique(result, {oid});
           }
@@ -935,17 +1059,17 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
         if (!argument.empty()) throw UserError("root() takes no arguments");
         return evaluate("roots(all())");
       }
-      if (function == "bookmarks" || function == "tags") {
+      if (function == "branches" || function == "tags") {
         const std::string_view pattern =
             argument.empty() ? std::string_view("*") : unquote(argument);
         const std::string_view prefix =
-            function == "bookmarks" ? "refs/heads/" : "refs/tags/";
+            function == "branches" ? "refs/heads/" : "refs/tags/";
         Selection result;
         for (const auto& [reference, oid] : data_refs()) {
           if (starts_with(reference, prefix) &&
               string_pattern_matches(pattern,
                                      reference.substr(prefix.size()))) {
-            if (function == "bookmarks") {
+            if (function == "branches") {
               append_unique(result, {oid});
             } else {
               git_object* raw_object = nullptr;
@@ -981,7 +1105,7 @@ git_oid Repository::resolve(std::string_view revision) const {
   return resolved.front();
 }
 
-std::vector<std::string> Repository::bookmarks(const git_oid& oid) const {
+std::vector<std::string> Repository::branches(const git_oid& oid) const {
   std::vector<std::string> result;
   for (const auto& [name, target] : data_refs()) {
     if (starts_with(name, "refs/heads/") && target == oid) {

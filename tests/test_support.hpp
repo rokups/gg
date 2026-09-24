@@ -167,18 +167,17 @@ class RepositoryTest : public testing::Test {
     return {code, output, error};
   }
 
+  // gg keeps Git's HEAD, index, and working tree on @.
   void expect_workspace_coherent() {
     ASSERT_TRUE(has_ref("refs/gg/workspaces/default"));
     const git_oid workspace = ref("refs/gg/workspaces/default");
     git_commit* commit = nullptr;
     ASSERT_EQ(git_commit_lookup(&commit, repository_.get(), &workspace), 0);
-    ASSERT_GT(git_commit_parentcount(commit), 0U);
     const git_oid workspace_tree = *git_commit_tree_id(commit);
-    const git_oid parent = *git_commit_parent_id(commit, 0);
     git_commit_free(commit);
 
     const git_oid head = ref("HEAD");
-    EXPECT_NE(git_oid_equal(&head, &parent), 0);
+    EXPECT_NE(git_oid_equal(&head, &workspace), 0);
 
     git_index* index = nullptr;
     ASSERT_EQ(git_repository_index(&index, repository_.get()), 0);
@@ -190,6 +189,14 @@ class RepositoryTest : public testing::Test {
 
     const Result unstaged = invoke_git({"diff", "--quiet"});
     EXPECT_EQ(unstaged.code, 0) << unstaged.error;
+  }
+
+  // The commit main points at, for creating changes that do not continue it.
+  std::string main_id() {
+    const git_oid main = ref("refs/heads/main");
+    char buffer[GIT_OID_MAX_HEXSIZE + 1]{};
+    git_oid_tostr(buffer, sizeof(buffer), &main);
+    return buffer;
   }
 
   git_oid ref(std::string_view name) {
