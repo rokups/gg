@@ -223,6 +223,59 @@ TEST_F(RepositoryTest, MigratesLegacyBranchTrackingRefs) {
   EXPECT_NE(git_oid_equal(&migrated, &base), 0);
 }
 
+TEST_F(RepositoryTest, FindsDescendantsDespiteClockSkew) {
+  detail::Repository repo(path_);
+  const git_oid base = ref("HEAD");
+  git_commit* base_commit = nullptr;
+  ASSERT_EQ(git_commit_lookup(&base_commit, repository_.get(), &base), 0);
+  const git_time_t base_time = git_commit_time(base_commit);
+  git_tree* tree = nullptr;
+  ASSERT_EQ(git_commit_tree(&tree, base_commit), 0);
+  const auto commit_at = [&](std::string_view message, git_time_t time,
+                             const std::vector<git_oid>& parent_oids) {
+    git_signature* signature = nullptr;
+    EXPECT_EQ(git_signature_new(&signature, "GG Test", "gg@example.test", time, 0), 0);
+    std::vector<git_commit*> parents;
+    for (const git_oid& parent_oid : parent_oids) {
+      git_commit* parent = nullptr;
+      EXPECT_EQ(git_commit_lookup(&parent, repository_.get(), &parent_oid), 0);
+      parents.push_back(parent);
+    }
+    git_oid result{};
+    const std::string owned(message);
+    EXPECT_EQ(git_commit_create(&result, repository_.get(), nullptr, signature, signature,
+                                nullptr, owned.c_str(), tree, parents.size(),
+                                const_cast<const git_commit**>(parents.data())),
+              0);
+    for (git_commit* parent : parents) git_commit_free(parent);
+    git_signature_free(signature);
+    return result;
+  };
+  constexpr git_time_t kDay = 24 * 60 * 60;
+  // A child dated before its parent is still a descendant, and history far
+  // older than the seed is not walked into the result.
+  const git_oid skewed = commit_at("skewed", base_time - 10 * kDay, {base});
+  const git_oid tip = commit_at("tip", base_time + kDay, {skewed});
+  const git_oid ancient = commit_at("ancient", base_time - 400 * kDay, {});
+  set_ref("refs/heads/tip", tip);
+  set_ref("refs/heads/ancient", ancient);
+  git_tree_free(tree);
+  git_commit_free(base_commit);
+
+  const std::vector<git_oid> result = repo.resolve_set("descendants(HEAD)");
+  const auto contains = [&](const git_oid& oid) {
+    return std::ranges::any_of(result, [&](const git_oid& candidate) {
+      return git_oid_equal(&candidate, &oid) != 0;
+    });
+  };
+  EXPECT_EQ(result.size(), 3U);
+  EXPECT_TRUE(contains(base));
+  EXPECT_TRUE(contains(skewed));
+  EXPECT_TRUE(contains(tip));
+  EXPECT_FALSE(contains(ancient));
+  EXPECT_TRUE(repo.resolve_set("descendants(none())").empty());
+}
+
 TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   detail::Repository repo(path_);
   const git_oid base = ref("HEAD");
@@ -263,6 +316,12 @@ TEST_F(RepositoryTest, ResolvesRevisionSetExpressions) {
   expect("parents(merge)", {left, right});
   expect("children(base)", {left, right, other});
   expect("descendants(left)", {left, merge, tip});
+  expect("descendants(base)", {base, left, right, merge, tip, other});
+  expect("descendants(tip)", {tip});
+  // A seed below another seed's parent keeps that parent in the walk.
+  expect("descendants(left | base)", {base, left, right, merge, tip, other});
+  expect("descendants(right | left)", {left, right, merge, tip});
+  expect("descendants(other | tip)", {other, tip});
   expect("roots(all())", {base});
   expect("root()", {base});
   expect("heads(all())", {tip, other});

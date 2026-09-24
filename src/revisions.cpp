@@ -12,7 +12,12 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <queue>
+#include <ranges>
+#include <set>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 namespace gg::detail {
 namespace {
@@ -733,7 +738,8 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
     }
     return result;
   };
-  const auto all = [&] {
+  // Commits named by refs; all() is everything they reach.
+  const auto tips = [&] {
     Selection seeds;
     for (const auto& [reference, oid] : rewrite_refs()) {
       (void)reference;
@@ -752,8 +758,9 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
       ObjectPtr commit(raw_commit);
       seeds.push_back(*git_object_id(commit.get()));
     }
-    return ancestors(seeds);
+    return seeds;
   };
+  const auto all = [&] { return ancestors(tips()); };
 
   std::function<Selection(std::string_view)> evaluate;
   evaluate = [&](std::string_view expression) -> Selection {
@@ -917,18 +924,61 @@ std::vector<git_oid> Repository::resolve_set(std::string_view revisions) const {
         return result;
       }
       if (function == "descendants") {
+        // Descendants are committed after their ancestors, so walk from the
+        // tips newest first and stop well before the oldest seed instead of
+        // visiting the whole history. The slack tolerates clock skew.
+        constexpr git_time_t kClockSkew = 30 * 24 * 60 * 60;
         const Selection seeds = evaluate(argument);
-        Selection result;
-        for (const git_oid& candidate : all()) {
-          for (const git_oid& seed : seeds) {
-            const int descendant =
-                git_graph_descendant_of(repo_.get(), &candidate, &seed);
-            check(descendant, "evaluate descendants");
-            if (candidate == seed || descendant != 0) {
-              result.push_back(candidate);
-              break;
+        if (seeds.empty()) return Selection{};
+        git_time_t cutoff = std::numeric_limits<git_time_t>::max();
+        for (const git_oid& seed : seeds) {
+          cutoff = std::min(cutoff, git_commit_time(commit(seed).get()) - kClockSkew);
+        }
+        // libgit2 sorts a revwalk by first reading the whole history, so
+        // visit commits newest first here and stop at the cutoff.
+        using Queued = std::pair<git_time_t, git_oid>;
+        const auto older = [](const Queued& left, const Queued& right) {
+          return left.first < right.first;
+        };
+        std::priority_queue<Queued, std::vector<Queued>, decltype(older)> queue(older);
+        std::set<git_oid, OidLess> queued;
+        const auto enqueue = [&](const git_oid& oid) {
+          if (!queued.insert(oid).second) return;
+          queue.emplace(git_commit_time(commit(oid).get()), oid);
+        };
+        for (const git_oid& tip : tips()) enqueue(tip);
+        std::vector<std::pair<git_oid, std::vector<git_oid>>> recent;
+        while (!queue.empty() && queue.top().first >= cutoff) {
+          const git_oid oid = queue.top().second;
+          queue.pop();
+          std::vector<git_oid> commit_parents = parents(oid);
+          for (const git_oid& parent : commit_parents) enqueue(parent);
+          recent.emplace_back(oid, std::move(commit_parents));
+        }
+        // Mark commits with a marked parent until nothing changes; newest
+        // first order is not strictly topological under clock skew.
+        std::set<git_oid, OidLess> marked(seeds.begin(), seeds.end());
+        std::set<git_oid, OidLess> included;
+        bool changed = true;
+        while (changed) {
+          changed = false;
+          for (const auto& [candidate, candidate_parents] : recent | std::views::reverse) {
+            if (included.contains(candidate)) continue;
+            if (!marked.contains(candidate) &&
+                std::ranges::none_of(candidate_parents, [&](const git_oid& parent) {
+                  return marked.contains(parent);
+                })) {
+              continue;
             }
+            marked.insert(candidate);
+            included.insert(candidate);
+            changed = true;
           }
+        }
+        Selection result;
+        for (const auto& [candidate, candidate_parents] : recent | std::views::reverse) {
+          (void)candidate_parents;
+          if (included.contains(candidate)) result.push_back(candidate);
         }
         return result;
       }
