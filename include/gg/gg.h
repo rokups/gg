@@ -587,6 +587,14 @@ GG_EXTERN int gg_revision_query_options_init(
 GG_EXTERN int gg_status_options_init(gg_status_options *options,
                                      unsigned int version);
 
+/*
+ * Registers gg's Git LFS filter with libgit2, so files marked `filter=lfs`
+ * compare, commit and check out as they do with git-lfs installed. Call it
+ * after git_libgit2_init and before other threads use libgit2; registering
+ * again is harmless. gg's own command line registers it itself.
+ */
+GG_EXTERN int gg_lfs_filter_register(void);
+
 GG_EXTERN int gg_repository_attach(gg_repository **out,
                                    git_repository *repository);
 GG_EXTERN void gg_repository_free(gg_repository *repository);

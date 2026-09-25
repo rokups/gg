@@ -165,6 +165,98 @@ TEST_F(RepositoryTest, WorktreeStatusComparesDiskWithActiveTree) {
   gg_repository_free(repository);
 }
 
+TEST(LfsFilter, PointerUsesSha256OfTheContent) {
+  EXPECT_EQ(detail::lfs_pointer_for_test("abc"),
+            "version https://git-lfs.github.com/spec/v1\n"
+            "oid sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n"
+            "size 3\n");
+  // Spans several blocks, including the padding boundary.
+  EXPECT_NE(detail::lfs_pointer_for_test(std::string(1000, 'a'))
+                .find("41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"),
+            std::string::npos);
+}
+
+TEST_F(RepositoryTest, LfsFilesCompareCommitAndCheckOutAsGitLfs) {
+  ASSERT_EQ(gg_lfs_filter_register(), GIT_OK);
+  ASSERT_EQ(gg_lfs_filter_register(), GIT_OK);
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  const std::filesystem::path lfs =
+      std::filesystem::path(git_repository_commondir(repository_.get())) / "lfs";
+  const auto store = [&](const std::string& content) {
+    const std::string pointer = detail::lfs_pointer_for_test(content);
+    const std::string oid = pointer.substr(pointer.find("sha256:") + 7, 64);
+    return lfs / "objects" / oid.substr(0, 2) / oid.substr(2, 2) / oid;
+  };
+  const auto read = [&](const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), {});
+  };
+
+  // Commit a pointer, as git-lfs does, then leave the real content on disk
+  // and in the local store, as its checkout does.
+  const std::string original(3000, 'o');
+  write(".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+  write("asset.bin", detail::lfs_pointer_for_test(original));
+  ASSERT_EQ(invoke_git({"add", ".gitattributes", "asset.bin"}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-q", "-m", "lfs"}).code, 0);
+  std::filesystem::create_directories(store(original).parent_path());
+  std::ofstream(store(original), std::ios::binary) << original;
+  write("asset.bin", original);
+  // Git records the checked-out file's size; a stale time forces a hash.
+  {
+    git_index* index = nullptr;
+    ASSERT_EQ(git_repository_index(&index, repository_.get()), 0);
+    ASSERT_EQ(git_index_read(index, true), 0);
+    git_index_entry entry = *git_index_get_bypath(index, "asset.bin", 0);
+    entry.file_size = static_cast<std::uint32_t>(original.size());
+    entry.mtime = {1, 0};
+    ASSERT_EQ(git_index_add(index, &entry), 0);
+    ASSERT_EQ(git_index_write(index), 0);
+    git_index_free(index);
+  }
+
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options), GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
+  gg_status_dispose(&status);
+
+  // An edit is a change, and committing it stores a pointer and the object.
+  const std::string edited(5000, 'e');
+  write("asset.bin", edited);
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options), GIT_OK);
+  ASSERT_EQ(status.entry_count, 1U);
+  EXPECT_STREQ(status.entries[0].new_path, "asset.bin");
+  gg_status_dispose(&status);
+  gg_mutation_result result{};
+  ASSERT_EQ(commit_worktree(&result, repository, "edit", nullptr), GIT_OK);
+  gg_mutation_result_dispose(&result);
+  EXPECT_EQ(invoke_git({"show", "HEAD:asset.bin"}).output,
+            detail::lfs_pointer_for_test(edited));
+  EXPECT_EQ(read(store(edited)), edited);
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options), GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
+  gg_status_dispose(&status);
+
+  // Checkout writes stored content, and keeps pointers it cannot resolve.
+  const auto checkout_previous = [&] {
+    git_object* previous = nullptr;
+    ASSERT_EQ(git_revparse_single(&previous, repository_.get(), "HEAD~1"), 0);
+    git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+    checkout.checkout_strategy = GIT_CHECKOUT_FORCE;
+    ASSERT_EQ(git_checkout_tree(repository_.get(), previous, &checkout), 0);
+    git_object_free(previous);
+  };
+  checkout_previous();
+  EXPECT_EQ(read(path_ / "asset.bin"), original);
+  std::filesystem::remove(store(original));
+  write("asset.bin", edited);
+  checkout_previous();
+  EXPECT_EQ(read(path_ / "asset.bin"), detail::lfs_pointer_for_test(original));
+  gg_repository_free(repository);
+}
+
 TEST_F(RepositoryTest, ExplicitWorktreeCommitUsesDiskAndProjectsHead) {
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);

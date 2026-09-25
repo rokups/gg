@@ -594,6 +594,10 @@ int gg_status_options_init(gg_status_options* options, unsigned int version) {
   return initialize(options, version, gg_status_options GG_STATUS_OPTIONS_INIT);
 }
 
+int gg_lfs_filter_register(void) {
+  return gg::detail::register_lfs_filter();
+}
+
 int gg_repository_attach(gg_repository** out, git_repository* repository) {
   return boundary([&] {
     if (out == nullptr || repository == nullptr) {

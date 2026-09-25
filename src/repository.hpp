@@ -128,6 +128,10 @@ class Libgit2 {
   ~Libgit2();
 };
 
+// Registers the Git LFS filter with libgit2; see gg_lfs_filter_register.
+int register_lfs_filter();
+std::string lfs_pointer_for_test(std::string_view content);
+
 struct OidLess {
   bool operator()(const git_oid& left, const git_oid& right) const;
 };

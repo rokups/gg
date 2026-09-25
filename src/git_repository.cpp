@@ -106,7 +106,10 @@ if (error != nullptr && error->message != nullptr) {  // GG_COV_EXCL_BRANCH
 throw GitError(message, result);
 }
 
-Libgit2::Libgit2() { check(git_libgit2_init(), "initialize libgit2"); }
+Libgit2::Libgit2() {
+  check(git_libgit2_init(), "initialize libgit2");
+  check(register_lfs_filter(), "register Git LFS filter");
+}
 Libgit2::~Libgit2() { git_libgit2_shutdown(); }
 
 bool OidLess::operator()(const git_oid& left, const git_oid& right) const {

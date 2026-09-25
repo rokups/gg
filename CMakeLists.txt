@@ -72,6 +72,7 @@ add_library(
   gg_impl OBJECT
   src/git_repository.cpp
   src/working_copy.cpp
+  src/lfs.cpp
   src/revisions.cpp
   src/rewrite.cpp
   src/operations.cpp
