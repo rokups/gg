@@ -588,12 +588,14 @@ GG_EXTERN int gg_status_options_init(gg_status_options *options,
                                      unsigned int version);
 
 /*
- * Registers gg's Git LFS filter with libgit2, so files marked `filter=lfs`
- * compare, commit and check out as they do with git-lfs installed. Call it
- * after git_libgit2_init and before other threads use libgit2; registering
- * again is harmless. gg's own command line registers it itself.
+ * Registers Git filter driver support with libgit2, so files with a
+ * gitattributes `filter=<driver>` run the filter.<driver>.process, .clean or
+ * .smudge commands from Git config as Git does, for example git-lfs. Without
+ * it libgit2 skips drivers and such files compare as changed. Call it after
+ * git_libgit2_init and before other threads use libgit2; registering again is
+ * harmless. gg's own command line registers it itself.
  */
-GG_EXTERN int gg_lfs_filter_register(void);
+GG_EXTERN int gg_filter_drivers_register(void);
 
 GG_EXTERN int gg_repository_attach(gg_repository **out,
                                    git_repository *repository);

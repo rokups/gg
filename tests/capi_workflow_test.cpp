@@ -165,65 +165,102 @@ TEST_F(RepositoryTest, WorktreeStatusComparesDiskWithActiveTree) {
   gg_repository_free(repository);
 }
 
-TEST(LfsFilter, PointerUsesSha256OfTheContent) {
-  EXPECT_EQ(detail::lfs_pointer_for_test("abc"),
-            "version https://git-lfs.github.com/spec/v1\n"
-            "oid sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n"
-            "size 3\n");
-  // Spans several blocks, including the padding boundary.
-  EXPECT_NE(detail::lfs_pointer_for_test(std::string(1000, 'a'))
-                .find("41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"),
-            std::string::npos);
+bool git_lfs_available() {
+  return std::system("git lfs version >/dev/null 2>&1") == 0;
 }
 
-TEST_F(RepositoryTest, LfsFilesCompareCommitAndCheckOutAsGitLfs) {
-  ASSERT_EQ(gg_lfs_filter_register(), GIT_OK);
-  ASSERT_EQ(gg_lfs_filter_register(), GIT_OK);
+std::string read_file(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input), {});
+}
+
+// Git records the checked-out file's size; a stale time makes libgit2 hash
+// the file, which runs its clean filter.
+void make_stat_stale(git_repository* repository, const char* path) {
+  git_index* index = nullptr;
+  ASSERT_EQ(git_repository_index(&index, repository), 0);
+  ASSERT_EQ(git_index_read(index, true), 0);
+  const git_index_entry* found = git_index_get_bypath(index, path, 0);
+  ASSERT_NE(found, nullptr);
+  git_index_entry entry = *found;
+  entry.mtime = {1, 0};
+  ASSERT_EQ(git_index_add(index, &entry), 0);
+  ASSERT_EQ(git_index_write(index), 0);
+  git_index_free(index);
+}
+
+void force_checkout(git_repository* repository, const char* revision) {
+  git_object* target = nullptr;
+  ASSERT_EQ(git_revparse_single(&target, repository, revision), 0);
+  git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+  checkout.checkout_strategy = GIT_CHECKOUT_FORCE;
+  ASSERT_EQ(git_checkout_tree(repository, target, &checkout), 0);
+  git_object_free(target);
+}
+
+TEST_F(RepositoryTest, SingleShotFilterDriversRunLikeGit) {
+  ASSERT_EQ(gg_filter_drivers_register(), GIT_OK);
+  ASSERT_EQ(gg_filter_drivers_register(), GIT_OK);
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
-  const std::filesystem::path lfs =
-      std::filesystem::path(git_repository_commondir(repository_.get())) / "lfs";
-  const auto store = [&](const std::string& content) {
-    const std::string pointer = detail::lfs_pointer_for_test(content);
-    const std::string oid = pointer.substr(pointer.find("sha256:") + 7, 64);
-    return lfs / "objects" / oid.substr(0, 2) / oid.substr(2, 2) / oid;
-  };
-  const auto read = [&](const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(input), {});
-  };
+  const std::string rot13 = "tr A-Za-z N-ZA-Mn-za-m";
+  ASSERT_EQ(invoke_git({"config", "filter.rot13.clean", rot13}).code, 0);
+  ASSERT_EQ(invoke_git({"config", "filter.rot13.smudge", rot13}).code, 0);
+  write(".gitattributes", "*.rot filter=rot13\n*.plain filter=unconfigured\n");
+  write("secret.rot", "Hello\n");
+  write("note.plain", "as is\n");
 
-  // Commit a pointer, as git-lfs does, then leave the real content on disk
-  // and in the local store, as its checkout does.
-  const std::string original(3000, 'o');
-  write(".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n");
-  write("asset.bin", detail::lfs_pointer_for_test(original));
-  ASSERT_EQ(invoke_git({"add", ".gitattributes", "asset.bin"}).code, 0);
-  ASSERT_EQ(invoke_git({"commit", "-q", "-m", "lfs"}).code, 0);
-  std::filesystem::create_directories(store(original).parent_path());
-  std::ofstream(store(original), std::ios::binary) << original;
-  write("asset.bin", original);
-  // Git records the checked-out file's size; a stale time forces a hash.
-  {
-    git_index* index = nullptr;
-    ASSERT_EQ(git_repository_index(&index, repository_.get()), 0);
-    ASSERT_EQ(git_index_read(index, true), 0);
-    git_index_entry entry = *git_index_get_bypath(index, "asset.bin", 0);
-    entry.file_size = static_cast<std::uint32_t>(original.size());
-    entry.mtime = {1, 0};
-    ASSERT_EQ(git_index_add(index, &entry), 0);
-    ASSERT_EQ(git_index_write(index), 0);
-    git_index_free(index);
-  }
-
+  gg_mutation_result result{};
+  ASSERT_EQ(commit_worktree(&result, repository, "filtered", nullptr), GIT_OK);
+  gg_mutation_result_dispose(&result);
+  EXPECT_EQ(invoke_git({"show", "HEAD:secret.rot"}).output, "Uryyb\n");
+  EXPECT_EQ(invoke_git({"show", "HEAD:note.plain"}).output, "as is\n");
+  make_stat_stale(repository_.get(), "secret.rot");
   gg_status_options options = GG_STATUS_OPTIONS_INIT;
   gg_status status{};
   ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options), GIT_OK);
   EXPECT_EQ(status.entry_count, 0U);
   gg_status_dispose(&status);
 
-  // An edit is a change, and committing it stores a pointer and the object.
-  const std::string edited(5000, 'e');
+  std::filesystem::remove(path_ / "secret.rot");
+  force_checkout(repository_.get(), "HEAD");
+  EXPECT_EQ(read_file(path_ / "secret.rot"), "Hello\n");
+
+  // A required driver without a command fails instead of storing content
+  // unfiltered, as in Git.
+  ASSERT_EQ(invoke_git({"config", "filter.rot13.required", "true"}).code, 0);
+  ASSERT_EQ(invoke_git({"config", "--unset", "filter.rot13.clean"}).code, 0);
+  write("secret.rot", "Changed\n");
+  EXPECT_NE(commit_worktree(&result, repository, "unfiltered", nullptr), GIT_OK);
+  gg_mutation_result_dispose(&result);
+  gg_repository_free(repository);
+}
+
+TEST_F(RepositoryTest, GitLfsFilesCompareCommitCheckOutAndDownload) {
+  if (!git_lfs_available()) GTEST_SKIP() << "git-lfs is not installed";
+  ASSERT_EQ(gg_filter_drivers_register(), GIT_OK);
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  ASSERT_EQ(invoke_git({"lfs", "install", "--local"}).code, 0);
+  ASSERT_EQ(invoke_git({"lfs", "track", "*.bin"}).code, 0);
+  std::string original;
+  for (int index = 0; index < 3000; ++index) original.push_back(static_cast<char>(index * 7));
+  write("asset.bin", original);
+  ASSERT_EQ(invoke_git({"add", ".gitattributes", "asset.bin"}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-q", "-m", "lfs"}).code, 0);
+  ASSERT_TRUE(invoke_git({"show", "HEAD:asset.bin"}).output.starts_with(
+      "version https://git-lfs.github.com/spec/v1\n"));
+
+  // Unchanged LFS files are clean, also when libgit2 must hash them.
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+  make_stat_stale(repository_.get(), "asset.bin");
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options), GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
+  gg_status_dispose(&status);
+
+  // An edit is a change; gg commits it as git-lfs does.
+  const std::string edited = original + "edited";
   write("asset.bin", edited);
   ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options), GIT_OK);
   ASSERT_EQ(status.entry_count, 1U);
@@ -232,28 +269,33 @@ TEST_F(RepositoryTest, LfsFilesCompareCommitAndCheckOutAsGitLfs) {
   gg_mutation_result result{};
   ASSERT_EQ(commit_worktree(&result, repository, "edit", nullptr), GIT_OK);
   gg_mutation_result_dispose(&result);
-  EXPECT_EQ(invoke_git({"show", "HEAD:asset.bin"}).output,
-            detail::lfs_pointer_for_test(edited));
-  EXPECT_EQ(read(store(edited)), edited);
-  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options), GIT_OK);
-  EXPECT_EQ(status.entry_count, 0U);
-  gg_status_dispose(&status);
+  EXPECT_TRUE(invoke_git({"show", "HEAD:asset.bin"}).output.starts_with(
+      "version https://git-lfs.github.com/spec/v1\n"));
+  EXPECT_EQ(invoke_git({"lfs", "fsck"}).code, 0);
+  EXPECT_EQ(invoke_git({"status", "--porcelain"}).output, "");
 
-  // Checkout writes stored content, and keeps pointers it cannot resolve.
-  const auto checkout_previous = [&] {
-    git_object* previous = nullptr;
-    ASSERT_EQ(git_revparse_single(&previous, repository_.get(), "HEAD~1"), 0);
-    git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
-    checkout.checkout_strategy = GIT_CHECKOUT_FORCE;
-    ASSERT_EQ(git_checkout_tree(repository_.get(), previous, &checkout), 0);
-    git_object_free(previous);
-  };
-  checkout_previous();
-  EXPECT_EQ(read(path_ / "asset.bin"), original);
-  std::filesystem::remove(store(original));
-  write("asset.bin", edited);
-  checkout_previous();
-  EXPECT_EQ(read(path_ / "asset.bin"), detail::lfs_pointer_for_test(original));
+  // Checkout smudges through git-lfs.
+  force_checkout(repository_.get(), "HEAD~1");
+  EXPECT_EQ(read_file(path_ / "asset.bin"), original);
+  force_checkout(repository_.get(), "HEAD");
+  EXPECT_EQ(read_file(path_ / "asset.bin"), edited);
+
+  // A clone without the object: gg's checkout lets git-lfs download it.
+  const std::filesystem::path clone = path_.parent_path() / (path_.filename().string() + "-clone");
+  std::filesystem::remove_all(clone);
+  ASSERT_EQ(std::system(("GIT_LFS_SKIP_SMUDGE=1 git clone -q " + shell_quote(path_.string()) +
+                         " " + shell_quote(clone.string()) + " >/dev/null 2>&1")
+                            .c_str()),
+            0);
+  ASSERT_EQ(invoke_git_at(clone, {"lfs", "install", "--local"}).code, 0);
+  EXPECT_TRUE(read_file(clone / "asset.bin").starts_with("version https://git-lfs"));
+  git_repository* raw_clone = nullptr;
+  ASSERT_EQ(git_repository_open(&raw_clone, clone.string().c_str()), 0);
+  std::filesystem::remove(clone / "asset.bin");
+  force_checkout(raw_clone, "HEAD");
+  EXPECT_EQ(read_file(clone / "asset.bin"), edited);
+  git_repository_free(raw_clone);
+  std::filesystem::remove_all(clone);
   gg_repository_free(repository);
 }
 

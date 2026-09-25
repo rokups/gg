@@ -108,7 +108,7 @@ throw GitError(message, result);
 
 Libgit2::Libgit2() {
   check(git_libgit2_init(), "initialize libgit2");
-  check(register_lfs_filter(), "register Git LFS filter");
+  check(register_filter_drivers(), "register Git filter drivers");
 }
 Libgit2::~Libgit2() { git_libgit2_shutdown(); }
 
