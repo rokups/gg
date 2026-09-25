@@ -10,7 +10,7 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdio>
+#include <cerrno>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -228,9 +228,14 @@ class Channel {
 constexpr std::size_t kMaxPacketData = 65516;
 
 bool write_packet(Channel& channel, std::string_view data) {
-  std::array<char, 5> header{};
-  std::snprintf(header.data(), header.size(), "%04zx", data.size() + 4);
-  return channel.write(header.data(), 4) && channel.write(data.data(), data.size());
+  static constexpr char kDigits[] = "0123456789abcdef";
+  const std::size_t length = data.size() + 4;  // At most kMaxPacketData + 4.
+  const std::array<char, 4> header{kDigits[(length >> 12) & 0xf],
+                                   kDigits[(length >> 8) & 0xf],
+                                   kDigits[(length >> 4) & 0xf],
+                                   kDigits[length & 0xf]};
+  return channel.write(header.data(), header.size()) &&
+         channel.write(data.data(), data.size());
 }
 
 bool write_flush(Channel& channel) { return channel.write("0000", 4); }
