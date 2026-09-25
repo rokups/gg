@@ -302,11 +302,25 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
       indexed_tree == baseline_tree;
   if (!prepared) git_error_clear();
   git_diff* raw_diff = nullptr;
-  const int status =
-      prepared ? git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
-                                           &options)
-               : git_diff_tree_to_workdir(&raw_diff, repo_.get(),
-                                          baseline.get(), &options);
+  int status = 0;
+  if (prepared) {
+    // Files whose stat data changed without their content (touched, or
+    // rewritten by a checkout) are hashed once and their stat data is saved,
+    // so later scans skip them again. A locked index, such as while a Git
+    // command runs, only loses that caching.
+    options.flags |= GIT_DIFF_UPDATE_INDEX;
+    status = git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
+                                       &options);
+    if (status == GIT_ELOCKED) {
+      git_error_clear();
+      options.flags &= ~GIT_DIFF_UPDATE_INDEX;
+      status = git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
+                                         &options);
+    }
+  } else {
+    status = git_diff_tree_to_workdir(&raw_diff, repo_.get(), baseline.get(),
+                                      &options);
+  }
   if (status == GIT_EUSER && cancelled()) {
     git_error_clear();
     throw UserError("operation cancelled", GIT_EUSER);

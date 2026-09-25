@@ -8,6 +8,7 @@
 #include "repository.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 namespace gg::test {
@@ -121,6 +122,46 @@ TEST_F(RepositoryTest, WorktreeStatusComparesDiskWithActiveTree) {
   EXPECT_STREQ(status.entries[0].new_path, "tracked.txt");
   EXPECT_EQ(status.entries[0].status, GIT_DELTA_MODIFIED);
   gg_status_dispose(&status);
+
+  // A touched but unchanged file is hashed once and its new stat data is
+  // saved, so the next scan skips it. A locked index only loses the caching.
+  write("tracked.txt", original);
+  const auto indexed_seconds = [&] {
+    const std::string index_path =
+        std::string(git_repository_path(repository_.get())) + "index";
+    git_index* raw = nullptr;
+#ifdef GIT_EXPERIMENTAL_SHA256
+    EXPECT_EQ(git_index_open(&raw, index_path.c_str(), nullptr), 0);
+#else
+    EXPECT_EQ(git_index_open(&raw, index_path.c_str()), 0);
+#endif
+    const git_index_entry* entry = git_index_get_bypath(raw, "tracked.txt", 0);
+    const std::int64_t seconds = entry == nullptr ? 0 : entry->mtime.seconds;
+    git_index_free(raw);
+    return seconds;
+  };
+  const auto touch = [&](std::chrono::hours age) {
+    std::filesystem::last_write_time(
+        path_ / "tracked.txt", std::filesystem::file_time_type::clock::now() - age);
+  };
+  const auto expect_clean = [&] {
+    ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+              GIT_OK);
+    EXPECT_EQ(status.entry_count, 0U);
+    gg_status_dispose(&status);
+  };
+  const std::int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  touch(std::chrono::hours(48));
+  expect_clean();
+  EXPECT_LT(indexed_seconds(), now - 24 * 3600);
+  const std::filesystem::path lock =
+      std::filesystem::path(git_repository_path(repository_.get())) / "index.lock";
+  std::ofstream(lock).close();
+  touch(std::chrono::hours(96));
+  expect_clean();
+  EXPECT_GT(indexed_seconds(), now - 72 * 3600);
+  std::filesystem::remove(lock);
   gg_repository_free(repository);
 }
 
