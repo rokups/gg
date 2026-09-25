@@ -92,6 +92,38 @@ TEST_F(RepositoryTest, WorktreeStatusLimitsToPathsAndCanBeCancelled) {
   gg_repository_free(repository);
 }
 
+TEST_F(RepositoryTest, WorktreeStatusComparesDiskWithActiveTree) {
+  gg_repository* repository = nullptr;
+  ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);
+  const std::string original = invoke_git({"show", "HEAD:tracked.txt"}).output;
+  gg_status_options options = GG_STATUS_OPTIONS_INIT;
+  gg_status status{};
+
+  // A staged edit that the disk no longer has is not a change: status
+  // compares the disk with the active tree, not with the index.
+  write("tracked.txt", "staged value\n");
+  ASSERT_EQ(invoke_git({"add", "tracked.txt"}).code, 0);
+  write("tracked.txt", original);
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  EXPECT_EQ(status.entry_count, 0U);
+  gg_status_dispose(&status);
+
+  // With the index matching the active tree, its stat cache is used; an
+  // edit of the same length is still found.
+  ASSERT_EQ(invoke_git({"reset", "-q"}).code, 0);
+  std::string same_length = original;
+  same_length.front() = same_length.front() == 'x' ? 'y' : 'x';
+  write("tracked.txt", same_length);
+  ASSERT_EQ(gg_repository_worktree_status(&status, repository, &options),
+            GIT_OK);
+  ASSERT_EQ(status.entry_count, 1U);
+  EXPECT_STREQ(status.entries[0].new_path, "tracked.txt");
+  EXPECT_EQ(status.entries[0].status, GIT_DELTA_MODIFIED);
+  gg_status_dispose(&status);
+  gg_repository_free(repository);
+}
+
 TEST_F(RepositoryTest, ExplicitWorktreeCommitUsesDiskAndProjectsHead) {
   gg_repository* repository = nullptr;
   ASSERT_EQ(gg_repository_attach(&repository, repository_.get()), GIT_OK);

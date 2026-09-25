@@ -281,9 +281,32 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
   std::vector<std::string> owned_paths = paths;
   for (std::string& path : owned_paths) pathspec.push_back(path.data());
   options.pathspec = {pathspec.data(), pathspec.size()};
+  // When the index holds exactly the baseline tree, its stat data identifies
+  // unchanged files without reading them. Comparing the tree directly hashes
+  // every file, which takes tens of seconds on large checkouts. Staged,
+  // conflicted or sparse indexes keep the direct comparison.
+  bool sparse = false;
+  for (std::size_t position = 0;
+       position < git_index_entrycount(index.get()); ++position) {
+    const git_index_entry* entry = git_index_get_byindex(index.get(), position);
+    if (entry != nullptr &&
+        (entry->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE) != 0) {
+      sparse = true;
+      break;
+    }
+  }
+  git_oid indexed_tree{};
+  const bool prepared =
+      !sparse &&
+      git_index_write_tree_to(&indexed_tree, index.get(), repo_.get()) == 0 &&
+      indexed_tree == baseline_tree;
+  if (!prepared) git_error_clear();
   git_diff* raw_diff = nullptr;
-  const int status = git_diff_tree_to_workdir(&raw_diff, repo_.get(),
-                                              baseline.get(), &options);
+  const int status =
+      prepared ? git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
+                                           &options)
+               : git_diff_tree_to_workdir(&raw_diff, repo_.get(),
+                                          baseline.get(), &options);
   if (status == GIT_EUSER && cancelled()) {
     git_error_clear();
     throw UserError("operation cancelled", GIT_EUSER);
