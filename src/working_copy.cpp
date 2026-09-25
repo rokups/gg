@@ -309,6 +309,9 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
     // so later scans skip them again. A locked index, such as while a Git
     // command runs, only loses that caching.
     options.flags |= GIT_DIFF_UPDATE_INDEX;
+    const std::filesystem::path index_path = git_index_path(index.get());
+    std::error_code error;
+    const auto written_before = std::filesystem::last_write_time(index_path, error);
     status = git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
                                        &options);
     if (status == GIT_ELOCKED) {
@@ -316,6 +319,18 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
       options.flags &= ~GIT_DIFF_UPDATE_INDEX;
       status = git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
                                          &options);
+    } else if (status == 0 && !error &&
+               std::filesystem::last_write_time(index_path, error) !=
+                   written_before &&
+               !error) {
+      // Saving stat data drops the index's cached trees for those paths, and
+      // rebuilding them costs a third of a scan on large checkouts. The index
+      // still holds the baseline, so rebuild them once and save them too.
+      git_oid rebuilt{};
+      if (git_index_write_tree_to(&rebuilt, index.get(), repo_.get()) != 0 ||
+          git_index_write(index.get()) != 0) {
+        git_error_clear();  // GG_COV_EXCL_LINE
+      }
     }
   } else {
     status = git_diff_tree_to_workdir(&raw_diff, repo_.get(), baseline.get(),
