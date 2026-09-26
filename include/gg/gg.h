@@ -637,7 +637,9 @@ GG_EXTERN int gg_repository_status(gg_status *out,
                                     gg_repository *repository,
                                     const gg_status_options *options);
 /* Compare the current filesystem with the active change (or Git HEAD when
- * there is no gg workspace). This query does not snapshot or update refs. */
+ * there is no gg workspace). This query does not snapshot or update refs.
+ * Refreshed stat data is saved to Git's index only when no other process has
+ * changed or locked the index since the scan started. */
 GG_EXTERN int gg_repository_worktree_status(
     gg_status *out, gg_repository *repository,
     const gg_status_options *options);

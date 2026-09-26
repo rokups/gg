@@ -726,4 +726,32 @@ TEST_F(RepositoryTest, GitRefChangesKeepEarlierOperationsRestorableAfterGc) {
   EXPECT_NE(log.output.find("abandon"), std::string::npos) << log.output;
 }
 
+TEST_F(RepositoryTest, StatusLeavesGitIndexAndItsLockAlone) {
+  write("staged.txt", "staged\n");
+  ASSERT_EQ(invoke_git({"add", "staged.txt"}).code, 0);
+  write("tracked.txt", "edited\n");
+  const std::string index_before = read_path(path_ / ".git/index");
+
+  // A Git command holding the index lock must not make read-only status
+  // fail, and status must not replace the index under that lock.
+  write(".git/index.lock", "locked\n");
+  const Result locked = invoke({"status"});
+  ASSERT_EQ(locked.code, 0) << locked.error;
+  EXPECT_NE(locked.output.find("tracked.txt"), std::string::npos);
+  EXPECT_EQ(read_path(path_ / ".git/index.lock"), "locked\n");
+  EXPECT_EQ(read_path(path_ / ".git/index"), index_before);
+  std::filesystem::remove(path_ / ".git/index.lock");
+
+  const Result status = invoke({"status"});
+  ASSERT_EQ(status.code, 0) << status.error;
+  const Result staged = invoke_git({"diff", "--cached", "--name-only"});
+  ASSERT_EQ(staged.code, 0) << staged.error;
+  EXPECT_EQ(staged.output, "staged.txt\n");
+  for (const auto& entry : std::filesystem::directory_iterator(path_ / ".git")) {
+    EXPECT_EQ(entry.path().filename().string().find("index.gg-"),
+              std::string::npos)
+        << entry.path();
+  }
+}
+
 }  // namespace gg::test

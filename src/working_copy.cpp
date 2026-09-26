@@ -5,14 +5,17 @@
 #include "repository.hpp"
 
 #include <git2/sys/errors.h>
+#include <git2/sys/repository.h>
 
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <cctype>
+#include <cstdio>
 #include <fstream>
 #include <limits>
 #include <ranges>
@@ -150,6 +153,99 @@ std::uint64_t maximum_new_file_size(const Repository& repo) {
   return *parsed;
 }
 
+std::optional<std::string> read_file(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) return std::nullopt;
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+}
+
+// Binds a private copy of Git's index to the repository for the lifetime of
+// this object, so scans and snapshots never write the real index behind the
+// back of a concurrent Git command. publish() replaces the real index with
+// the copy only if nobody changed it since it was copied, under Git's own
+// index.lock, which is exactly how Git itself updates the index.
+class PrivateIndex {
+ public:
+  explicit PrivateIndex(git_repository* repository) : repository_(repository) {
+    git_index* raw_index = nullptr;
+    check(git_repository_index(&raw_index, repository_), "open index");
+    original_.reset(raw_index);
+    path_ = git_index_path(original_.get());
+    static std::atomic<unsigned long> counter{0};
+    copy_path_ = path_.string() + ".gg-" + std::to_string(++counter) + "-" +
+                 std::to_string(reinterpret_cast<std::uintptr_t>(this));
+    original_bytes_ = read_file(path_);
+    if (original_bytes_.has_value()) {
+      std::ofstream output(copy_path_, std::ios::binary | std::ios::trunc);
+      output << *original_bytes_;
+      if (!output.flush()) {
+        throw GitError("copy working-tree index");  // GG_COV_EXCL_LINE
+      }
+    }
+    git_index* raw_copy = nullptr;
+    const std::string copy = copy_path_.string();
+    git_index_options index_options = GIT_INDEX_OPTIONS_INIT;
+    index_options.oid_type = git_repository_oid_type(repository_);
+    check(git_index_open(&raw_copy, copy.c_str(), &index_options),
+          "open private index");
+    copy_.reset(raw_copy);
+    check(git_repository_set_index(repository_, copy_.get()),
+          "use private index");
+  }
+
+  PrivateIndex(const PrivateIndex&) = delete;
+  PrivateIndex& operator=(const PrivateIndex&) = delete;
+
+  ~PrivateIndex() {
+    if (git_repository_set_index(repository_, original_.get()) != 0) {
+      git_error_clear();  // GG_COV_EXCL_LINE
+    }
+    copy_.reset();
+    std::error_code error;
+    std::filesystem::remove(copy_path_, error);
+  }
+
+  // Whether the private copy was written since it was made.
+  bool changed() const { return read_file(copy_path_) != original_bytes_; }
+
+  // Returns false, leaving the real index alone, when it changed or is locked.
+  bool publish() const {
+    const std::optional<std::string> updated = read_file(copy_path_);
+    if (!updated.has_value() || updated == original_bytes_) return false;
+    const std::filesystem::path lock_path = path_.string() + ".lock";
+    const std::string lock = lock_path.string();
+    // "x" creates the lock exclusively; Git and libgit2 do the same.
+    std::FILE* output = std::fopen(lock.c_str(), "wbx");
+    if (output == nullptr) return false;
+    const bool written =
+        std::fwrite(updated->data(), 1, updated->size(), output) ==
+            updated->size() &&
+        std::fflush(output) == 0;
+    std::fclose(output);
+    std::error_code error;
+    if (!written || read_file(path_) != original_bytes_) {
+      std::filesystem::remove(lock_path, error);
+      return false;
+    }
+    std::filesystem::rename(lock_path, path_, error);
+    if (error) {
+      std::filesystem::remove(lock_path, error);  // GG_COV_EXCL_LINE
+      return false;                                // GG_COV_EXCL_LINE
+    }
+    // The repository's own index object rereads the file on next use.
+    return true;
+  }
+
+ private:
+  git_repository* repository_;
+  IndexPtr original_;
+  IndexPtr copy_;
+  std::filesystem::path path_;
+  std::filesystem::path copy_path_;
+  std::optional<std::string> original_bytes_;
+};
+
 bool tree_contains(git_tree* tree, const char* path) {
   git_tree_entry* raw_entry = nullptr;
   const int result = git_tree_entry_bypath(&raw_entry, tree, path);
@@ -214,37 +310,17 @@ git_oid Repository::snapshot_tree(const git_oid& baseline_tree) const {
 
 git_oid Repository::worktree_tree(const git_oid& baseline_tree) const {
   if (ignore_working_copy_) return baseline_tree;
-  git_index* raw_index = nullptr;
-  check(git_repository_index(&raw_index, repo_.get()), "open index");
-  const std::filesystem::path path = git_index_path(raw_index);
-  git_index_free(raw_index);
-  std::optional<std::string> saved;
-  if (std::ifstream input(path, std::ios::binary); input) {
-    saved.emplace(std::istreambuf_iterator<char>(input),
-                  std::istreambuf_iterator<char>());
-  }
-  const auto restore = [&] {
-    std::error_code error;
-    if (!saved.has_value()) {
-      std::filesystem::remove(path, error);
-      return;
-    }
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    output << *saved;
-  };
-  try {
-    const git_oid result = snapshot_tree(baseline_tree);
-    restore();
-    return result;
-  } catch (...) {
-    restore();
-    throw;
-  }
+  // Queries must not change Git's index, so snapshot into a private copy.
+  PrivateIndex index(repo_.get());
+  return snapshot_tree(baseline_tree);
 }
 
 DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
                                   const std::vector<std::string>& paths) const {
   TreePtr baseline = tree(baseline_tree);
+  // Scan against a private copy of the index; refreshed stat data is only
+  // published when Git has not changed the index in the meantime.
+  PrivateIndex private_index(repo_.get());
   git_index* raw_index = nullptr;
   check(git_repository_index(&raw_index, repo_.get()), "open working-tree index");
   IndexPtr index(raw_index);
@@ -306,23 +382,11 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
   if (prepared) {
     // Files whose stat data changed without their content (touched, or
     // rewritten by a checkout) are hashed once and their stat data is saved,
-    // so later scans skip them again. A locked index, such as while a Git
-    // command runs, only loses that caching.
+    // so later scans skip them again.
     options.flags |= GIT_DIFF_UPDATE_INDEX;
-    const std::filesystem::path index_path = git_index_path(index.get());
-    std::error_code error;
-    const auto written_before = std::filesystem::last_write_time(index_path, error);
     status = git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
                                        &options);
-    if (status == GIT_ELOCKED) {
-      git_error_clear();
-      options.flags &= ~GIT_DIFF_UPDATE_INDEX;
-      status = git_diff_index_to_workdir(&raw_diff, repo_.get(), index.get(),
-                                         &options);
-    } else if (status == 0 && !error &&
-               std::filesystem::last_write_time(index_path, error) !=
-                   written_before &&
-               !error) {
+    if (status == 0 && private_index.changed()) {
       // Saving stat data drops the index's cached trees for those paths, and
       // rebuilding them costs a third of a scan on large checkouts. The index
       // still holds the baseline, so rebuild them once and save them too.
@@ -331,6 +395,8 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
           git_index_write(index.get()) != 0) {
         git_error_clear();  // GG_COV_EXCL_LINE
       }
+      // A concurrently changed or locked index only loses this caching.
+      (void)private_index.publish();
     }
   } else {
     status = git_diff_tree_to_workdir(&raw_diff, repo_.get(), baseline.get(),
