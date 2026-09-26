@@ -652,8 +652,8 @@ void command_abandon(Repository& repo,
 namespace {
 
 // Like `git restore`: discard working-tree edits back to @ without rewriting
-// any commit. The discarded content is kept in an unreferenced commit so it
-// can still be recovered by ID.
+// any commit. The discarded content is kept in a commit that the operation
+// log retains, so it can still be recovered by ID.
 void restore_worktree(Repository& repo, const git_oid& workspace,
                       const RestoreCommand& options, std::ostream& output) {
   repo.require_current_head();
@@ -692,6 +692,9 @@ void restore_worktree(Repository& repo, const git_oid& workspace,
   }
   const git_oid saved = repo.create_commit(
       current_tree, {workspace}, "gg restore: discarded working-tree changes");
+  repo.retain_in_next_operation(saved);
+  repo.record({}, {}, repo.head_state(),
+              "gg restore working tree: saved " + oid_string(saved));
   // Check out against the recorded working tree so restored additions are
   // removed while unrelated local files stay untouched.
   TreePtr baseline = repo.tree(current_tree);

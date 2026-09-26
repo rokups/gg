@@ -409,6 +409,12 @@ class Repository {
                 std::string_view description,
                 bool manage_workspaces = false) const;
 
+  // Keeps a commit no ref names (such as discarded working-tree content)
+  // reachable from the next recorded operation.
+  void retain_in_next_operation(const git_oid& oid) const {
+    pending_retained_.push_back(oid);
+  }
+
   void restore_operation(const git_oid& operation_oid,
                          std::string_view description = {},
                          bool restore_repository = true,
@@ -494,6 +500,7 @@ class Repository {
   mutable std::optional<std::map<std::string, git_oid>> aliases_cache_;
   mutable std::map<git_oid, TreeConflicts, OidLess> conflict_cache_;
   mutable std::map<std::string, git_oid> pending_conflict_refs_;
+  mutable std::vector<git_oid> pending_retained_;
   mutable std::optional<git_oid> failed_checkout_tree_;
   std::optional<std::vector<std::string>> scoped_commit_ids_;
   bool ref_cache_enabled_{false};

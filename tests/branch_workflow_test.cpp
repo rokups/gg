@@ -303,6 +303,13 @@ TEST_F(RepositoryTest, RestoreDiscardsWorkingTreeEditsRecoverably) {
                 .output,
             "discarded\n");
   EXPECT_EQ(invoke_git({"status", "--porcelain"}).output, "");
+
+  // The operation log keeps the saved content through garbage collection.
+  ASSERT_EQ(invoke_git({"reflog", "expire", "--expire=now", "--all"}).code, 0);
+  ASSERT_EQ(invoke_git({"gc", "--prune=now"}).code, 0);
+  EXPECT_EQ(invoke_git({"cat-file", "-e", saved.substr(0, 40) + "^{commit}"}).code, 0);
+  EXPECT_NE(invoke({"operation", "log"}).output.find("gg restore working tree"),
+            std::string::npos);
 }
 
 }  // namespace gg::test

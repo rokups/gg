@@ -320,6 +320,8 @@ git_oid Repository::create_operation(const OperationState& state,
     retain_detached_head(state.head);
     if (previous_state.has_value()) retain_detached_head(previous_state->head);
   }
+  displaced_targets.insert(displaced_targets.end(), pending_retained_.begin(),
+                           pending_retained_.end());
   for (const git_oid& target : displaced_targets) {
     git_commit* raw_commit = nullptr;
     if (!seen.contains(target) &&
@@ -571,6 +573,7 @@ void Repository::record(std::map<std::string, git_oid> updates,
   updates.insert(pending_conflict_refs_.begin(), pending_conflict_refs_.end());
   apply_refs(updates, deletes, description);
   pending_conflict_refs_.clear();
+  pending_retained_.clear();
 }
 
 void Repository::restore_operation(const git_oid& operation_oid,
