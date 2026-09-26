@@ -1481,6 +1481,7 @@ void command_workspace(Repository& repo,
       }
     }
     prevalidate_workspace_deletions(repo, deletes);
+    std::map<std::string, git_oid> kept_heads;
 
     if (!selected->worktree_id.empty()) {
       git_worktree* raw_worktree = nullptr;
@@ -1494,6 +1495,37 @@ void command_workspace(Repository& repo,
       check(locked, "inspect worktree lock");
       if (locked != 0) throw UserError("workspace is locked: " + options.name);
 
+      if (!selected->stale) {
+        // Commits made in the worktree on a detached HEAD are referenced only
+        // by that HEAD, which removal deletes. Keep them as unnamed heads.
+        git_repository* raw_target = nullptr;
+        check(git_repository_open_from_worktree(&raw_target, worktree.get()),
+              "open workspace");
+        GitPtr<git_repository, git_repository_free> target_repository(raw_target);
+        git_oid target_head{};
+        if (git_repository_head_detached(target_repository.get()) == 1 &&
+            git_reference_name_to_id(&target_head, target_repository.get(),
+                                     "HEAD") == 0) {
+          std::vector<git_oid> keepers;
+          for (const auto& [reference, oid] : repo.data_refs()) {
+            if ((starts_with(reference, "refs/heads/") ||
+                 starts_with(reference, kVisibleHeadPrefix) ||
+                 starts_with(reference, kWorkspacePrefix)) &&
+                !deletes.contains(reference)) {
+              keepers.push_back(oid);
+            }
+          }
+          const int reachable = keepers.empty()
+              ? 0
+              : git_graph_reachable_from_any(repo.raw(), &target_head,
+                                             keepers.data(), keepers.size());
+          check(reachable, "inspect workspace HEAD");
+          if (reachable == 0) {
+            kept_heads.emplace(user_head_ref(target_head), target_head);
+          }
+        }
+        git_error_clear();
+      }
       if (selected->stale) {
         (void)repo.ensure_operation();
         check(git_worktree_prune(worktree.get(), nullptr),
@@ -1520,7 +1552,11 @@ void command_workspace(Repository& repo,
           check(git_status_list_new(&raw_status, target.raw(), &status_options),
                 "verify workspace snapshot");
           GitPtr<git_status_list, git_status_list_free> statuses(raw_status);
+          // Staged content differs from @ only in the worktree's own index.
           constexpr unsigned int unsafe =
+              GIT_STATUS_INDEX_NEW | GIT_STATUS_INDEX_MODIFIED |
+              GIT_STATUS_INDEX_DELETED | GIT_STATUS_INDEX_RENAMED |
+              GIT_STATUS_INDEX_TYPECHANGE |
               GIT_STATUS_WT_NEW | GIT_STATUS_WT_MODIFIED |
               GIT_STATUS_WT_DELETED | GIT_STATUS_WT_TYPECHANGE |
               GIT_STATUS_WT_RENAMED | GIT_STATUS_IGNORED |
@@ -1549,7 +1585,7 @@ void command_workspace(Repository& repo,
       }
     }
 
-    repo.record({}, std::move(deletes), repo.head_state(),
+    repo.record(std::move(kept_heads), std::move(deletes), repo.head_state(),
                 "gg workspace remove " + options.name, true);
     repo.forget_workspace_root(options.name);
     output << "Removed workspace " << options.name << ".\n";

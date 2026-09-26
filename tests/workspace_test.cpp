@@ -167,6 +167,25 @@ TEST_F(RepositoryTest, RemovingWorkspaceKeepsItsFinalCommitRecoverable) {
   EXPECT_FALSE(std::filesystem::exists(linked));
 }
 
+TEST_F(RepositoryTest, RemovingWorkspaceKeepsStagedFilesAndDetachedCommits) {
+  WorkspacePaths paths(path_);
+  const auto linked = paths / "linked";
+  ASSERT_EQ(invoke({"workspace", "add", linked.string(), "--name", "side"}).code, 0);
+  std::ofstream(linked / "staged.txt") << "staged only\n";
+  ASSERT_EQ(invoke_git_at(linked, {"add", "staged.txt"}).code, 0);
+  EXPECT_EQ(invoke({"workspace", "remove", "side"}).code, 2);
+  EXPECT_TRUE(std::filesystem::exists(linked / "staged.txt"));
+
+  // A commit made with Git on the worktree's detached HEAD stays visible.
+  ASSERT_EQ(invoke_git_at(linked, {"commit", "-q", "-m", "detached work"}).code, 0);
+  const auto head = detail::Repository(linked).head_oid();
+  ASSERT_TRUE(head.has_value());
+  const git_oid detached = *head;
+  ASSERT_EQ(invoke({"workspace", "remove", "side"}).code, 0);
+  EXPECT_TRUE(has_ref(detail::user_head_ref(detached)));
+  EXPECT_NE(invoke({"log"}).output.find("detached work"), std::string::npos);
+}
+
 TEST_F(RepositoryTest, RepairsAnExternallyMovedLockedWorkspace) {
   WorkspacePaths paths(path_);
   const auto linked = paths / "linked";
