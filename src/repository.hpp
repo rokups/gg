@@ -267,6 +267,11 @@ class Repository {
   bool worktree_tracked_dirty(const git_oid& baseline_tree) const;
   bool head_matches_workspace() const;
   void require_current_head() const;
+
+  // Refuses changes while Git is in the middle of a rebase, merge, bisect or
+  // similar multi-step command: moving HEAD or rewriting refs under it would
+  // make Git's next step build on the wrong commit and drop work.
+  void require_no_git_operation() const;
   // Follow a HEAD moved by Git; uncommitted edits stay in the working tree.
   bool adopt_external_head() const;
   // The branch HEAD is attached to (refs/heads/...), if any.
@@ -461,6 +466,8 @@ class Repository {
 
   void migrate_operation_history() const;
 
+  void import_git_history_now(std::ostream* progress) const;
+
   std::map<std::string, CommitAlias> read_alias_map() const;
 
   git_oid write_alias_map(
@@ -469,7 +476,7 @@ class Repository {
   std::set<std::string> legacy_change_refs() const;
   void migrate_legacy_branch_tracking() const;
   bool migrate_legacy_workspace() const;
-  void migrate_alias_heads() const;
+  bool migrate_alias_heads() const;
 
   std::set<std::string> expired_alias_refs() const;
 
@@ -478,6 +485,9 @@ class Repository {
   RepositoryPtr repo_;
   bool ignore_working_copy_{false};
   bool adopt_external_changes_{true};
+  // Set while gg follows what Git did; those records are allowed even while
+  // Git is in the middle of a rebase, merge or bisect.
+  mutable bool following_git_{false};
   std::optional<OperationState> operation_view_;
   std::optional<git_oid> viewed_operation_;
   mutable std::optional<std::map<std::string, git_oid>> data_refs_cache_;

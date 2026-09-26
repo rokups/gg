@@ -297,8 +297,8 @@ void Repository::migrate_legacy_branch_tracking() const {
 // Earlier gg versions kept unnamed heads visible through commit aliases. Mark
 // every alias target no branch, workspace, or marker reaches as a user head
 // once; afterwards aliases only redirect rewritten commit IDs.
-void Repository::migrate_alias_heads() const {
-  if (operation_view_.has_value()) return;
+bool Repository::migrate_alias_heads() const {
+  if (operation_view_.has_value()) return false;
   git_config* raw_config = nullptr;
   check(git_repository_config(&raw_config, repo_.get()), "open Git configuration");
   GitPtr<git_config, git_config_free> config(raw_config);
@@ -310,7 +310,7 @@ void Repository::migrate_alias_heads() const {
   git_buf value = GIT_BUF_INIT;
   const int found = git_config_get_string_buf(&value, local.get(), key);
   git_buf_dispose(&value);
-  if (found == 0) return;
+  if (found == 0) return false;
   git_error_clear();
 
   git_revwalk* raw_walk = nullptr;
@@ -342,6 +342,7 @@ void Repository::migrate_alias_heads() const {
   }
   check(git_config_set_string(local.get(), key, "markers"),
         "record unnamed head migration");
+  return true;
 }
 
 // Earlier gg versions kept HEAD detached at @- and snapshotted the working
@@ -421,6 +422,18 @@ const std::map<std::string, git_oid>& Repository::aliases() const {
 }
 
 void Repository::import_git_history(std::ostream* progress) const {
+  const bool following = following_git_;
+  following_git_ = true;
+  try {
+    import_git_history_now(progress);
+  } catch (...) {
+    following_git_ = following;
+    throw;
+  }
+  following_git_ = following;
+}
+
+void Repository::import_git_history_now(std::ostream* progress) const {
   const auto current_operation = operation();
   const bool initializing = !current_operation.has_value();
   const bool bootstrap_workspace = initializing ||
@@ -442,11 +455,17 @@ void Repository::import_git_history(std::ostream* progress) const {
       apply_refs({{workspace_ref_name(), *head}}, {}, "gg import history");
     }
     (void)ensure_operation();
+    // A new repository starts in the current layout.
+    (void)migrate_alias_heads();
     return;
   }
-  (void)ensure_operation();
-  migrate_alias_heads();
-  if (migrate_legacy_workspace()) return;
+  // Earlier gg versions left HEAD detached at @- themselves. Migrate that
+  // layout only on the first run after upgrading, and only when Git has not
+  // changed HEAD or refs since: a user's own detached checkout of @- (or a
+  // rebase stopped there) must be followed, not undone.
+  const bool git_changed_state = !(ensure_operation() == *current_operation);
+  const bool upgrading = migrate_alias_heads();
+  if (upgrading && !git_changed_state && migrate_legacy_workspace()) return;
   if (adopt_workspace) {
     record({{workspace_ref_name(), *head}}, {}, head_state(),
            "gg import history");

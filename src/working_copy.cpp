@@ -453,6 +453,29 @@ void Repository::require_current_head() const {
   }
 }
 
+void Repository::require_no_git_operation() const {
+  const int state = git_repository_state(repo_.get());
+  if (state == GIT_REPOSITORY_STATE_NONE) return;
+  std::string_view name = "a multi-step Git command";
+  switch (state) {
+    case GIT_REPOSITORY_STATE_MERGE: name = "a merge"; break;
+    case GIT_REPOSITORY_STATE_REVERT:
+    case GIT_REPOSITORY_STATE_REVERT_SEQUENCE: name = "a revert"; break;
+    case GIT_REPOSITORY_STATE_CHERRYPICK:
+    case GIT_REPOSITORY_STATE_CHERRYPICK_SEQUENCE: name = "a cherry-pick"; break;
+    case GIT_REPOSITORY_STATE_BISECT: name = "a bisect"; break;
+    case GIT_REPOSITORY_STATE_REBASE:
+    case GIT_REPOSITORY_STATE_REBASE_INTERACTIVE:
+    case GIT_REPOSITORY_STATE_REBASE_MERGE: name = "a rebase"; break;
+    case GIT_REPOSITORY_STATE_APPLY_MAILBOX:
+    case GIT_REPOSITORY_STATE_APPLY_MAILBOX_OR_REBASE: name = "git am"; break;
+    default: break;
+  }
+  throw UserError("Git is in the middle of " + std::string(name) +
+                  "; finish or abort it with Git before changing the "
+                  "repository with gg");
+}
+
 bool Repository::adopt_external_head() const {
   if (head_matches_workspace()) return false;
   const auto head = head_oid();
@@ -1202,7 +1225,18 @@ bool Repository::prepare_command() const {
   // Follow what Git did since the last gg command (commits, checkouts,
   // fetches) before changing anything.
   import_git_history();
-  return sync_remote_branches();
+  const bool following = following_git_;
+  following_git_ = true;
+  try {
+    // Do not fast-forward local branches under a rebase or merge in progress.
+    const bool imported = sync_remote_branches(
+        git_repository_state(repo_.get()) == GIT_REPOSITORY_STATE_NONE);
+    following_git_ = following;
+    return imported;
+  } catch (...) {
+    following_git_ = following;
+    throw;
+  }
 }
 
 void Repository::track_paths(const std::vector<std::string>& paths,

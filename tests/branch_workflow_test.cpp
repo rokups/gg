@@ -224,6 +224,8 @@ TEST_F(RepositoryTest, MigratesWorkspacesFromTheSnapshotModel) {
     detail::Repository repo(path_);
     repo.record({{std::string(detail::kWorkspaceRef), change}}, {},
                 {false, id(base)}, "legacy snapshot state");
+    // Versions with that layout predate the unnamed-head marker.
+    ASSERT_EQ(invoke_git({"config", "--unset", "gg.unnamedheads"}).code, 0);
   };
 
   // An untouched placeholder change is dropped and main is checked out.

@@ -531,6 +531,7 @@ void Repository::record(std::map<std::string, git_oid> updates,
             const HeadState& head,
             std::string_view description,
             bool manage_workspaces) const {
+  if (!following_git_) require_no_git_operation();
   if (!manage_workspaces) {
     const std::string current_workspace = workspace_ref_name();
     for (const auto& [name, target] : updates) {
@@ -578,6 +579,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
                                    bool restore_remote_tracking,
                                    bool rollback_on_failure,
                                    const std::map<std::string, git_oid>* rollback_aliases) const {
+  require_no_git_operation();
   const OperationState source = parse_operation(operation_oid);
   OperationState target = state();
   const HeadState previous_head = target.head;

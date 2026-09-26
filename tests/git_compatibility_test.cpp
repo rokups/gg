@@ -754,4 +754,51 @@ TEST_F(RepositoryTest, StatusLeavesGitIndexAndItsLockAlone) {
   }
 }
 
+TEST_F(RepositoryTest, RefusesChangesWhileGitRebaseIsInProgress) {
+  write("tracked.txt", "second\n");
+  ASSERT_EQ(invoke_git({"commit", "-am", "second"}).code, 0);
+  write("tracked.txt", "third\n");
+  ASSERT_EQ(invoke_git({"commit", "-am", "third"}).code, 0);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  const Result stopped = invoke_git(
+      {"-c", "sequence.editor=sed -i 's/^pick/edit/'", "rebase", "-i", "HEAD~2"});
+  ASSERT_EQ(stopped.code, 0) << stopped.error;
+  const git_oid stopped_at = ref("HEAD");
+
+  // Reading still works, and follows nothing until the rebase finishes.
+  const Result log = invoke({"log"});
+  EXPECT_EQ(log.code, 0) << log.error;
+  const Result described = invoke({"describe", "-m", "renamed", "main"});
+  EXPECT_NE(described.code, 0);
+  EXPECT_NE(described.error.find("middle of a rebase"), std::string::npos)
+      << described.error;
+  const Result undone = invoke({"undo"});
+  EXPECT_NE(undone.code, 0);
+  const git_oid head = ref("HEAD");
+  EXPECT_TRUE(git_oid_equal(&head, &stopped_at));
+
+  const Result finished = invoke_git({"rebase", "--abort"});
+  ASSERT_EQ(finished.code, 0) << finished.error;
+  EXPECT_EQ(invoke({"describe", "-m", "renamed", "main"}).code, 0);
+}
+
+TEST_F(RepositoryTest, FollowsADetachedGitCheckoutOfTheParent) {
+  write("tracked.txt", "second\n");
+  ASSERT_EQ(invoke_git({"commit", "-am", "second"}).code, 0);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke_git({"checkout", "-q", "--detach", "HEAD~1"}).code, 0);
+  const git_oid parent = ref("HEAD");
+
+  // The first command records Git's change; later ones must keep it too.
+  ASSERT_EQ(invoke({"operation", "log"}).code, 0);
+  const Result status = invoke({"status"});
+  ASSERT_EQ(status.code, 0) << status.error;
+  const git_oid head = ref("HEAD");
+  EXPECT_TRUE(git_oid_equal(&head, &parent));
+  EXPECT_FALSE(detail::Repository(path_).head_state().symbolic);
+  EXPECT_EQ(status.output.find("Working tree changes"), std::string::npos)
+      << status.output;
+  expect_workspace_coherent();
+}
+
 }  // namespace gg::test
