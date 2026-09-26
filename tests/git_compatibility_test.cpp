@@ -699,4 +699,31 @@ TEST_F(RepositoryTest, DetachedHeadMetadataRewriteSurvivesGarbageCollectionAndUn
   EXPECT_TRUE(git_oid_equal(&replayed, &rewritten));
 }
 
+TEST_F(RepositoryTest, GitRefChangesKeepEarlierOperationsRestorableAfterGc) {
+  const Result created = invoke({"new", "-m", "precious"});
+  ASSERT_EQ(created.code, 0) << created.error;
+  const git_oid precious = ref("HEAD");
+  const Result abandoned = invoke({"abandon", "@"});
+  ASSERT_EQ(abandoned.code, 0) << abandoned.error;
+
+  // A native Git ref change makes gg start a new undo baseline.
+  ASSERT_EQ(invoke_git({"branch", "side", "main"}).code, 0);
+  const Result undo = invoke({"undo"});
+  EXPECT_NE(undo.code, 0);
+  EXPECT_NE(undo.error.find("outside gg"), std::string::npos) << undo.error;
+
+  // The abandoned change is still retained and the earlier operations are
+  // still listed and restorable.
+  ASSERT_EQ(invoke_git({"reflog", "expire", "--expire=now", "--all"}).code, 0);
+  const Result collected = invoke_git({"gc", "--prune=now"});
+  ASSERT_EQ(collected.code, 0) << collected.error;
+  const Result retained = invoke_git({"cat-file", "-e",
+                                      detail::oid_string(precious) + "^{commit}"});
+  ASSERT_EQ(retained.code, 0) << retained.error;
+  const Result log = invoke({"operation", "log", "--no-graph"});
+  ASSERT_EQ(log.code, 0) << log.error;
+  EXPECT_NE(log.output.find("synchronize workspace"), std::string::npos);
+  EXPECT_NE(log.output.find("abandon"), std::string::npos) << log.output;
+}
+
 }  // namespace gg::test

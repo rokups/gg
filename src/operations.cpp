@@ -115,14 +115,20 @@ OperationState parse_operation_state(std::string_view text,
   return state;
 }
 
+constexpr std::string_view kBaselinePrefix = "baseline ";
+
 std::string operation_metadata(std::optional<git_oid> previous,
                                std::string_view description,
-                               std::string_view workspace_name) {
+                               std::string_view workspace_name,
+                               std::optional<git_oid> baseline) {
   std::ostringstream output;
   output << kOperationV4 << "\nprevious "
          << (previous.has_value() ? oid_string(*previous) : "-")
          << "\ndescription " << description << "\nworkspace "
          << workspace_name << '\n';
+  if (baseline.has_value()) {
+    output << kBaselinePrefix << oid_string(*baseline) << '\n';
+  }
   return output.str();
 }
 
@@ -261,17 +267,22 @@ std::optional<git_oid> Repository::operation_previous(
 
 git_oid Repository::create_operation(const OperationState& state,
                          std::optional<git_oid> previous,
-                         std::string_view description) const {
+                         std::string_view description,
+                         std::optional<git_oid> baseline) const {
   if (description.empty()) {
     throw GitError("operation description is empty");
   }
   std::vector<git_oid> parents;
   std::set<git_oid, OidLess> seen;
   std::optional<OperationState> previous_state;
-  if (previous.has_value()) {
-    parents.push_back(*previous);
-    seen.insert(*previous);
-    CommitPtr previous_commit = commit(*previous);
+  // The first parent retains the operation this one follows, whether it can
+  // be undone to (the predecessor) or only restored explicitly (a baseline).
+  const std::optional<git_oid> retained =
+      previous.has_value() ? previous : baseline;
+  if (retained.has_value()) {
+    parents.push_back(*retained);
+    seen.insert(*retained);
+    CommitPtr previous_commit = commit(*retained);
     if (std::string_view(git_commit_message(previous_commit.get()))
             .starts_with(kOperationV4)) {
       previous_state = parse_operation(previous_commit.get());
@@ -321,7 +332,7 @@ git_oid Repository::create_operation(const OperationState& state,
     }
   }
   if (parents.size() > kMaxOperationParents) {
-    const auto first_target = parents.begin() + (previous.has_value() ? 1 : 0);
+    const auto first_target = parents.begin() + (retained.has_value() ? 1 : 0);
     const git_oid keepalive =
         create_keepalive(*this, {first_target, parents.end()});
     parents.erase(first_target, parents.end());
@@ -345,7 +356,28 @@ git_oid Repository::create_operation(const OperationState& state,
         "write operation state tree");
   return create_commit(tree_oid, parents,
                        operation_metadata(previous, description,
-                                          state.workspace_name));
+                                          state.workspace_name, baseline));
+}
+
+std::optional<git_oid> Repository::operation_baseline(
+    const git_oid& oid) const {
+  CommitPtr operation = commit(oid);
+  return operation_baseline(operation.get());
+}
+
+std::optional<git_oid> Repository::operation_baseline(
+    const git_commit* operation) const {
+  std::istringstream input(git_commit_message(operation));
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!starts_with(line, kBaselinePrefix)) continue;
+    git_oid result{};
+    check(git_oid_fromstr(&result, line.c_str() + kBaselinePrefix.size(),
+                          git_repository_oid_type(repo_.get())),
+          "parse operation baseline");
+    return result;
+  }
+  return std::nullopt;
 }
 
 void Repository::migrate_operation_history() const {
@@ -372,7 +404,7 @@ void Repository::migrate_operation_history() const {
     const std::string description = migrate_operation_description(
         operation_description(*iterator), rewritten_oids);
     rewritten = create_operation(parse_operation(*iterator), rewritten,
-                                 description);
+                                 description, operation_baseline(*iterator));
     rewritten_oids.emplace(*iterator, *rewritten);
   }
   apply_refs({{operation_ref_name(), *rewritten}}, {},
@@ -411,14 +443,18 @@ git_oid Repository::resolve_operation(std::string_view expression) const {
   }
 
   std::optional<git_oid> match;
-  while (current.has_value()) {
+  std::set<git_oid, OidLess> seen;
+  while (current.has_value() && seen.insert(*current).second) {
     if (starts_with(oid_string(*current), expression)) {
       if (match.has_value()) {
         throw UserError("ambiguous operation ID: " + std::string(expression));
       }
       match = *current;
     }
-    current = operation_previous(*current);
+    // Operations before a baseline can still be restored explicitly.
+    CommitPtr operation = commit(*current);
+    current = operation_previous(operation.get());
+    if (!current.has_value()) current = operation_baseline(operation.get());
   }
   if (match.has_value()) return *match;
   git_object* raw_object = nullptr;
@@ -464,21 +500,27 @@ git_oid Repository::ensure_operation() const {
     }
   }
   std::optional<git_oid> predecessor;
+  std::optional<git_oid> baseline;
   if (current.has_value()) {
     CommitPtr current_commit = commit(*current);
     // A legacy repository transitions directly to V4 while retaining its
     // existing operation as the restoration predecessor. A mismatch against
     // an existing V4 operation, however, represents state changed outside
-    // this worktree (for example another linked workspace). Establish a fresh
-    // baseline so undo in this worktree cannot roll back that external state.
+    // gg (Git commands or another linked workspace). Establish a fresh
+    // baseline so undo cannot roll back that external state, but keep the
+    // earlier history as its baseline: the commits it retains stay reachable
+    // and `gg operation restore` can still return to them.
     if (!std::string_view(git_commit_message(current_commit.get()))
              .starts_with(kOperationV4)) {
       predecessor = current;
+    } else {
+      baseline = current;
     }
   }
   const git_oid synchronized = create_operation(
       state(), predecessor,
-      current.has_value() ? "synchronize workspace" : "initialize repository");
+      current.has_value() ? "synchronize workspace" : "initialize repository",
+      baseline);
   apply_refs({{operation_ref_name(), synchronized}}, {},
              "gg synchronize workspace");
   return synchronized;

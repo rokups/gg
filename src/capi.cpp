@@ -1169,7 +1169,10 @@ int gg_repository_operations(gg_operation_array* out,
       auto commit = repo.commit(*current);
       gg_operation item{};
       item.oid = *current;
-      const auto previous = repo.operation_previous(commit.get());
+      // Operations before a Git-side change stay listed after its baseline
+      // so they remain restorable.
+      auto previous = repo.operation_previous(commit.get());
+      if (!previous.has_value()) previous = repo.operation_baseline(commit.get());
       if (previous.has_value()) {
         item.previous = *previous;
         item.has_previous = 1;

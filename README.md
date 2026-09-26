@@ -298,6 +298,10 @@ an undo clears the redo path. `gg operation log` (also `gg op log`) shows the
 newest-first operation graph with IDs, timestamps, and descriptions. `gg
 operation restore` restores all state from a logged operation by default, or
 only repository or remote-tracking state with repeated `--what` options.
+When Git changes refs outside gg, the next gg command records a "synchronize
+workspace" operation. Undo stops there so it never rolls back Git's changes,
+but earlier operations stay in the log, keep their commits from garbage
+collection, and can still be restored with `gg operation restore`.
 
 ## Library API
 

@@ -1295,6 +1295,13 @@ void command_push(Repository& repo,
 void command_undo(Repository& repo, std::ostream& output) {
   const auto previous = operation_undo_target(repo);
   if (!previous.has_value()) {
+    const auto current = repo.operation();
+    if (current.has_value() && repo.operation_baseline(*current).has_value()) {
+      throw UserError(
+          "nothing to undo: Git changed the repository outside gg since the "
+          "last gg operation; use `gg operation log` and `gg operation "
+          "restore` to return to an earlier operation");
+    }
     throw UserError("nothing to undo");
   }
   repo.restore_operation(
@@ -1360,7 +1367,12 @@ void command_operation_log(Repository& repo,
   std::vector<OperationLogEntry> operations;
   while (current.has_value() && operations.size() < options.limit) {
     CommitPtr operation = repo.commit(*current);
-    const auto previous = repo.operation_previous(operation.get());
+    // Operations before a Git-side change remain listed after its baseline;
+    // they cannot be undone to but can be restored.
+    auto previous = repo.operation_previous(operation.get());
+    if (!previous.has_value()) {
+      previous = repo.operation_baseline(operation.get());
+    }
     const std::string description =
         repo.operation_description(operation.get());
     const git_signature* author = git_commit_author(operation.get());

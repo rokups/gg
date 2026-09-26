@@ -375,9 +375,18 @@ class Repository {
   std::optional<git_oid> operation_target(const git_oid& oid,
                                             std::string_view prefix) const;
 
+  // An operation without a predecessor cannot be undone past. A baseline
+  // (recorded after Git changed state outside gg) still retains the earlier
+  // history it replaced, so that history stays restorable and reachable.
   git_oid create_operation(const OperationState& state,
                              std::optional<git_oid> previous,
-                             std::string_view description) const;
+                             std::string_view description,
+                             std::optional<git_oid> baseline = std::nullopt) const;
+
+  std::optional<git_oid> operation_baseline(const git_oid& oid) const;
+
+  std::optional<git_oid> operation_baseline(
+      const git_commit* operation) const;
 
   std::optional<git_oid> operation() const;
 
