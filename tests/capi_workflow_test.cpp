@@ -999,6 +999,21 @@ TEST_F(RepositoryTest, RefreshesCachedReferencesAfterAdoptingGitChanges) {
   EXPECT_TRUE(found_external);
   gg_named_ref_array_dispose(&refs);
 
+  // Queries see refs that changed after the last call, before any adoption.
+  ASSERT_EQ(git_reference_create(&external, repository_.get(),
+                                 "refs/heads/unadopted", &head, 0, nullptr),
+            GIT_OK);
+  git_reference_free(external);
+  ASSERT_EQ(gg_repository_named_refs(&refs, repository), GIT_OK);
+  bool found_unadopted = false;
+  for (size_t index = 0; index < refs.count; ++index) {
+    if (std::strcmp(refs.items[index].name, "unadopted") == 0) {
+      found_unadopted = true;
+    }
+  }
+  EXPECT_TRUE(found_unadopted);
+  gg_named_ref_array_dispose(&refs);
+
   const git_oid local = raw_commit("local", {base});
   const git_oid remote = raw_commit("remote", {local});
   set_ref("refs/heads/main", local);

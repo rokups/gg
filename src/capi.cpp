@@ -193,6 +193,14 @@ void add_refspec(gg_transport_plan* plan,
   }
 }
 
+// The handle lives as long as the GUI, while Git and other gg processes
+// change refs underneath it. Each query starts from current refs; the cache
+// only serves lookups within one call.
+Repository& fresh(gg_repository* repository) {
+  repository->implementation.invalidate_ref_cache();
+  return repository->implementation;
+}
+
 Repository& query_repository(
     gg_repository* repository,
     const char* at_operation,
@@ -201,7 +209,7 @@ Repository& query_repository(
     throw gg::detail::UserError("repository must not be null");
   }
   if (at_operation == nullptr || *at_operation == '\0') {
-    return repository->implementation;
+    return fresh(repository);
   }
   historical = std::make_unique<Repository>(repository->implementation.raw(),
                                              true, false);
@@ -644,7 +652,7 @@ int gg_repository_resolve(git_oid* out,
     if (out == nullptr || repository == nullptr || revision == nullptr) {
       throw gg::detail::UserError("resolve arguments must not be null");
     }
-    *out = repository->implementation.resolve(revision);
+    *out = fresh(repository).resolve(revision);
     return GIT_OK;
   });
 }
@@ -657,7 +665,7 @@ int gg_repository_resolve_set(gg_oid_array* out,
       throw gg::detail::UserError("resolve-set arguments must not be null");
     }
     *out = {};
-    const auto values = repository->implementation.resolve_set(revisions);
+    const auto values = fresh(repository).resolve_set(revisions);
     if (!values.empty()) {
       out->ids = static_cast<git_oid*>(
           std::malloc(values.size() * sizeof(git_oid)));
@@ -674,7 +682,7 @@ int gg_repository_working_copy(git_oid* out, gg_repository* repository) {
     if (out == nullptr || repository == nullptr) {
       throw gg::detail::UserError("working-copy arguments must not be null");
     }
-    const auto value = repository->implementation.workspace();
+    const auto value = fresh(repository).workspace();
     if (!value.has_value()) {
       throw gg::detail::UserError("working-copy change not found", GIT_ENOTFOUND);
     }
@@ -690,7 +698,7 @@ int gg_repository_references(gg_reference_array* out,
       throw gg::detail::UserError("reference arguments must not be null");
     }
     *out = {};
-    const auto refs = repository->implementation.data_refs();
+    const auto refs = fresh(repository).data_refs();
     if (!refs.empty()) {
       out->items = static_cast<gg_reference*>(
           std::calloc(refs.size(), sizeof(gg_reference)));
@@ -712,7 +720,7 @@ int gg_repository_named_refs(gg_named_ref_array* out,
       throw gg::detail::UserError("named-reference arguments must not be null");
     }
     *out = {};
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     const auto refs = repo.data_refs();
     struct NamedRef {
       std::string name;
@@ -827,7 +835,7 @@ int gg_repository_conflict_paths(gg_owned_string_array* out,
       throw gg::detail::UserError("conflict arguments must not be null");
     }
     *out = {};
-    const auto paths = repository->implementation.conflict_paths(*revision);
+    const auto paths = fresh(repository).conflict_paths(*revision);
     if (!paths.empty()) {
       out->strings = static_cast<char**>(std::calloc(paths.size(), sizeof(char*)));
       if (out->strings == nullptr) throw std::bad_alloc();
@@ -847,7 +855,7 @@ int gg_repository_conflicts(gg_conflict_array* out,
       throw gg::detail::UserError("conflict arguments must not be null");
     }
     *out = {};
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     const auto commit = repo.commit(*revision);
     const auto conflicts =
         repo.tree_conflicts(*git_commit_tree_id(commit.get()));
@@ -924,6 +932,7 @@ int gg_repository_lookup_revisions(gg_revision_array* out,
         std::calloc(revisions.count, sizeof(gg_revision)));
     if (out->items == nullptr) throw std::bad_alloc();
     try {
+      (void)fresh(repository);
       while (out->count < revisions.count) {
         gg_revision& item = out->items[out->count++];
         fill_revision(item, repository->implementation,
@@ -1078,7 +1087,7 @@ int gg_repository_worktree_status_ex(gg_status* out,
         std::ranges::all_of(filesets, simple_status_pathspec)) {
       scan_paths = filesets;
     }
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     const CancelScope cancel(repo, operation);
     const auto active = repo.workspace().has_value() ? repo.workspace()
                                                       : repo.head_oid();
@@ -1162,7 +1171,7 @@ int gg_repository_operations(gg_operation_array* out,
       throw gg::detail::UserError("operation arguments must not be null");
     }
     *out = {};
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     std::vector<gg_operation> operations;
     auto current = repo.operation();
     while (current.has_value() && operations.size() < limit) {
@@ -1201,7 +1210,7 @@ int gg_repository_operation_capabilities(gg_operation_capabilities* out,
     if (out == nullptr || repository == nullptr) {
       throw gg::detail::UserError("operation capability arguments must not be null");
     }
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     out->can_undo = gg::detail::operation_undo_target(repo).has_value();
     out->can_redo = gg::detail::operation_redo_target(repo).has_value();
     return GIT_OK;
@@ -1216,7 +1225,7 @@ int gg_repository_head(gg_head* out, gg_repository* repository) {
     const unsigned int version = out->version;
     *out = {};
     out->version = version;
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     if (const auto branch = repo.current_branch(); branch.has_value()) {
       out->attached = 1;
       out->branch = duplicate(branch->substr(11));
@@ -1236,7 +1245,7 @@ int gg_repository_workspaces(gg_workspace_array* out,
       throw gg::detail::UserError("workspace arguments must not be null");
     }
     *out = {};
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     const std::vector<gg::detail::WorkspaceRecord> workspaces =
         repo.workspaces();
 
@@ -1272,7 +1281,7 @@ int gg_repository_workspace_lock_info(gg_workspace_lock_info* out,
       throw gg::detail::UserError("workspace arguments must not be null or empty");
     }
     *out = {};
-    const auto records = repository->implementation.workspaces();
+    const auto records = fresh(repository).workspaces();
     const auto found = std::ranges::find(records, name, &gg::detail::WorkspaceRecord::name);
     if (found == records.end()) throw gg::detail::UserError("workspace not found: " + std::string(name));
     out->reason = duplicate(found->lock_reason);
@@ -1921,7 +1930,7 @@ int gg_repository_plan_fetch(gg_transport_plan* out,
     }
 
     std::vector<std::string> deletes;
-    const auto data_refs = repository->implementation.data_refs();
+    const auto data_refs = fresh(repository).data_refs();
     for (const std::string& remote : remotes) {
       std::vector<std::string> branches;
       std::vector<std::string> tags;
@@ -2060,7 +2069,7 @@ int gg_repository_plan_push(gg_transport_plan* out,
     out->version = GG_OPTIONS_VERSION;
     out->atomic = 1;
     const auto& value = required(options);
-    Repository& repo = repository->implementation;
+    Repository& repo = fresh(repository);
     const std::string remote = value.remote == nullptr ? "origin" : value.remote;
     git_remote* raw_remote = nullptr;
     const int lookup = git_remote_lookup(&raw_remote, repo.raw(), remote.c_str());
