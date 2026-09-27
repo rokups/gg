@@ -1036,7 +1036,8 @@ void Repository::clear_checkout_recovery() const {
   failed_checkout_tree_.reset();
 }
 
-void Repository::checkout(std::optional<git_oid> oid) const {
+void Repository::checkout(std::optional<git_oid> oid,
+                          std::optional<git_oid> expected_tree) const {
   if (ignore_working_copy_) return;
   const git_oid target_tree = oid.has_value()
                                   ? *git_commit_tree_id(commit(*oid).get())
@@ -1093,6 +1094,12 @@ void Repository::checkout(std::optional<git_oid> oid) const {
   IndexPtr index(raw_index);
   check(git_index_read(index.get(), 1), "read checkout index");
   git_oid baseline_oid{};
+  git_oid indexed_oid{};
+  const bool index_was_expected =
+      expected_tree.has_value() &&
+      git_index_write_tree_to(&indexed_oid, index.get(), repo_.get()) == 0 &&
+      indexed_oid == *expected_tree;
+  git_error_clear();
   try {
     check(git_index_update_all(index.get(), nullptr, nullptr, nullptr),
           "inspect checkout baseline");
@@ -1121,6 +1128,11 @@ void Repository::checkout(std::optional<git_oid> oid) const {
     throw;
   }
   check(git_index_read(index.get(), 1), "restore checkout index");
+  // Edits saved after the caller's clean check are in the live baseline, and
+  // a forced checkout would overwrite them. Refuse before writing anything.
+  if (index_was_expected && !(baseline_oid == *expected_tree)) {
+    throw WorktreeChangedError();
+  }
   TreePtr baseline = tree(baseline_oid);
   git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
   options.baseline = baseline.get();

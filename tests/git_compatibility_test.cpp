@@ -801,4 +801,17 @@ TEST_F(RepositoryTest, FollowsADetachedGitCheckoutOfTheParent) {
   expect_workspace_coherent();
 }
 
+TEST_F(RepositoryTest, CheckoutRefusesToOverwriteEditsSavedAfterValidation) {
+  const git_oid base = ref("HEAD");
+  write("tracked.txt", "second\n");
+  ASSERT_EQ(invoke_git({"commit", "-qam", "second"}).code, 0);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  detail::Repository repo(path_);
+  const git_oid validated = *git_commit_tree_id(repo.commit(ref("HEAD")).get());
+  // An editor saves after the caller's clean check.
+  write("tracked.txt", "saved during the operation\n");
+  EXPECT_THROW(repo.checkout(base, validated), detail::WorktreeChangedError);
+  EXPECT_EQ(read_path(path_ / "tracked.txt"), "saved during the operation\n");
+}
+
 }  // namespace gg::test

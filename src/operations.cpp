@@ -581,18 +581,22 @@ void Repository::restore_operation(const git_oid& operation_oid,
                                    bool restore_repository,
                                    bool restore_remote_tracking,
                                    bool rollback_on_failure,
-                                   const std::map<std::string, git_oid>* rollback_aliases) const {
+                                   const std::map<std::string, git_oid>* rollback_aliases,
+                                   bool restore_files) const {
   require_no_git_operation();
   const OperationState source = parse_operation(operation_oid);
   OperationState target = state();
   const HeadState previous_head = target.head;
   std::optional<git_oid> previous_checkout = workspace();
   if (!previous_checkout.has_value()) previous_checkout = head_oid();
+  std::optional<git_oid> validated_tree;
   if (restore_repository && rollback_on_failure) {
     const git_oid baseline_tree = previous_checkout.has_value()
                                       ? *git_commit_tree_id(commit(*previous_checkout).get())
                                       : empty_tree();
+    validated_tree = baseline_tree;
     if (worktree_tracked_dirty(baseline_tree)) {
+      validated_tree.reset();
       std::optional<git_oid> restored_checkout;
       if (const auto found = source.refs.find(workspace_ref_name());
           found != source.refs.end()) {
@@ -721,10 +725,12 @@ void Repository::restore_operation(const git_oid& operation_oid,
       set_head(target.head);
       std::optional<git_oid> target_checkout = workspace();
       if (!target_checkout.has_value()) target_checkout = head_oid();
-      checkout(target_checkout);
+      if (restore_files) checkout(target_checkout, validated_tree);
     }
   } catch (const std::exception& error) {
     const std::string original = error.what();
+    const bool files_untouched =
+        dynamic_cast<const WorktreeChangedError*>(&error) != nullptr;
     if (restored_workspace_name.has_value() && (!refs_applied || rollback_on_failure)) {
       set_workspace_name(previous_workspace_name);
     }
@@ -744,7 +750,7 @@ void Repository::restore_operation(const git_oid& operation_oid,
         apply_refs(rollback_updates, rollback_deletes, "gg restore failed operation");
         if (restore_repository) {
           set_head(previous_head);
-          checkout(previous_checkout);
+          if (!files_untouched) checkout(previous_checkout);
         }
       } catch (const std::exception& recovery) {
         clear_checkout_recovery();

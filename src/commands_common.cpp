@@ -694,6 +694,7 @@ void finish_workspace(Repository& repo,
         git_commit_tree_id(repo.commit(*current).get()),
         git_commit_tree_id(repo.commit(workspace).get())) != 0;
   }
+  std::optional<git_oid> validated_tree;
   if (!tree_unchanged) {
     const auto baseline = repo.workspace().has_value()
                               ? repo.workspace()
@@ -701,6 +702,7 @@ void finish_workspace(Repository& repo,
     const git_oid baseline_tree = baseline.has_value()
                                       ? *git_commit_tree_id(repo.commit(*baseline).get())
                                       : repo.empty_tree();
+    validated_tree = baseline_tree;
     if (repo.worktree_tracked_dirty(baseline_tree)) {
       throw UserError("working tree has uncommitted changes; commit or amend before switching changes");
     }
@@ -712,12 +714,15 @@ void finish_workspace(Repository& repo,
   repo.record(std::move(updates), std::move(deletes), head, operation);
   try {
     repo.set_head(head);
-    if (!tree_unchanged) repo.checkout(workspace);
+    if (!tree_unchanged) repo.checkout(workspace, validated_tree);
   } catch (const std::exception& error) {
     const std::string original = error.what();
+    // A refused checkout wrote nothing, so recovery must not touch files.
+    const bool files_untouched =
+        dynamic_cast<const WorktreeChangedError*>(&error) != nullptr;
     try {
       repo.restore_operation(previous_operation, "", true, true, false,
-                             &previous_aliases);
+                             &previous_aliases, !files_untouched);
     } catch (const std::exception& recovery) {
       repo.clear_checkout_recovery();
       throw UserError(original + "; could not restore the previous operation: " +
@@ -778,11 +783,13 @@ void finish_without_workspace(Repository& repo, RewritePlan plan,
   } else if (checkout.has_value()) {
     head = {false, oid_string(*checkout)};
   }
+  std::optional<git_oid> validated_tree;
   if (checkout.has_value() != previous_head.has_value() ||
       (checkout.has_value() && !(*checkout == *previous_head))) {
     const git_oid baseline_tree = previous_head.has_value()
                                       ? *git_commit_tree_id(repo.commit(*previous_head).get())
                                       : repo.empty_tree();
+    validated_tree = baseline_tree;
     if (repo.worktree_tracked_dirty(baseline_tree)) {
       throw UserError("working tree has uncommitted changes; commit or amend before switching changes");
     }
@@ -794,13 +801,15 @@ void finish_without_workspace(Repository& repo, RewritePlan plan,
     repo.set_head(head);
     if (checkout.has_value() != previous_head.has_value() ||
         (checkout.has_value() && !(*checkout == *previous_head))) {
-      repo.checkout(checkout);
+      repo.checkout(checkout, validated_tree);
     }
   } catch (const std::exception& error) {
     const std::string original = error.what();
+    const bool files_untouched =
+        dynamic_cast<const WorktreeChangedError*>(&error) != nullptr;
     try {
       repo.restore_operation(previous_operation, "", true, true, false,
-                             &previous_aliases);
+                             &previous_aliases, !files_untouched);
     } catch (const std::exception& recovery) {
       repo.clear_checkout_recovery();
       throw UserError(original + "; could not restore the previous operation: " + recovery.what());

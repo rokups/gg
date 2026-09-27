@@ -55,6 +55,15 @@ class UserError : public std::runtime_error {
   int code_;
 };
 
+// Thrown by checkout before any file is written when tracked files changed
+// after the caller validated them, so there is nothing on disk to recover.
+class WorktreeChangedError : public UserError {
+ public:
+  WorktreeChangedError()
+      : UserError("working tree changed while gg was updating it; nothing "
+                  "was overwritten, run the command again") {}
+};
+
 class GitError : public std::runtime_error {
  public:
   explicit GitError(const std::string& message, int code = GIT_ERROR)
@@ -354,7 +363,10 @@ class Repository {
                        const std::set<std::string>& deletes,
                        const HeadIntent& intent = HeadIntent::follow()) const;
 
-  void checkout(std::optional<git_oid> oid) const;
+  // `expected_tree` is the tracked content the caller validated as clean;
+  // checkout refuses with WorktreeChangedError when it changed since.
+  void checkout(std::optional<git_oid> oid,
+                std::optional<git_oid> expected_tree = std::nullopt) const;
 
   void clear_checkout_recovery() const;
 
@@ -420,7 +432,8 @@ class Repository {
                          bool restore_repository = true,
                          bool restore_remote_tracking = true,
                          bool rollback_on_failure = true,
-                         const std::map<std::string, git_oid>* rollback_aliases = nullptr) const;
+                         const std::map<std::string, git_oid>* rollback_aliases = nullptr,
+                         bool restore_files = true) const;
 
   void import_git_history(std::ostream* progress = nullptr) const;
 
