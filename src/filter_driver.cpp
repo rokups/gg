@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cerrno>
 #include <cstring>
 #include <map>
@@ -24,6 +25,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -78,6 +80,12 @@ class Channel {
 #else
     int sockets[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) return false;
+    // Close-on-exec keeps these ends out of processes other threads start,
+    // which would hold the driver's input open and hang gg waiting for EOF.
+    // The child's dup2() copies below do not inherit the flag.
+    for (const int socket : sockets) {
+      fcntl(socket, F_SETFD, fcntl(socket, F_GETFD) | FD_CLOEXEC);
+    }
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions, sockets[1], STDIN_FILENO);
@@ -298,7 +306,13 @@ class DriverProcess {
 
   // Starts the process and negotiates capabilities if it is not running.
   bool ready(const std::string& command, const std::string& directory) {
-    if (aborted_) return false;
+    // A failed driver is not retried for every file, but a long-lived
+    // process (such as a GUI) retries later, e.g. once git-lfs is installed.
+    if (aborted_ && std::chrono::steady_clock::now() - aborted_at_ <
+                        std::chrono::seconds(30)) {
+      return false;
+    }
+    aborted_ = false;
     if (channel_ != nullptr) return true;
     auto channel = std::make_unique<Channel>();
     std::vector<std::string> lines;
@@ -311,7 +325,7 @@ class DriverProcess {
         !write_text(*channel, "capability=clean") ||
         !write_text(*channel, "capability=smudge") || !write_flush(*channel) ||
         !read_list(*channel, lines)) {
-      aborted_ = true;
+      abort();
       return false;
     }
     clean_ = std::ranges::find(lines, "capability=clean") != lines.end();
@@ -330,6 +344,7 @@ class DriverProcess {
   void reset() { channel_.reset(); }
   void abort() {
     aborted_ = true;
+    aborted_at_ = std::chrono::steady_clock::now();
     channel_.reset();
   }
 
@@ -338,6 +353,7 @@ class DriverProcess {
   bool clean_ = false;
   bool smudge_ = false;
   bool aborted_ = false;
+  std::chrono::steady_clock::time_point aborted_at_;
 };
 
 struct Registry {
