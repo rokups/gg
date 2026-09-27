@@ -249,6 +249,10 @@ TEST_F(RepositoryTest, MigratesWorkspacesFromTheSnapshotModel) {
 }
 
 TEST_F(RepositoryTest, MarksAliasOnlyHeadsAsUserHeadsOnce) {
+  // A repository used by an earlier gg version has operation history but no
+  // unnamed-head markers yet.
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke_git({"config", "--unset", "gg.unnamedheads"}).code, 0);
   const git_oid orphan = raw_commit("alias only", {ref("HEAD")});
   const git_oid kept = raw_commit("reachable", {ref("HEAD")});
   set_ref(std::string(detail::kAliasPrefix) + id(orphan), orphan);

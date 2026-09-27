@@ -495,7 +495,8 @@ class Repository {
   std::set<std::string> legacy_change_refs() const;
   void migrate_legacy_branch_tracking() const;
   bool migrate_legacy_workspace() const;
-  bool migrate_alias_heads() const;
+  // Returns whether this was the first run with unnamed-head markers.
+  bool migrate_alias_heads(bool migrate = true) const;
 
   std::set<std::string> expired_alias_refs() const;
 

@@ -838,4 +838,13 @@ TEST_F(RepositoryTest, CheckoutsKeepPathsOutsideTheSparseCheckout) {
   EXPECT_EQ(staged.output, "") << "index must match the checked out commit";
 }
 
+TEST_F(RepositoryTest, AliasRefsInANewRepositoryAreNotUserHeads) {
+  const git_oid internal = raw_commit("internal", {ref("HEAD")});
+  set_ref(std::string(detail::kAliasPrefix) + detail::oid_string(internal), internal);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  ASSERT_EQ(invoke({"status"}).code, 0);
+  EXPECT_FALSE(has_ref(detail::user_head_ref(internal)));
+  EXPECT_EQ(invoke({"log"}).output.find("internal"), std::string::npos);
+}
+
 }  // namespace gg::test

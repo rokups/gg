@@ -297,7 +297,7 @@ void Repository::migrate_legacy_branch_tracking() const {
 // Earlier gg versions kept unnamed heads visible through commit aliases. Mark
 // every alias target no branch, workspace, or marker reaches as a user head
 // once; afterwards aliases only redirect rewritten commit IDs.
-bool Repository::migrate_alias_heads() const {
+bool Repository::migrate_alias_heads(bool migrate) const {
   if (operation_view_.has_value()) return false;
   git_config* raw_config = nullptr;
   check(git_repository_config(&raw_config, repo_.get()), "open Git configuration");
@@ -312,6 +312,11 @@ bool Repository::migrate_alias_heads() const {
   git_buf_dispose(&value);
   if (found == 0) return false;
   git_error_clear();
+  if (!migrate) {
+    check(git_config_set_string(local.get(), key, "markers"),
+          "record unnamed head layout");
+    return true;
+  }
 
   git_revwalk* raw_walk = nullptr;
   check(git_revwalk_new(&raw_walk, repo_.get()), "walk unnamed heads");
@@ -449,14 +454,17 @@ void Repository::import_git_history_now(std::ostream* progress) const {
   const bool adopt_workspace = head.has_value() && !workspace().has_value() &&
                                bootstrap_workspace;
   if (initializing) {
+    const bool had_workspace = workspace().has_value();
     // The initial operation already includes @, so there is nothing to undo
     // before the first real command.
     if (adopt_workspace) {
       apply_refs({{workspace_ref_name(), *head}}, {}, "gg import history");
     }
     (void)ensure_operation();
-    // A new repository starts in the current layout.
-    (void)migrate_alias_heads();
+    // A repository without any gg state starts in the current layout: alias
+    // refs Git tools or scripts left behind are not heads the user created.
+    // An existing workspace ref comes from an earlier gg and still migrates.
+    if (!had_workspace) (void)migrate_alias_heads(false);
     return;
   }
   // Earlier gg versions left HEAD detached at @- themselves. Migrate that
