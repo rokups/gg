@@ -814,4 +814,28 @@ TEST_F(RepositoryTest, CheckoutRefusesToOverwriteEditsSavedAfterValidation) {
   EXPECT_EQ(read_path(path_ / "tracked.txt"), "saved during the operation\n");
 }
 
+TEST_F(RepositoryTest, CheckoutsKeepPathsOutsideTheSparseCheckout) {
+  write("included/a.txt", "a\n");
+  write("excluded/b.txt", "b1\n");
+  ASSERT_EQ(invoke_git({"add", "."}).code, 0);
+  ASSERT_EQ(invoke_git({"commit", "-qm", "layout"}).code, 0);
+  const git_oid first = ref("HEAD");
+  write("excluded/b.txt", "b2\n");
+  ASSERT_EQ(invoke_git({"commit", "-qam", "change excluded"}).code, 0);
+  ASSERT_EQ(invoke_git({"sparse-checkout", "init", "--cone"}).code, 0);
+  ASSERT_EQ(invoke_git({"sparse-checkout", "set", "included"}).code, 0);
+  ASSERT_FALSE(std::filesystem::exists(path_ / "excluded"));
+
+  const Result created = invoke({"new", "-m", "sparse work"});
+  ASSERT_EQ(created.code, 0) << created.error;
+  const Result edited = invoke({"edit", detail::oid_string(first)});
+  ASSERT_EQ(edited.code, 0) << edited.error;
+  EXPECT_FALSE(std::filesystem::exists(path_ / "excluded"));
+  EXPECT_EQ(read_path(path_ / "included/a.txt"), "a\n");
+  const Result listed = invoke_git({"ls-files", "-t", "excluded"});
+  EXPECT_EQ(listed.output, "S excluded/b.txt\n");
+  const Result staged = invoke_git({"diff", "--cached", "--name-only"});
+  EXPECT_EQ(staged.output, "") << "index must match the checked out commit";
+}
+
 }  // namespace gg::test

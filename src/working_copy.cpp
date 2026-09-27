@@ -1094,6 +1094,40 @@ void Repository::checkout(std::optional<git_oid> oid,
   IndexPtr index(raw_index);
   check(git_index_read(index.get(), 1), "read checkout index");
   git_oid baseline_oid{};
+  // libgit2 knows nothing about sparse checkouts: paths outside the sparse
+  // patterns are absent on disk, so the live baseline would lose them and
+  // checkout would materialize every one. Remember them to keep them out.
+  std::vector<git_index_entry> skipped;
+  std::vector<std::string> skipped_paths;
+  for (std::size_t position = 0; position < git_index_entrycount(index.get());
+       ++position) {
+    const git_index_entry* entry = git_index_get_byindex(index.get(), position);
+    if (entry != nullptr && GIT_INDEX_ENTRY_STAGE(entry) == 0 &&
+        (entry->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE) != 0) {
+      skipped.push_back(*entry);
+      skipped_paths.emplace_back(entry->path);
+    }
+  }
+  for (std::size_t position = 0; position < skipped.size(); ++position) {
+    skipped[position].path = skipped_paths[position].c_str();
+  }
+  const auto restore_skipped = [&](bool from_target) {
+    for (git_index_entry entry : skipped) {
+      if (from_target) {
+        git_tree_entry* raw_entry = nullptr;
+        if (git_tree_entry_bypath(&raw_entry, target.get(), entry.path) != 0) {
+          git_error_clear();
+          git_index_remove_bypath(index.get(), entry.path);
+          continue;
+        }
+        TreeEntryPtr destination(raw_entry);
+        if (git_tree_entry_type(destination.get()) != GIT_OBJECT_BLOB) continue;
+        entry.id = *git_tree_entry_id(destination.get());
+        entry.mode = git_tree_entry_filemode(destination.get());
+      }
+      check(git_index_add(index.get(), &entry), "keep sparse checkout entry");
+    }
+  };
   git_oid indexed_oid{};
   const bool index_was_expected =
       expected_tree.has_value() &&
@@ -1103,6 +1137,19 @@ void Repository::checkout(std::optional<git_oid> oid,
   try {
     check(git_index_update_all(index.get(), nullptr, nullptr, nullptr),
           "inspect checkout baseline");
+    if (!skipped.empty() && index_was_expected) {
+      restore_skipped(false);
+      git_oid validated{};
+      check(git_index_write_tree_to(&validated, index.get(), repo_.get()),
+            "write checkout baseline");
+      if (!(validated == *expected_tree)) {
+        git_index_read(index.get(), 1);
+        throw WorktreeChangedError();
+      }
+    }
+    // Paths outside the sparse checkout already match the target as far as
+    // checkout is concerned, so it leaves them absent.
+    restore_skipped(true);
     if (failed_checkout_tree_.has_value()) {
       git_index_options index_options = GIT_INDEX_OPTIONS_INIT;
       index_options.oid_type = git_repository_oid_type(repo_.get());
@@ -1130,7 +1177,8 @@ void Repository::checkout(std::optional<git_oid> oid,
   check(git_index_read(index.get(), 1), "restore checkout index");
   // Edits saved after the caller's clean check are in the live baseline, and
   // a forced checkout would overwrite them. Refuse before writing anything.
-  if (index_was_expected && !(baseline_oid == *expected_tree)) {
+  if (skipped.empty() && index_was_expected &&
+      !(baseline_oid == *expected_tree)) {
     throw WorktreeChangedError();
   }
   TreePtr baseline = tree(baseline_oid);
@@ -1139,6 +1187,46 @@ void Repository::checkout(std::optional<git_oid> oid,
   options.checkout_strategy = GIT_CHECKOUT_FORCE |
                               GIT_CHECKOUT_RECREATE_MISSING |
                               GIT_CHECKOUT_DONT_OVERWRITE_IGNORED;
+  // A forced checkout recreates every missing file, so exclude the paths
+  // outside the sparse checkout explicitly. Excluding whole directories
+  // keeps the list short for cone-mode checkouts.
+  std::vector<std::string> sparse_specs;
+  std::vector<char*> sparse_pathspec;
+  if (!skipped.empty()) {
+    std::map<std::string, std::pair<std::size_t, std::size_t>> directories;
+    for (std::size_t position = 0; position < git_index_entrycount(index.get());
+         ++position) {
+      const git_index_entry* entry = git_index_get_byindex(index.get(), position);
+      if (entry == nullptr || GIT_INDEX_ENTRY_STAGE(entry) != 0) continue;
+      const bool skip = (entry->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE) != 0;
+      const std::string_view path = entry->path;
+      for (std::size_t slash = path.find('/'); slash != std::string_view::npos;
+           slash = path.find('/', slash + 1)) {
+        auto& [total, skipped_count] = directories[std::string(path.substr(0, slash))];
+        ++total;
+        if (skip) ++skipped_count;
+      }
+    }
+    std::set<std::string> excluded;
+    for (const std::string& path : skipped_paths) {
+      std::string selected = path;
+      for (std::size_t slash = path.find('/'); slash != std::string::npos;
+           slash = path.find('/', slash + 1)) {
+        const auto& [total, skipped_count] = directories[path.substr(0, slash)];
+        if (total == skipped_count) {
+          selected = path.substr(0, slash);
+          break;
+        }
+      }
+      excluded.insert(selected);
+    }
+    for (const std::string& path : excluded) sparse_specs.push_back("!" + path);
+    sparse_specs.emplace_back("*");
+    for (std::string& spec : sparse_specs) sparse_pathspec.push_back(spec.data());
+    options.paths = {sparse_pathspec.data(), sparse_pathspec.size()};
+    // Paths are literal; "*" still matches everything else.
+    options.checkout_strategy |= GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH;
+  }
   // Only paths from an actual failed checkout may be removed on recovery.
   // A preflight refusal must leave pre-existing local-only paths untouched.
   failed_checkout_tree_ = target_tree;
@@ -1147,6 +1235,45 @@ void Repository::checkout(std::optional<git_oid> oid,
                           &options),
         "update working copy");
   failed_checkout_tree_.reset();
+  if (!skipped.empty()) {
+    // Checkout rewrote the index from the target; mark the paths that are
+    // still outside the sparse checkout again.
+    check(git_index_read(index.get(), 1), "read checked out index");
+    bool marked = false;
+    for (const std::string& path : skipped_paths) {
+      // Checkout skipped these paths, so point their entries at the target.
+      git_tree_entry* raw_entry = nullptr;
+      if (git_tree_entry_bypath(&raw_entry, target.get(), path.c_str()) != 0) {
+        git_error_clear();
+        if (git_index_get_bypath(index.get(), path.c_str(), 0) != nullptr) {
+          check(git_index_remove_bypath(index.get(), path.c_str()),
+                "remove sparse checkout entry");
+          marked = true;
+        }
+        continue;
+      }
+      TreeEntryPtr destination(raw_entry);
+      if (git_tree_entry_type(destination.get()) != GIT_OBJECT_BLOB) continue;
+      std::error_code error;
+      const std::filesystem::path workdir = git_repository_workdir(repo_.get());
+      if (std::filesystem::exists(std::filesystem::symlink_status(workdir / path, error))) {
+        continue;
+      }
+      git_index_entry updated{};
+      if (const git_index_entry* entry =
+              git_index_get_bypath(index.get(), path.c_str(), 0);
+          entry != nullptr) {
+        updated = *entry;
+      }
+      updated.path = path.c_str();
+      updated.id = *git_tree_entry_id(destination.get());
+      updated.mode = git_tree_entry_filemode(destination.get());
+      updated.flags_extended |= GIT_INDEX_ENTRY_SKIP_WORKTREE;
+      check(git_index_add(index.get(), &updated), "keep sparse checkout entry");
+      marked = true;
+    }
+    if (marked) check(git_index_write(index.get()), "write sparse checkout index");
+  }
 }
 
 void Repository::add_remote_branch_updates(
