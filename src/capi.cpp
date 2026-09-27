@@ -90,6 +90,24 @@ bool simple_status_pathspec(std::string_view value) {
   return true;
 }
 
+// A plain path, or any path quoted as "path" or 'path', names exactly that
+// file or directory; ggui quotes paths containing fileset operators.
+std::optional<std::string> literal_status_path(std::string_view value) {
+  if (simple_status_pathspec(value)) return std::string(value);
+  if (value.size() < 3 || (value.front() != '"' && value.front() != '\'') ||
+      value.back() != value.front()) {
+    return std::nullopt;
+  }
+  const std::string_view path = value.substr(1, value.size() - 2);
+  if (path.find(value.front()) != std::string_view::npos ||
+      path.front() == '/') {
+    return std::nullopt;
+  }
+  for (const auto& component : std::filesystem::path(path))
+    if (component == "." || component == "..") return std::nullopt;
+  return std::string(path);
+}
+
 std::vector<std::string> strings(gg_string_array values) {
   if (values.count != 0 && values.strings == nullptr) {
     throw gg::detail::UserError("string array must not be null");
@@ -1083,9 +1101,13 @@ int gg_repository_worktree_status_ex(gg_status* out,
     // Plain paths limit the scan to those files and directories; any
     // fileset expression scans everything and is filtered below.
     std::vector<std::string> scan_paths;
-    if (!filesets.empty() &&
-        std::ranges::all_of(filesets, simple_status_pathspec)) {
-      scan_paths = filesets;
+    for (const std::string& fileset : filesets) {
+      auto path = literal_status_path(fileset);
+      if (!path.has_value()) {
+        scan_paths.clear();
+        break;
+      }
+      scan_paths.push_back(std::move(*path));
     }
     Repository& repo = fresh(repository);
     const CancelScope cancel(repo, operation);

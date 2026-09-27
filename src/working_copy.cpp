@@ -357,6 +357,8 @@ DiffPtr Repository::worktree_diff(const git_oid& baseline_tree,
   std::vector<std::string> owned_paths = paths;
   for (std::string& path : owned_paths) pathspec.push_back(path.data());
   options.pathspec = {pathspec.data(), pathspec.size()};
+  // Paths are literal files or directories, never patterns.
+  if (!pathspec.empty()) options.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH;
   // When the index holds exactly the baseline tree, its stat data identifies
   // unchanged files without reading them. Comparing the tree directly hashes
   // every file, which takes tens of seconds on large checkouts. Staged,

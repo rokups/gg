@@ -62,6 +62,25 @@ TEST_F(RepositoryTest, WorktreeStatusLimitsToPathsAndCanBeCancelled) {
   EXPECT_EQ(status.entry_count, 2U);
   gg_status_dispose(&status);
 
+  // Quoted paths are literal, even with fileset operators or wildcards.
+  write("R&D (v2)~.txt", "odd\n");
+  write("glob*.txt", "odd\n");
+  write("globby.txt", "odd\n");
+  for (const char* quoted : {"\"R&D (v2)~.txt\"", "'glob*.txt'"}) {
+    options.filesets = {&quoted, 1};
+    ASSERT_EQ(gg_repository_worktree_status_ex(&status, repository, &options,
+                                               nullptr),
+              GIT_OK)
+        << quoted;
+    ASSERT_EQ(status.entry_count, 1U) << quoted;
+    EXPECT_EQ(std::string(quoted).substr(1, std::strlen(quoted) - 2),
+              status.entries[0].new_path);
+    gg_status_dispose(&status);
+  }
+  std::filesystem::remove(path_ / "R&D (v2)~.txt");
+  std::filesystem::remove(path_ / "glob*.txt");
+  std::filesystem::remove(path_ / "globby.txt");
+
   // Cancellation is honoured before and during the scan.
   struct Cancel {
     int calls = 0;
