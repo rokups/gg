@@ -770,6 +770,9 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
                  "Allow empty commit descriptions");
   push->add_flag("--dry-run", push_value.dry_run,
                  "Show updates without pushing");
+  push->add_flag("--force-with-lease", push_value.force_with_lease,
+                 "Replace remote branches only if they are still where the "
+                 "last fetch saw them");
   push->add_option("-o,--option", push_value.options, "Push option");
 
   auto* undo = app.add_subcommand("undo", "Restore the previous operation");
@@ -1238,7 +1241,10 @@ ParseResult parse_cli(std::span<const std::string_view> arguments,
       "DEFAULTS:\n"
       "  Pushes the checked-out branch to origin; a detached HEAD requires --branch.\n"
       "  Explicit revisions must already have a local branch or tag; empty descriptions\n"
-      "  and conflicted history are refused.\n"
+      "  and conflicted history are refused. A branch whose remote has moved on, or\n"
+      "  that was rewritten locally, is rejected; fetch first, or replace it with\n"
+      "  --force-with-lease, which still refuses if the remote changed since the\n"
+      "  last fetch.\n"
       "EXAMPLES: gg push --dry-run; gg push --branch topic --dry-run");
 
   undo->footer(

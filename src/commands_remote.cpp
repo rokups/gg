@@ -1044,7 +1044,8 @@ void command_fetch(Repository& repo,
                         "/" + branch);
     }
     for (const std::string& tag : tags) {
-      storage.push_back("+refs/tags/" + tag + ":refs/tags/" + tag);
+      // Like Git, never replace a local tag with a different remote one.
+      storage.push_back("refs/tags/" + tag + ":refs/tags/" + tag);
     }
     std::vector<char*> values;
     for (std::string& refspec : storage) values.push_back(refspec.data());
@@ -1056,10 +1057,28 @@ void command_fetch(Repository& repo,
       fetch_options.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE;
     }
     if (!options.tracked || !storage.empty()) {  // GG_COV_EXCL_BRANCH
+      // libgit2 replaces local tags even without a forced refspec. Git never
+      // does: a local tag that differs from the remote's stays as it is.
+      std::map<std::string, git_oid> local_tags;
+      for (const auto& [reference, oid] : repo.data_refs()) {
+        if (starts_with(reference, "refs/tags/")) local_tags.emplace(reference, oid);
+      }
       check(git_remote_fetch(remote.get(),
                              storage.empty() ? nullptr : &refspecs,
                              &fetch_options, "gg fetch"),
             "fetch remote");
+      repo.invalidate_ref_cache();
+      for (const auto& [reference, oid] : local_tags) {
+        const auto fetched = repo.ref_target(reference);
+        if (fetched.has_value() && *fetched == oid) continue;
+        git_reference* raw_reference = nullptr;
+        check(git_reference_create(&raw_reference, repo.raw(), reference.c_str(),
+                                   &oid, 1, "gg fetch: keep local tag"),
+              "keep local tag");
+        git_reference_free(raw_reference);
+        output << "Kept local tag " << reference.substr(10)
+               << "; it differs from the tag on " << name << '\n';
+      }
       repo.invalidate_ref_cache();
     }
     if (default_selection) {
@@ -1263,6 +1282,9 @@ void command_push(Repository& repo,
   UtilExecCommand push_command{
       "git", {"--git-dir=" + std::string(git_repository_path(repo.raw())),
               "push", "--atomic"}};
+  if (options.force_with_lease) {
+    push_command.arguments.emplace_back("--force-with-lease");
+  }
   for (const std::string& option : options.options) {
     push_command.arguments.emplace_back("--push-option=" + option);
   }
@@ -1270,7 +1292,13 @@ void command_push(Repository& repo,
   push_command.arguments.insert(push_command.arguments.end(), storage.begin(),
                                 storage.end());
   if (command_util_exec(push_command, git_repository_path(repo.raw())) != 0) {
-    throw UserError("atomic push failed");
+    throw UserError(
+        options.force_with_lease
+            ? "push failed; if the remote changed since the last fetch, "
+              "fetch and reconcile before pushing again"
+            : "push failed; if a branch was rewritten or the remote has "
+              "changes you do not have, fetch and reconcile, or replace it "
+              "with --force-with-lease");
   }
   for (const auto& [destination, target] : targets) {
     constexpr std::string_view head_prefix = "refs/heads/";

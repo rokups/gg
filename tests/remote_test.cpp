@@ -782,6 +782,29 @@ TEST_F(RepositoryTest, PushesFetchesAndClonesBranches) {
   std::filesystem::remove_all(remote_path);
 }
 
+TEST_F(RepositoryTest, FetchKeepsALocalTagThatDiffersFromTheRemote) {
+  const auto remote_path = path_.parent_path() / (path_.filename().string() + "-tags");
+  std::filesystem::remove_all(remote_path);
+  ASSERT_EQ(invoke_git({"clone", "-q", "--bare", path_.string(),
+                        remote_path.string()}).code, 0);
+  ASSERT_EQ(invoke_git({"remote", "add", "origin", remote_path.string()}).code, 0);
+  // The remote's tag is a descendant of the local one, which libgit2 would
+  // otherwise fast-forward.
+  ASSERT_EQ(invoke_git({"tag", "v1"}).code, 0);
+  const git_oid local = ref("refs/tags/v1");
+  write("tracked.txt", "later\n");
+  ASSERT_EQ(invoke_git({"commit", "-qam", "later"}).code, 0);
+  ASSERT_EQ(invoke_git({"push", "-q", "origin", "HEAD:refs/tags/v1", "--force"}).code, 0);
+
+  const Result fetched = invoke({"fetch", "-t", "v1"});
+  ASSERT_EQ(fetched.code, 0) << fetched.error;
+  EXPECT_NE(fetched.output.find("Kept local tag v1"), std::string::npos)
+      << fetched.output;
+  const git_oid kept = ref("refs/tags/v1");
+  EXPECT_TRUE(git_oid_equal(&kept, &local));
+  std::filesystem::remove_all(remote_path);
+}
+
 TEST_F(RepositoryTest, FetchesSelectedRefsFromMultipleRemotes) {
   const auto origin_path =
       path_.parent_path() / (path_.filename().string() + "-fetch-origin");

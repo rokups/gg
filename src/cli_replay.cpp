@@ -413,6 +413,9 @@ std::vector<std::string> repository_replay_arguments(
             if (value.allow_empty_description) {
               result.emplace_back("--allow-empty-description");
             }
+            if (value.force_with_lease) {
+              result.emplace_back("--force-with-lease");
+            }
             if (value.dry_run) result.emplace_back("--dry-run");
             return result;
           },

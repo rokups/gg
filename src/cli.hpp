@@ -243,6 +243,7 @@ struct GitPushCommand {
   bool deleted{false};
   bool allow_empty_description{false};
   bool dry_run{false};
+  bool force_with_lease{false};
 };
 struct UndoCommand {};
 struct RedoCommand {};
